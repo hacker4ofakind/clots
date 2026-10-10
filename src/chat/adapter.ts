@@ -1,3 +1,5 @@
+import type { TurnActivity } from "../types.js";
+
 export interface InboundMessage {
   id: string;
   channelId: string;
@@ -13,6 +15,10 @@ export interface ChatAdapter {
   /** Creates the channel at the top of the category and returns its ID. */
   createChannel(categoryId: string, name: string): Promise<string>;
   post(channelId: string, text: string): Promise<void>;
+  /** Posts a summary of what a turn changed and ran. */
+  postActivity(channelId: string, activity: TurnActivity): Promise<void>;
+  /** Shows a typing indicator in the channel until the returned function is called. */
+  startTyping(channelId: string): () => void;
   makeReadOnly(channelId: string): Promise<void>;
   mention(userId: string): string;
   channelLink(channelId: string): string;

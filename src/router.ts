@@ -41,7 +41,7 @@ Pick the effort level the agent needs for its next reply:
 
 Detect a mode change:
 - enter_brainstorm: the user asks to brainstorm, think it through or discuss before acting.
-- exit_brainstorm: the user says to start working or go ahead. Only possible when the current mode is brainstorm.
+- exit_brainstorm: the user tells the agent to act. That is: to start working or go ahead, or a direct instruction to create, make, build, implement, write down or do something now ("create it", "write that down", "do that", "make it a cutout", "you can build it now"). The instruction counts even when it comes at the end of a message that is otherwise discussion or answers to questions. A question or an idea about making something ("what if we made...", "how would you build it?") is not an instruction. Only possible when the current mode is brainstorm.
 - none: anything else.`;
 
 const ROUTER_SCHEMA = {

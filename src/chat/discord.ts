@@ -1,6 +1,11 @@
-import { ChannelType, Client, Events, GatewayIntentBits, type Guild, type TextChannel } from "discord.js";
+import { ChannelType, Client, EmbedBuilder, Events, GatewayIntentBits, type Guild, type TextChannel } from "discord.js";
+import type { TurnActivity } from "../types.js";
+import { formatActivity } from "./activity-format.js";
 import type { ChatAdapter, InboundMessage } from "./adapter.js";
 import { splitMessage } from "./names.js";
+
+/** Discord clears the indicator after about 10 seconds, or when the bot posts. */
+const TYPING_REFRESH_MS = 8_000;
 
 export class DiscordChat implements ChatAdapter {
   private client = new Client({
@@ -41,6 +46,18 @@ export class DiscordChat implements ChatAdapter {
   async post(channelId: string, text: string): Promise<void> {
     const channel = await this.textChannel(channelId);
     for (const part of splitMessage(text)) await channel.send(part);
+  }
+
+  async postActivity(channelId: string, activity: TurnActivity): Promise<void> {
+    const channel = await this.textChannel(channelId);
+    await channel.send({ embeds: [new EmbedBuilder().setColor(0x5865f2).setDescription(formatActivity(activity))] });
+  }
+
+  startTyping(channelId: string): () => void {
+    const send = () => void this.textChannel(channelId).then((c) => c.sendTyping()).catch(() => undefined);
+    send();
+    const timer = setInterval(send, TYPING_REFRESH_MS);
+    return () => clearInterval(timer);
   }
 
   async makeReadOnly(channelId: string): Promise<void> {

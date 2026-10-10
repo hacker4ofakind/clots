@@ -1,4 +1,4 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 
@@ -6,6 +6,20 @@ const run = promisify(execFile);
 
 export function containerName(clot: string): string {
   return `clot-${clot}`;
+}
+
+/** The address GitHub attributes to an account whatever its email privacy settings. */
+export function noreplyEmail(id: number, login: string): string {
+  return `${id}+${login}@users.noreply.github.com`;
+}
+
+/**
+ * Commits carry the address of the account that owns the Clot's token: hosts
+ * such as Vercel refuse to build a commit whose email matches no GitHub
+ * account. Without it the address is on a reserved domain that matches nobody.
+ */
+export function gitIdentity(clot: string, email?: string): { name: string; email: string } {
+  return { name: `${clot}-clot`, email: email ?? `${clot}-clot@clots.invalid` };
 }
 
 /** The SDK hands us a host command line. Inside the container the binary is always `claude`. */
@@ -42,6 +56,16 @@ export function makeSpawn(o: { container: string; cwd: string; env: Record<strin
   };
 }
 
+/** Whether Claude Code already holds a transcript for this session in the container. */
+export function sessionExists(container: string, sessionId: string): boolean {
+  try {
+    execFileSync("docker", ["exec", container, "sh", "-c", 'ls /home/clot/.claude/projects/*/"$1".jsonl', "sh", sessionId], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function ensureContainer(o: { clot: string; image: string; repoUrl: string; githubToken: string }): Promise<void> {
   const name = containerName(o.clot);
   const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", name]).then(
@@ -59,11 +83,18 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl:
 
   const script = [
     `git config --global credential.helper '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'`,
-    `git config --global user.name "$CLOT_NAME clot"`,
-    `git config --global user.email "clot@users.noreply.github.com"`,
+    `git config --global user.name "$CLOT_GIT_NAME"`,
+    `git config --global user.email "$CLOT_GIT_EMAIL"`,
     `[ -d /workspace/repo/.git ] || git clone "$REPO_URL" /workspace/repo`,
   ].join(" && ");
-  await run("docker", ["exec", "-e", "GH_TOKEN", "-e", "REPO_URL", "-e", "CLOT_NAME", name, "sh", "-c", script], {
-    env: { ...process.env, GH_TOKEN: o.githubToken, REPO_URL: o.repoUrl, CLOT_NAME: o.clot },
+  const account = await run("docker", ["exec", "-e", "GH_TOKEN", name, "gh", "api", "user"], { env: { ...process.env, GH_TOKEN: o.githubToken } }).then(
+    (r) => JSON.parse(r.stdout) as { id?: unknown; login?: unknown },
+    () => undefined,
+  );
+  const email = typeof account?.id === "number" && typeof account.login === "string" ? noreplyEmail(account.id, account.login) : undefined;
+  if (!email) console.warn(`[${o.clot}] could not read the token's GitHub account; commits will use an unmatched address`);
+  const identity = gitIdentity(o.clot, email);
+  await run("docker", ["exec", "-e", "GH_TOKEN", "-e", "REPO_URL", "-e", "CLOT_GIT_NAME", "-e", "CLOT_GIT_EMAIL", name, "sh", "-c", script], {
+    env: { ...process.env, GH_TOKEN: o.githubToken, REPO_URL: o.repoUrl, CLOT_GIT_NAME: identity.name, CLOT_GIT_EMAIL: identity.email },
   });
 }

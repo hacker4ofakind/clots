@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRouterPrompt, nextMode, parseDecision } from "../src/router.js";
+import { buildRouterPrompt, nextMode, parseDecision, ROUTER_SYSTEM_PROMPT } from "../src/router.js";
 
 describe("parseDecision", () => {
   it("accepts a valid decision", () => {
@@ -22,6 +22,15 @@ describe("nextMode", () => {
     expect(nextMode("brainstorm", "none")).toBe("brainstorm");
     expect(nextMode("brainstorm", "enter_brainstorm")).toBe("brainstorm");
     expect(nextMode("action", "exit_brainstorm")).toBe("action");
+  });
+});
+
+describe("ROUTER_SYSTEM_PROMPT", () => {
+  it("treats a direct instruction to make something as leaving brainstorm mode", () => {
+    for (const verb of ["create", "make", "build", "implement", "write", "do"]) {
+      expect(ROUTER_SYSTEM_PROMPT).toContain(verb);
+    }
+    expect(ROUTER_SYSTEM_PROMPT).toContain("even when it comes at the end");
   });
 });
 

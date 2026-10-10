@@ -16,6 +16,22 @@ it("records categories, channels, posts and read-only state", async () => {
   expect(chat.readOnly.has(channel)).toBe(true);
 });
 
+it("tracks which channels show typing", () => {
+  const chat = new FakeChat();
+  const stop = chat.startTyping("c");
+  expect(chat.typing.has("c")).toBe(true);
+  stop();
+  expect(chat.typing.has("c")).toBe(false);
+});
+
+it("records activity summaries apart from ordinary posts", async () => {
+  const chat = new FakeChat();
+  const activity = { files: [{ path: "a.ts", added: 1, removed: 0 }], commands: ["ls"] };
+  await chat.postActivity("c", activity);
+  expect(chat.activities).toEqual([{ channelId: "c", activity }]);
+  expect(chat.postsIn("c")).toEqual([]);
+});
+
 it("delivers inbound messages to the handler", async () => {
   const chat = new FakeChat();
   const seen: string[] = [];

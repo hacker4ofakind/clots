@@ -4,7 +4,7 @@ import { Store } from "../src/store.js";
 import { FakeChat } from "../src/chat/fake.js";
 import type { AgentRunner, TurnHandle, TurnRequest, TurnResult } from "../src/agent/runner.js";
 import type { Router, RouterInput } from "../src/router.js";
-import type { Effort, RouterDecision } from "../src/types.js";
+import type { Effort, RouterDecision, TurnActivity } from "../src/types.js";
 import type { InboundMessage } from "../src/chat/adapter.js";
 
 interface Step {
@@ -13,6 +13,7 @@ interface Step {
   ok?: boolean;
   limit?: { resetsAt: number };
   hold?: boolean;
+  activity?: TurnActivity;
 }
 
 class FakeRunner implements AgentRunner {
@@ -32,6 +33,7 @@ class FakeRunner implements AgentRunner {
         contextPercent: step.contextPercent ?? 10,
         ok: step.ok ?? true,
         limit: step.limit,
+        activity: step.activity,
       };
     })();
     return { push: (text, effort) => void this.pushes.push({ text, effort }), done };
@@ -108,6 +110,39 @@ describe("Clot", () => {
     expect(runner.calls[0]).toMatchObject({ newSessionId: "sess-1", effort: "low", planMode: false, prompt: "check the footer link" });
     expect(runner.calls[0].resume).toBeUndefined();
     expect(chat.postsIn(channel)).toContain("On it.");
+  });
+
+  it("shows typing from the moment a message arrives until the turn ends", async () => {
+    const channel = store.activeSession("graphite")!.channelId;
+    runner.script = [{ hold: true }];
+
+    const turn = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    expect(chat.typing.has(channel)).toBe(true);
+    runner.release!();
+    await turn;
+
+    expect(chat.typing.has(channel)).toBe(false);
+  });
+
+  it("posts what the turn changed and ran, after the reply, and keeps it out of the router's context", async () => {
+    const channel = store.activeSession("graphite")!.channelId;
+    const activity = { files: [{ path: "src/a.ts", added: 2, removed: 1 }], commands: ["npm test"] };
+    runner.script = [{ say: ["Done."], activity }, {}];
+
+    await clot.onMessage(msg("fix it"));
+    await clot.onMessage(msg("thanks"));
+
+    expect(chat.activities).toEqual([{ channelId: channel, activity }]);
+    expect(router.inputs[1].tail.map((t) => t.text)).toEqual(["fix it", "Done."]);
+    expect(runner.calls[1].prompt).toBe("thanks");
+  });
+
+  it("posts no summary for a turn that changed and ran nothing", async () => {
+    runner.script = [{ activity: { files: [], commands: [] } }, {}];
+    await clot.onMessage(msg("hello"));
+    await clot.onMessage(msg("again"));
+    expect(chat.activities).toEqual([]);
   });
 
   it("resumes the same session on the next message", async () => {
@@ -188,6 +223,28 @@ describe("Clot", () => {
     expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2" });
     expect(runner.calls[2].prompt).toContain("RECAP: built the footer.");
     expect(store.activeSession("graphite")!.seed).toBeNull();
+  });
+
+  it("announces the rollover in the old channel before the recap is written", async () => {
+    const oldChannel = store.activeSession("graphite")!.channelId;
+    runner.script = [{ contextPercent: 70 }, { hold: true, say: ["RECAP"] }];
+
+    const turn = clot.onMessage(msg("do the thing"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    expect(chat.postsIn(oldChannel).at(-1)).toBe("This thread hit the context limit and will be closed. Waiting on handoff...");
+    expect(chat.channels).toHaveLength(1);
+    runner.release!();
+    await turn;
+
+    expect(chat.postsIn(oldChannel).at(-1)).toContain("This session is closed.");
+  });
+
+  it("says so when the handoff could not be written", async () => {
+    const oldChannel = store.activeSession("graphite")!.channelId;
+    runner.script = [{ contextPercent: 70 }, { ok: false, say: [] }];
+    await clot.onMessage(msg("do the thing"));
+    expect(chat.postsIn(oldChannel).at(-1)).toBe("The handoff could not be written. This thread stays open; I'll try again after the next message.");
+    expect(store.activeSession("graphite")!.channelId).toBe(oldChannel);
   });
 
   it("does not post the recap turn's text into the old channel", async () => {

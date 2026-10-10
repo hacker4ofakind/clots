@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { TurnTracker } from "../src/agent/turn-tracker.js";
+import { isTurnActivity, TurnTracker } from "../src/agent/turn-tracker.js";
 import { parseRateLimit } from "../src/agent/usage.js";
-import { buildPrompt } from "../src/agent/prompts.js";
-import { containerName, dockerExecArgs, pickSdkEnv, toContainerCommand } from "../src/agent/container.js";
+import { buildPrompt, CLOT_SYSTEM_PROMPT } from "../src/agent/prompts.js";
+import { containerName, dockerExecArgs, gitIdentity, noreplyEmail, pickSdkEnv, toContainerCommand } from "../src/agent/container.js";
 
 describe("TurnTracker", () => {
   it("finishes on a result when nothing was pushed", () => {
@@ -14,6 +14,20 @@ describe("TurnTracker", () => {
     t.onPush();
     expect(t.onResult()).toBe("wait");
     expect(t.onResult()).toBe("finish");
+  });
+});
+
+describe("isTurnActivity", () => {
+  it("counts model and tool messages as activity", () => {
+    expect(isTurnActivity("assistant")).toBe(true);
+    expect(isTurnActivity("user")).toBe(true);
+    expect(isTurnActivity("stream_event")).toBe(true);
+  });
+
+  it("does not count the bookkeeping that follows a result", () => {
+    expect(isTurnActivity("system")).toBe(false);
+    expect(isTurnActivity("rate_limit_event")).toBe(false);
+    expect(isTurnActivity("result")).toBe(false);
   });
 });
 
@@ -44,6 +58,7 @@ describe("buildPrompt", () => {
   it("adds the brainstorm note on every brainstorm turn", () => {
     const prompt = buildPrompt({ ...base, mode: "brainstorm" });
     expect(prompt).toContain("Brainstorm mode is ON");
+    expect(prompt).toContain("the same thing");
     expect(prompt.endsWith("fix the footer")).toBe(true);
   });
 
@@ -58,7 +73,25 @@ describe("buildPrompt", () => {
   });
 });
 
+describe("CLOT_SYSTEM_PROMPT", () => {
+  it("tells the Clot to ask questions as plain text", () => {
+    expect(CLOT_SYSTEM_PROMPT).toContain("ask them as plain text");
+  });
+});
+
 describe("container helpers", () => {
+  it("commits as <name>-clot with the token account's address", () => {
+    expect(gitIdentity("graphite", "42+octo@users.noreply.github.com")).toEqual({ name: "graphite-clot", email: "42+octo@users.noreply.github.com" });
+  });
+
+  it("falls back to an address no GitHub account owns when the account is unknown", () => {
+    expect(gitIdentity("graphite")).toEqual({ name: "graphite-clot", email: "graphite-clot@clots.invalid" });
+  });
+
+  it("builds the GitHub no-reply address of an account", () => {
+    expect(noreplyEmail(42, "octo")).toBe("42+octo@users.noreply.github.com");
+  });
+
   it("names the container after the clot", () => {
     expect(containerName("graphite")).toBe("clot-graphite");
   });

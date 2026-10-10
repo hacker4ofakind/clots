@@ -12,6 +12,18 @@ export interface TailMessage {
   text: string;
 }
 
+export interface FileChange {
+  path: string;
+  added: number;
+  removed: number;
+}
+
+/** What a turn changed and ran. Shown to the user; never sent back to the session. */
+export interface TurnActivity {
+  files: FileChange[];
+  commands: string[];
+}
+
 /** resetsAt is a Unix timestamp in seconds. */
 export interface LimitInfo {
   resetsAt: number;

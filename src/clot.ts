@@ -1,9 +1,10 @@
-import type { AgentRunner, TurnHandle } from "./agent/runner.js";
+import type { AgentRunner, TurnHandle, TurnResult } from "./agent/runner.js";
 import { buildPrompt, CONTINUE_TEXT, MIDTURN_PREFIX, RECAP_PROMPT } from "./agent/prompts.js";
 import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
 import { sessionChannelName } from "./chat/names.js";
 import { nextMode, type Router } from "./router.js";
-import type { InboxRow, Store } from "./store.js";
+import type { InboxRow, SessionRow, Store } from "./store.js";
+import type { Mode } from "./types.js";
 
 export interface ClotDeps {
   name: string;
@@ -97,6 +98,47 @@ export class Clot {
     const session = store.activeSession(name)!;
     const mode = store.getClot(name)!.mode;
 
+    const stopTyping = chat.startTyping(session.channelId);
+    let result: TurnResult;
+    try {
+      result = await this.runTurn(row, session, mode);
+    } finally {
+      this.live = undefined;
+      stopTyping();
+    }
+    await this.posts;
+    if (result.activity && result.activity.files.length + result.activity.commands.length > 0) {
+      await chat.postActivity(session.channelId, result.activity).catch(() => undefined);
+    }
+
+    // The session exists on disk once any model response has come back.
+    if (result.ok || result.contextPercent > 0) store.markSessionStarted(session.id);
+    store.setInterrupted(session.id, false);
+    store.finishRunning(name);
+
+    if (!result.ok && !result.limit) {
+      await chat.post(session.channelId, "That turn ended with an error. Send your message again to retry.");
+      return true;
+    }
+
+    if (result.limit) {
+      store.setPausedUntil(name, result.limit.resetsAt);
+      store.setInterrupted(session.id, true);
+      const time = new Intl.DateTimeFormat("en-GB", { timeZone: this.d.timeZone, hour: "2-digit", minute: "2-digit" }).format(
+        new Date(result.limit.resetsAt * 1000),
+      );
+      await chat.post(session.channelId, `Paused: usage limit reached. I'll resume at ${time}.`);
+      this.scheduleResume(result.limit.resetsAt);
+      return false;
+    }
+
+    if (result.contextPercent >= this.d.rolloverPercent) await this.rollover();
+    return true;
+  }
+
+  /** Routes the message, applies any mode change and runs the turn to its end. */
+  private async runTurn(row: InboxRow, session: SessionRow, mode: Mode): Promise<TurnResult> {
+    const { store, chat, name } = this.d;
     const decision = await this.d.router.decide({ text: row.text, mode, tail: store.tail(name, 4) });
     const newMode = nextMode(mode, decision.modeChange);
     if (newMode !== mode) {
@@ -124,33 +166,7 @@ export class Clot {
         this.posts = this.posts.then(() => chat.post(session.channelId, text)).catch(() => undefined);
       },
     });
-    const result = await this.live.done;
-    this.live = undefined;
-    await this.posts;
-
-    // The session exists on disk once any model response has come back.
-    if (result.ok || result.contextPercent > 0) store.markSessionStarted(session.id);
-    store.setInterrupted(session.id, false);
-    store.finishRunning(name);
-
-    if (!result.ok && !result.limit) {
-      await chat.post(session.channelId, "That turn ended with an error. Send your message again to retry.");
-      return true;
-    }
-
-    if (result.limit) {
-      store.setPausedUntil(name, result.limit.resetsAt);
-      store.setInterrupted(session.id, true);
-      const time = new Intl.DateTimeFormat("en-GB", { timeZone: this.d.timeZone, hour: "2-digit", minute: "2-digit" }).format(
-        new Date(result.limit.resetsAt * 1000),
-      );
-      await chat.post(session.channelId, `Paused: usage limit reached. I'll resume at ${time}.`);
-      this.scheduleResume(result.limit.resetsAt);
-      return false;
-    }
-
-    if (result.contextPercent >= this.d.rolloverPercent) await this.rollover();
-    return true;
+    return this.live.done;
   }
 
   private scheduleResume(resetsAt: number): void {
@@ -171,14 +187,20 @@ export class Clot {
     const old = store.activeSession(name)!;
 
     const parts: string[] = [];
-    const recapTurn = await this.d.runner.startTurn({
+    const recapTurn = this.d.runner.startTurn({
       resume: old.id,
       prompt: RECAP_PROMPT,
       effort: "medium",
       planMode: true,
       onText: (text) => void parts.push(text),
-    }).done;
-    if (!recapTurn.ok || parts.length === 0) return; // Try again after the next turn.
+    });
+    await chat.post(old.channelId, "This thread hit the context limit and will be closed. Waiting on handoff...");
+    const stopTyping = chat.startTyping(old.channelId);
+    const recapResult = await recapTurn.done.finally(stopTyping);
+    if (!recapResult.ok || parts.length === 0) {
+      await chat.post(old.channelId, "The handoff could not be written. This thread stays open; I'll try again after the next message.");
+      return;
+    }
     const recap = parts.join("\n\n");
 
     const channelId = await this.newChannel(store.getClot(name)!.categoryId);

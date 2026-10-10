@@ -1,8 +1,9 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { Effort, LimitInfo } from "../types.js";
-import { containerName, makeSpawn } from "./container.js";
+import type { Effort, LimitInfo, TurnActivity } from "../types.js";
+import { ActivityCollector } from "./activity.js";
+import { containerName, makeSpawn, sessionExists } from "./container.js";
 import { CLOT_SYSTEM_PROMPT } from "./prompts.js";
-import { TurnTracker } from "./turn-tracker.js";
+import { isTurnActivity, TurnTracker } from "./turn-tracker.js";
 import { parseRateLimit } from "./usage.js";
 
 export interface TurnRequest {
@@ -21,6 +22,7 @@ export interface TurnResult {
   contextPercent: number;
   ok: boolean;
   limit?: LimitInfo;
+  activity?: TurnActivity;
 }
 
 export interface TurnHandle {
@@ -61,34 +63,43 @@ export class SdkRunner implements AgentRunner {
       wake?.();
     };
 
+    // A first turn cut off by a daemon restart leaves its transcript behind, and
+    // Claude Code refuses to start a session under an ID that already has one.
+    const container = containerName(this.o.clot);
+    const resume = req.resume ?? (req.newSessionId && sessionExists(container, req.newSessionId) ? req.newSessionId : undefined);
+
     const session = query({
       prompt: input(),
       options: {
         model: "claude-opus-5-5",
         effort: req.effort,
-        ...(req.resume ? { resume: req.resume } : { sessionId: req.newSessionId }),
+        ...(resume ? { resume } : { sessionId: req.newSessionId }),
         cwd: CWD,
         permissionMode: req.planMode ? "plan" : "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        // Its prompts cannot be shown in chat; the Clot asks in plain text instead.
+        disallowedTools: ["AskUserQuestion"],
         // Only consulted in plan mode; bypassPermissions approves before the callback.
         ...(req.planMode
           ? { canUseTool: async () => ({ behavior: "deny" as const, message: "Brainstorm mode: no changes until the user says to start working." }) }
           : {}),
         systemPrompt: { type: "preset", preset: "claude_code", append: CLOT_SYSTEM_PROMPT },
-        spawnClaudeCodeProcess: makeSpawn({ container: containerName(this.o.clot), cwd: CWD, env: this.o.env }),
+        spawnClaudeCodeProcess: makeSpawn({ container, cwd: CWD, env: this.o.env }),
       },
     });
 
     const tracker = new TurnTracker();
+    const collector = new ActivityCollector(CWD);
     const done = (async (): Promise<TurnResult> => {
       const result: TurnResult = { sessionId: req.resume ?? req.newSessionId ?? "", contextPercent: 0, ok: false };
       let grace: NodeJS.Timeout | undefined;
       try {
         for await (const message of session) {
-          if (grace) {
+          if (grace && isTurnActivity(message.type)) {
             clearTimeout(grace);
             grace = undefined;
           }
+          collector.observe(message);
           const limit = parseRateLimit(message);
           if (limit?.status === "rejected") {
             result.limit = { resetsAt: limit.resetsAt ?? Math.floor(Date.now() / 1000) + 5 * 3600 };
@@ -116,6 +127,7 @@ export class SdkRunner implements AgentRunner {
         if (grace) clearTimeout(grace);
         finish();
       }
+      result.activity = collector.activity();
       return result;
     })();
 

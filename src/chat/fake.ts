@@ -1,10 +1,13 @@
+import type { TurnActivity } from "../types.js";
 import type { ChatAdapter, InboundMessage } from "./adapter.js";
 
 export class FakeChat implements ChatAdapter {
   categories = new Map<string, string>();
   channels: { id: string; categoryId: string; name: string }[] = [];
   posts: { channelId: string; text: string }[] = [];
+  activities: { channelId: string; activity: TurnActivity }[] = [];
   readOnly = new Set<string>();
+  typing = new Set<string>();
   private handler: (m: InboundMessage) => void = () => undefined;
   private counter = 0;
 
@@ -34,6 +37,15 @@ export class FakeChat implements ChatAdapter {
 
   async post(channelId: string, text: string): Promise<void> {
     this.posts.push({ channelId, text });
+  }
+
+  async postActivity(channelId: string, activity: TurnActivity): Promise<void> {
+    this.activities.push({ channelId, activity });
+  }
+
+  startTyping(channelId: string): () => void {
+    this.typing.add(channelId);
+    return () => void this.typing.delete(channelId);
   }
 
   postsIn(channelId: string): string[] {
