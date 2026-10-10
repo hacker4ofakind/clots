@@ -1,0 +1,6 @@
+{
+  "timeZone": "UTC",
+  "image": "clots-clot:dev",
+  "discord": { "guildId": "", "userId": "" },
+  "clots": [{ "name": "graphite", "repoUrl": "https://github.com/OWNER/REPO.git" }]
+}
