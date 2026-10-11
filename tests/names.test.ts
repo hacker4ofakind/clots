@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionChannelName, splitMessage } from "../src/chat/names.js";
+import { askChannelName, sessionChannelName, splitMessage } from "../src/chat/names.js";
 
 describe("sessionChannelName", () => {
   const noon = new Date("2026-10-10T12:00:00Z");
@@ -20,6 +20,14 @@ describe("sessionChannelName", () => {
 
   it("replaces characters Discord does not allow", () => {
     expect(sessionChannelName("My App!", noon, "UTC", [])).toBe("my-app-1010");
+  });
+});
+
+describe("askChannelName", () => {
+  it("uses project-ask, then numbers while others are open", () => {
+    expect(askChannelName("Graphite", [])).toBe("graphite-ask");
+    expect(askChannelName("graphite", ["graphite-1010", "graphite-ask"])).toBe("graphite-ask-2");
+    expect(askChannelName("graphite", ["graphite-ask", "graphite-ask-2"])).toBe("graphite-ask-3");
   });
 });
 

@@ -20,6 +20,7 @@ export interface ChatAdapter {
   /** Shows a typing indicator in the channel until the returned function is called. */
   startTyping(channelId: string): () => void;
   makeReadOnly(channelId: string): Promise<void>;
+  deleteChannel(channelId: string): Promise<void>;
   mention(userId: string): string;
   channelLink(channelId: string): string;
 }

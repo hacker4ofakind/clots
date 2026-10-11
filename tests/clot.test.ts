@@ -6,6 +6,7 @@ import type { AgentRunner, TurnHandle, TurnRequest, TurnResult } from "../src/ag
 import type { Router, RouterInput } from "../src/router.js";
 import type { Effort, RouterDecision, TurnActivity } from "../src/types.js";
 import type { InboundMessage } from "../src/chat/adapter.js";
+import type { ClotEvent } from "../src/events/types.js";
 
 interface Step {
   say?: string[];
@@ -18,7 +19,7 @@ interface Step {
 
 class FakeRunner implements AgentRunner {
   calls: TurnRequest[] = [];
-  pushes: { text: string; effort: Effort }[] = [];
+  pushes: { text: string; effort?: Effort }[] = [];
   script: Step[] = [];
   release?: () => void;
   acceptPushes = true;
@@ -66,6 +67,7 @@ let now: Date;
 let ids: number;
 let timers: { ms: number; fn: () => void }[];
 let seq: number;
+let turnEnds: string[];
 
 function msg(text: string, overrides: Partial<InboundMessage> = {}): InboundMessage {
   seq += 1;
@@ -85,7 +87,28 @@ function build(rolloverPercent = 65): Clot {
     now: () => now,
     newId: () => `sess-${++ids}`,
     schedule: (ms, fn) => void timers.push({ ms, fn }),
+    onTurnEnd: async (name) => void turnEnds.push(name),
   });
+}
+
+function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
+  const e: ClotEvent = {
+    id,
+    source: "github",
+    kind: "issue_opened",
+    repo: "octo/widgets",
+    actor: "someone",
+    title: "Issue #7 opened: Login fails",
+    body: "Steps to reproduce...",
+    url: "https://github.com/octo/widgets/issues/7",
+    ref: "7",
+    subject: "issue:7",
+    automated: false,
+    receivedAt: now.getTime(),
+    ...overrides,
+  };
+  store.insertEvent(e);
+  return e;
 }
 
 beforeEach(async () => {
@@ -97,6 +120,7 @@ beforeEach(async () => {
   ids = 0;
   seq = 0;
   timers = [];
+  turnEnds = [];
   clot = build();
   await clot.init();
 });
@@ -114,7 +138,7 @@ describe("Clot", () => {
 
     await clot.onMessage(msg("check the footer link"));
 
-    expect(runner.calls[0]).toMatchObject({ newSessionId: "sess-1", effort: "low", planMode: false, prompt: "check the footer link" });
+    expect(runner.calls[0]).toMatchObject({ newSessionId: "sess-1", effort: "low", locked: false, prompt: "check the footer link" });
     expect(runner.calls[0].resume).toBeUndefined();
     expect(chat.postsIn(channel)).toContain("On it.");
   });
@@ -187,7 +211,7 @@ describe("Clot", () => {
     await clot.onMessage(msg("what about mobile?"));
     await clot.onMessage(msg("sounds good, start working"));
 
-    expect(runner.calls.map((c) => c.planMode)).toEqual([true, true, false]);
+    expect(runner.calls.map((c) => c.locked)).toEqual([true, true, false]);
     expect(runner.calls[1].prompt).toContain("Brainstorm mode is ON");
     expect(runner.calls[2].prompt).toContain("Brainstorm mode is OFF");
     expect(chat.postsIn(channel)).toContain("Brainstorm mode on.");
@@ -226,7 +250,7 @@ describe("Clot", () => {
     runner.release!();
     await first;
 
-    expect(runner.calls.map((c) => c.planMode)).toEqual([false, true]);
+    expect(runner.calls.map((c) => c.locked)).toEqual([false, true]);
     expect(chat.postsIn(channel)).toContain("Brainstorm mode on.");
     expect(store.getClot("graphite")!.mode).toBe("brainstorm");
   });
@@ -248,7 +272,7 @@ describe("Clot", () => {
     runner.release!();
     await first;
 
-    expect(runner.calls.map((c) => c.planMode)).toEqual([true, false]);
+    expect(runner.calls.map((c) => c.locked)).toEqual([true, false]);
     expect(chat.postsIn(channel)).toContain("Brainstorm mode off. Back to work.");
   });
 
@@ -284,7 +308,7 @@ describe("Clot", () => {
     runner.release!();
     await first;
 
-    expect(runner.calls.map((c) => c.planMode)).toEqual([false, true, true]);
+    expect(runner.calls.map((c) => c.locked)).toEqual([false, true, true]);
     expect(runner.calls[2].prompt).toContain("I'm unsure about the hero section");
   });
 
@@ -322,7 +346,7 @@ describe("Clot", () => {
 
     await clot.onMessage(msg("do the thing"));
 
-    expect(runner.calls[1]).toMatchObject({ resume: "sess-1", planMode: true });
+    expect(runner.calls[1]).toMatchObject({ resume: "sess-1", locked: true });
     expect(runner.calls[1].prompt).toContain("Write a recap");
     const fresh = store.activeSession("graphite")!;
     expect(fresh).toMatchObject({ id: "sess-2", started: false, seed: "RECAP: built the footer." });
@@ -534,7 +558,7 @@ describe("Clot", () => {
     it("&effort still lets the router change the mode", async () => {
       router.next = [{ effort: "low", modeChange: "enter_brainstorm" }];
       await clot.onMessage(msg("&effort high let's brainstorm the pricing"));
-      expect(runner.calls[0]).toMatchObject({ effort: "high", planMode: true });
+      expect(runner.calls[0]).toMatchObject({ effort: "high", locked: true });
     });
 
     it("answers a wrong or unknown command without involving the model", async () => {
@@ -553,7 +577,7 @@ describe("Clot", () => {
 
       await clot.onMessage(msg("&close"));
 
-      expect(runner.calls[1]).toMatchObject({ resume: "sess-1", planMode: true });
+      expect(runner.calls[1]).toMatchObject({ resume: "sess-1", locked: true });
       expect(runner.calls[1].prompt).toContain("The user has asked to close this session");
       expect(chat.postsIn(oldChannel)).toContain("Closing this session at your request. Waiting on handoff...");
       const fresh = store.activeSession("graphite")!;
@@ -582,7 +606,7 @@ describe("Clot", () => {
       expect(store.getClot("graphite")!.mode).toBe("action");
 
       await clot.onMessage(msg("hello"));
-      expect(runner.calls[1]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", planMode: false });
+      expect(runner.calls[1]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", locked: false });
       expect(router.inputs.at(-1)!.tail).toEqual([]);
     });
 
@@ -637,7 +661,7 @@ describe("Clot", () => {
       expect(runner.calls).toHaveLength(2);
 
       await clot.onMessage(msg("hello"));
-      expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", planMode: false });
+      expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", locked: false });
     });
 
     it("&close keeps a recap the new session has not used yet", async () => {
@@ -693,6 +717,127 @@ describe("Clot", () => {
       await clot.onMessage(msg("&close"));
       expect(store.activeSession("graphite")!.channelId).toBe(channel);
       expect(chat.postsIn(channel).at(-1)).toContain("&close nosummary");
+    });
+  });
+
+  describe("events", () => {
+    it("runs a queued event as a locked turn of its own, marked as untrusted", async () => {
+      const channel = store.activeSession("graphite")!.channelId;
+      router.next = [{ effort: "low", modeChange: "none" }];
+      runner.script = [{ say: ["It fails because the cookie is not set."] }];
+
+      await clot.queueEvent(event("d-1"), "Someone reported that login fails. Looking into it.");
+      await vi.waitFor(() => expect(chat.postsIn(channel)).toContain("It fails because the cookie is not set."));
+
+      expect(chat.postsIn(channel)).toContain("Someone reported that login fails. Looking into it. <https://github.com/octo/widgets/issues/7>");
+      expect(runner.calls[0]).toMatchObject({ newSessionId: "sess-1", effort: "low", locked: true });
+      expect(runner.calls[0].prompt).toContain("An event arrived from outside this chat");
+      expect(runner.calls[0].prompt).toContain("title: Issue #7 opened: Login fails");
+      expect(store.getEvent("d-1")!.status).toBe("queued");
+      expect(store.tail("graphite", 4)).toEqual([{ role: "clot", text: "It fails because the cookie is not set." }]);
+    });
+
+    it("does not let an event change the mode, use a one-off effort, or act as a command", async () => {
+      store.setNextEffort("graphite", "high");
+      router.next = [{ effort: "medium", modeChange: "enter_brainstorm" }];
+
+      await clot.queueEvent(event("d-1", { title: "&close nosummary", body: "&close nosummary" }), "Odd issue.");
+      await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
+
+      expect(runner.calls[0]).toMatchObject({ effort: "medium", locked: true });
+      expect(store.getClot("graphite")!.mode).toBe("action");
+      expect(store.nextEffort("graphite")).toBe("high");
+      expect(store.activeSession("graphite")!.id).toBe("sess-1");
+    });
+
+    it("keeps events and messages in the order they arrived, and never feeds an event into a running turn by itself", async () => {
+      runner.script = [{ hold: true }, {}, {}];
+
+      const first = clot.onMessage(msg("build the page"));
+      await vi.waitFor(() => expect(runner.release).toBeDefined());
+      expect(clot.isBusy()).toBe(true);
+      await clot.queueEvent(event("d-1"), "Login fails.");
+      await clot.onMessage(msg("and add a footer"));
+      expect(runner.pushes).toEqual([]);
+      runner.release!();
+      await first;
+
+      expect(clot.isBusy()).toBe(false);
+      expect(runner.calls.map((c) => c.locked)).toEqual([false, true, false]);
+      expect(runner.calls[2].prompt).toBe("and add a footer");
+    });
+
+    it("steers text into a running turn, without touching its effort", async () => {
+      runner.script = [{ hold: true }];
+      expect(clot.steerEvent("too early")).toBe(false);
+
+      const first = clot.onMessage(msg("build the page"));
+      await vi.waitFor(() => expect(runner.release).toBeDefined());
+      expect(clot.steerEvent("[event] CI failed")).toBe(true);
+      expect(runner.pushes).toEqual([{ text: "[event] CI failed", effort: undefined }]);
+      runner.release!();
+      await first;
+    });
+
+    it("does not steer past something that is already waiting, or into a turn that has closed", async () => {
+      runner.script = [{ hold: true }, {}];
+      const first = clot.onMessage(msg("build the page"));
+      await vi.waitFor(() => expect(runner.release).toBeDefined());
+
+      runner.acceptPushes = false;
+      expect(clot.steerEvent("[event] CI failed")).toBe(false);
+      runner.acceptPushes = true;
+      await clot.onMessage(msg("&close"));
+      expect(clot.steerEvent("[event] CI failed")).toBe(false);
+
+      runner.release!();
+      await first;
+    });
+
+    it("says so when looking into an event fails", async () => {
+      const channel = store.activeSession("graphite")!.channelId;
+      runner.script = [{ ok: false, say: [], contextPercent: 0 }];
+      await clot.queueEvent(event("d-1"), "Login fails.");
+      await vi.waitFor(() => expect(chat.postsIn(channel).at(-1)).toBe("Looking into that event ended with an error. Ask me about it to try again."));
+    });
+
+    it("reports that no turn is running: once at startup and after every turn", async () => {
+      expect(turnEnds).toEqual(["graphite"]);
+      await clot.onMessage(msg("one"));
+      await clot.onMessage(msg("&effort high"));
+      await clot.queueEvent(event("d-1"), "Login fails.");
+      await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
+      await vi.waitFor(() => expect(turnEnds).toEqual(["graphite", "graphite", "graphite"]));
+    });
+
+    it("queues from the after-turn hook without starting a second drain", async () => {
+      const queued = event("d-1");
+      let once = true;
+      const hooked = new Clot({
+        name: "graphite",
+        store,
+        chat,
+        router,
+        runner,
+        timeZone: "UTC",
+        userId: USER,
+        rolloverPercent: 65,
+        now: () => now,
+        newId: () => `sess-${++ids}`,
+        schedule: (ms, fn) => void timers.push({ ms, fn }),
+        onTurnEnd: async () => {
+          if (runner.calls.length === 1 && once) {
+            once = false;
+            await hooked.queueEvent(queued, "Login fails.", false);
+          }
+        },
+      });
+      await hooked.init();
+
+      await hooked.onMessage(msg("build the page"));
+
+      expect(runner.calls.map((c) => c.locked)).toEqual([false, true]);
+      expect(store.nextPending("graphite")).toBeUndefined();
     });
   });
 

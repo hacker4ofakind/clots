@@ -1,6 +1,7 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Effort, LimitInfo, TurnActivity } from "../types.js";
 import { ActivityCollector } from "./activity.js";
+import { LOCK_REMOVED_TOOLS, lockDecision } from "./command-check.js";
 import { containerName, makeSpawn, sessionExists } from "./container.js";
 import { CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "./prompts.js";
 import { InputQueue } from "./input-queue.js";
@@ -14,7 +15,8 @@ export interface TurnRequest {
   newSessionId?: string;
   prompt: string;
   effort: Effort;
-  planMode: boolean;
+  /** Runs the turn under the lock: it can read and look things up, and can change nothing. */
+  locked: boolean;
   onText: (text: string) => void;
 }
 
@@ -27,8 +29,11 @@ export interface TurnResult {
 }
 
 export interface TurnHandle {
-  /** Feeds a message into the running turn. Returns false when the turn no longer accepts input; the message was then not delivered. */
-  push(text: string, effort: Effort): boolean;
+  /**
+   * Feeds a message into the running turn. Returns false when the turn no longer accepts input; the message was then not delivered.
+   * An effort, when given, applies from the model's next step.
+   */
+  push(text: string, effort?: Effort): boolean;
   done: Promise<TurnResult>;
 }
 
@@ -45,7 +50,7 @@ function userMessage(text: string): SDKUserMessage {
 export class SdkRunner implements AgentRunner {
   private graceMs: number;
 
-  constructor(private o: { clot: string; env: Record<string, string>; graceMs?: number }) {
+  constructor(private o: { clot: string; env: Record<string, string>; graceMs?: number; /** The project's test command, which a locked turn may run. */ testCommand?: string }) {
     this.graceMs = o.graceMs ?? 15_000;
   }
 
@@ -65,14 +70,20 @@ export class SdkRunner implements AgentRunner {
         effort: req.effort,
         ...(resume ? { resume } : { sessionId: req.newSessionId }),
         cwd: CWD,
-        permissionMode: req.planMode ? "plan" : "bypassPermissions",
+        // The lock: in the default mode Claude Code puts everything that is not plainly read-only
+        // to the callback below. Plan mode is not used, because it never consults the callback.
+        permissionMode: req.locked ? "default" : "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         settings: { attribution: { pr: PR_ATTRIBUTION } },
-        // Its prompts cannot be shown in chat; the Clot asks in plain text instead.
-        disallowedTools: ["AskUserQuestion"],
-        // Only consulted in plan mode; bypassPermissions approves before the callback.
-        ...(req.planMode
-          ? { canUseTool: async () => ({ behavior: "deny" as const, message: "Brainstorm mode: no changes until the user says to start working." }) }
+        // AskUserQuestion: its prompts cannot be shown in chat; the Clot asks in plain text instead.
+        disallowedTools: req.locked ? ["AskUserQuestion", ...LOCK_REMOVED_TOOLS] : ["AskUserQuestion"],
+        ...(req.locked
+          ? {
+              canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
+                const verdict = lockDecision(toolName, toolInput, this.o.testCommand);
+                return verdict.ok ? { behavior: "allow" as const, updatedInput: toolInput } : { behavior: "deny" as const, message: verdict.reason };
+              },
+            }
           : {}),
         systemPrompt: { type: "preset", preset: "claude_code", append: CLOT_SYSTEM_PROMPT },
         spawnClaudeCodeProcess: makeSpawn({ container, cwd: CWD, env: this.o.env }),
@@ -130,7 +141,7 @@ export class SdkRunner implements AgentRunner {
       push: (text, effort) => {
         if (!input.push(userMessage(text))) return false;
         tracker.onPush();
-        void session.applyFlagSettings({ effortLevel: effort }).catch(() => undefined);
+        if (effort) void session.applyFlagSettings({ effortLevel: effort }).catch(() => undefined);
         return true;
       },
       done,

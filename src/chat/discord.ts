@@ -67,6 +67,11 @@ export class DiscordChat implements ChatAdapter {
     await channel.permissionOverwrites.edit(this.guild.roles.everyone, { SendMessages: false });
   }
 
+  async deleteChannel(channelId: string): Promise<void> {
+    const channel = await this.textChannel(channelId);
+    await channel.delete();
+  }
+
   mention(userId: string): string {
     return `<@${userId}>`;
   }

@@ -12,7 +12,8 @@ function countLines(text: string): number {
  */
 export class ActivityCollector {
   private files = new Map<string, FileChange>();
-  private commands: string[] = [];
+  /** Keyed by the tool call's ID, so a command the lock refused can be taken out again. */
+  private commands = new Map<string, string>();
 
   constructor(private root: string) {}
 
@@ -22,15 +23,24 @@ export class ActivityCollector {
     if (m.type === "assistant" && Array.isArray(m.message?.content)) {
       for (const block of m.message.content) {
         if (block?.type === "tool_use" && block.name === "Bash" && typeof block.input?.command === "string") {
-          this.commands.push(block.input.command);
+          this.commands.set(String(block.id), block.input.command);
         }
       }
     }
-    if (m.type === "user") this.observeResult(m.tool_use_result);
+    if (m.type === "user") {
+      this.observeResult(m.tool_use_result);
+      if (Array.isArray(m.message?.content)) {
+        for (const block of m.message.content) {
+          if (block?.type === "tool_result" && block.is_error === true && JSON.stringify(block.content ?? "").includes("Refused:")) {
+            this.commands.delete(String(block.tool_use_id));
+          }
+        }
+      }
+    }
   }
 
   activity(): TurnActivity {
-    return { files: [...this.files.values()], commands: [...this.commands] };
+    return { files: [...this.files.values()], commands: [...this.commands.values()] };
   }
 
   private observeResult(result: unknown): void {

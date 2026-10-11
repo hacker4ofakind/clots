@@ -15,6 +15,10 @@ turn.
 When an event arrives while the Clot is already working and bears on that work, the
 user is asked whether to feed it into the running turn.
 
+Automated reports about the same pull request or branch (failed CI runs, failed
+deploy previews) are held briefly and reach the Clot as one event. A review reaches
+the Clot together with its inline comments.
+
 GitHub is the only source. The rulebook is read from files and edited by hand.
 
 ## 2. Changes to the parent design
@@ -44,6 +48,9 @@ GitHub is the only source. The rulebook is read from files and edited by hand.
 |---|---|---|
 | Intake server | An HTTP server inside the daemon. Verifies GitHub's signature, drops repeated deliveries by delivery ID, stores the event, and answers GitHub without waiting for anything else. | Webhook secret, store |
 | GitHub adapter | Turns a GitHub payload into the common event (section 4). Pure. | None |
+| Hold | Keeps automated events back for a short while, grouped by Clot and subject, and releases each group together (section 6). | A timer |
+| Batch | Turns the events of a released group into one event (section 6). Pure. | None |
+| Review reader | Fetches a review's inline comments from GitHub and adds them to the review's event. | The Clots' token |
 | Rulebook | Loads the rule files; answers whether an event is dropped and what triage guidance applies. Read-only in 2a. | Rule files |
 | Triage | One Sonnet 5.5 call at low effort, no tools, fixed output schema. | Rulebook guidance |
 | Explainer | One Haiku 5.5 call at medium effort, no tools. Writes the message for a steering question. | None |
@@ -69,6 +76,8 @@ Every source produces the same shape. In 2a only GitHub does.
 | `body` | The relevant text, trimmed to a fixed length |
 | `url` | A link to the thing on GitHub |
 | `ref` | The issue or pull request number, or the branch for a CI run |
+| `subject` | What the event is about: `pr:14`, `issue:7` or `branch:main`. A CI run's subject is its pull request when GitHub names one, otherwise its branch. |
+| `automated` | Whether a machine produced it: every CI run, and anything from a bot account |
 | `receivedAt` | When the daemon received it |
 
 The five kinds, and the GitHub deliveries that produce them:
@@ -82,8 +91,12 @@ The five kinds, and the GitHub deliveries that produce them:
 | `ci_failed` | `workflow_run`: `completed` with conclusion `failure` or `timed_out` |
 
 Any other delivery is acknowledged and discarded. A review's individual line
-comments are not separate events; the Clot reads them when it investigates the
-review.
+comments are not separate events; the daemon reads them and adds them to the
+review's event (section 6).
+
+A sixth kind, `batch`, is never produced by a source. The daemon makes it from
+several automated events about one subject (section 6). Pre-filter rules cannot
+name it.
 
 ## 5. Self-caused events
 
@@ -93,7 +106,8 @@ dropped when its actor is that login and its kind is `issue_opened`, `comment`,
 
 `ci_failed` is never dropped by this rule. GitHub names the account that pushed as
 the actor of a CI run, so a failure on the Clot's own branch carries the Clot's
-login, and it is exactly what the Clot must hear about.
+login, and it is exactly what the Clot must hear about. A `batch` is never dropped
+by it either: each event in it passed this rule when it arrived.
 
 ## 6. The pipeline
 
@@ -108,7 +122,12 @@ login, and it is exactly what the Clot must hear about.
 5. **Route.** The repository picks the Clot. In 2a each repository is bound to one
    Clot through the Clot's `repoUrl`. An event for an unbound repository is logged
    and discarded.
-6. **Triage** returns four answers: needs action, a one-line message for the user,
+6. **Hold.** An automated event is kept back and gathered with others about the
+   same subject ("Holding automated events" below). What comes out is one event:
+   the event itself, or a `batch`. Events written by people skip this step.
+7. **Inline comments.** A review's inline comments are fetched and added to its
+   body ("Inline review comments" below).
+8. **Triage** returns four answers: needs action, a one-line message for the user,
    urgent, suspicious. When a turn is running for that Clot, triage also receives
    the last four messages of the conversation and returns a fifth answer: relevant
    to what is happening right now.
@@ -118,16 +137,16 @@ login, and it is exactly what the Clot must hear about.
      action.
    - Needs no action: the event stops here, silently.
    - `urgent` is recorded. It has no effect until stage 2d.
-7. **Steering question**, only when a turn is running and triage said relevant now
+9. **Steering question**, only when a turn is running and triage said relevant now
    (section 8). Its outcome is steer, queue or drop.
-8. **Queue.** The one-line message is posted in the Clot's live channel and the
+10. **Queue.** The one-line message is posted in the Clot's live channel and the
    event joins the Clot's queue. Events and the user's messages share one queue and
    are handled in arrival order. An event never joins a running turn except through
-   step 7.
-9. **Investigate.** The event runs as a turn of its own under the lock
+   step 9.
+11. **Investigate.** The event runs as a turn of its own under the lock
    (section 7), wrapped and labelled as untrusted external data. The Clot replies
    with what it found and one or two options.
-10. **The user answers in chat**, which starts a normal turn. A comment the user
+12. **The user answers in chat**, which starts a normal turn. A comment the user
     writes on GitHub is an event like any other: instructions come only through
     chat.
 
@@ -136,6 +155,44 @@ rollover.
 
 If the triage call fails, the event is treated as needing action, not urgent, not
 suspicious and not relevant now, so it is queued and nothing is lost silently.
+
+### Holding automated events
+
+One push often sets off several automated reports within a minute: a failed CI
+run, the same run reported a second time for the pull request, and a comment from
+each deploy service. Each would otherwise get its own investigation, and the
+investigations would say the same thing.
+
+- **What is held:** events marked `automated`. Issues, comments, reviews and pull
+  requests from people are never delayed.
+- **Grouping:** by Clot and `subject`.
+- **How long:** a group is released 60 seconds after its last event arrived, and
+  at the latest 120 seconds after its first. Both are set in the configuration
+  (`hold.quietSeconds`, `hold.capSeconds`).
+- **Repeats:** within a group, CI failures with the same title (the same workflow
+  on the same branch) count once; the latest is kept.
+- **One event left:** it goes on unchanged.
+- **Several left:** they become one `batch` event. Its title says how many reports
+  there are and what they are about; its body lists each report's title, actor,
+  link and text; its link is the pull request, or the first report when the
+  subject is a branch. The events it was made from are recorded as merged into it.
+- **From there on a batch is an event like any other:** one triage call, one
+  notice, one steering question or one investigation. If triage finds it
+  suspicious, the whole batch is reported and stopped.
+- **Restart:** held events are stored. At startup their wait is over, and each
+  group is released at once.
+- **Known limit:** a report that arrives after its group was released (a CI job
+  that takes five minutes) is handled by itself.
+
+### Inline review comments
+
+GitHub sends a review without its inline comments, and they are often all the
+review says. Before triage, the daemon fetches them with the Clots' token and
+adds them to the event's body: for each, the file, the line number or range, the text,
+and the code it is on. They
+are part of the event from then on: triage sees them, the Clot sees them, and
+they are inside the same untrusted block and the same length limit as the rest
+of the body. The lock is unchanged: a locked turn is not given `gh api`.
 
 ## 7. The lock
 
@@ -178,9 +235,16 @@ appear:
   execution;
 - flags that make a reader write or execute: `find` with `-exec`, `-execdir`,
   `-ok`, `-okdir`, `-delete` or any `-fprint` or `-fls` form; `rg` with `--pre`
-  or `--hostname-bin`; `sort` with `-o`, `--output` or `--compress-program`;
-  `git` with any option before the subcommand, or with `--output`, `--ext-diff`
-  or `--open-files-in-pager`; `tree` with `-o`; `gh` with `--web`;
+  or `--hostname-bin`; `sort` with `-o`, or with any long option beginning
+  `--o` or `--co`; `git` with any option before the subcommand, or with
+  `--output` or `--ext-diff`; `git grep` with `-O` or any long option beginning
+  `--op`; `tree` with `-o`; `gh` with `--web`;
+- `uniq` with more than one argument that is not an option: it writes to a
+  second file. An option's value must be attached, as in `-f1`;
+- the long options above in any shortened form. GNU `sort` and `git grep` accept
+  a long option cut short, so `sort --o=FILE` is `--output` and
+  `git grep --op=PROGRAM` is `--open-files-in-pager`; that is why they are
+  matched by their first letters;
 - `ping` without a count, or with a count above ten.
 
 Anything the checker cannot parse with confidence is refused. A refusal tells the
@@ -207,7 +271,7 @@ Three things to know about the approved set:
 
 ## 8. Steering a relevant event into a running turn
 
-When step 7 of the pipeline applies:
+When step 9 of the pipeline applies:
 
 1. The daemon creates a temporary channel in the Clot's category, named
    `<clot>-ask`, then `<clot>-ask-2` and so on while others are open.
@@ -220,7 +284,7 @@ When step 7 of the pipeline applies:
 | Reply | Outcome |
 |---|---|
 | `yes`, `sure`, `do that`, `yeah` | Steer: the event is fed into the running turn |
-| `after`, `not rn`, `once youre done` | Queue: step 8 of the pipeline |
+| `after`, `not rn`, `once youre done` | Queue: step 10 of the pipeline |
 | `dont`, `not at all`, `no` | Drop: the Clot never acts on it |
 | anything else | The question is repeated in the same channel, with the accepted replies |
 
@@ -278,7 +342,16 @@ The plan walks the user through each of these. None is automated in 2a.
 ## 11. Failure handling
 
 - **Daemon down:** GitHub retries failed deliveries. An event that was stored is
-  picked up after a restart from the step it had reached.
+  picked up after a restart from the step it had reached. Events that were being
+  held are released at once.
+- **Daemon starting:** the intake port is taken before anything else is read or
+  changed, and deliveries are stored from that moment; they are handled once the
+  rest has started, which can take as long as finishing a turn the restart cut
+  off.
+- **A second daemon is started:** it finds the port taken, says so and stops,
+  having touched nothing.
+- **A review's inline comments cannot be fetched:** the review goes on with a line
+  in its body saying they could not be read.
 - **Triage or explainer call fails:** triage falls back as in section 6. If the
   explainer fails, the steering question uses the event's title and the one-line
   triage message.
@@ -290,11 +363,14 @@ The plan walks the user through each of these. None is automated in 2a.
 
 - Unit tests: signature verification; the adapter against recorded real payloads
   for each kind and for ignored deliveries; the self-caused rule, including the CI
-  exception; pre-filter matching; the command checker, with a table of commands
+  exception; pre-filter matching; the hold's timing; making a batch, including
+  repeated CI failures; formatting and fetching inline comments, against a fake
+  GitHub; the command checker, with a table of commands
   that must pass and must fail; reply matching for the steering question; the
   triage and explainer output parsers.
-- Pipeline tests with a fake triage, a fake explainer, and the stage 1 fakes for
-  chat and runner: each outcome of sections 6 and 8, including the lapse rules.
+- Pipeline tests with a fake triage, a fake explainer, a fake timer, and the
+  stage 1 fakes for chat and runner: each outcome of sections 6 and 8, including
+  the lapse rules, held events and batches.
 - A small labelled set of events to score the triage prompt.
 - Live checks at the end, as in stage 1.
 
@@ -307,6 +383,10 @@ In the development environment:
 - a review left on one of the Clot's pull requests does the same;
 - a failed CI run on one of the Clot's branches does the same;
 - the Clot's own pull requests and comments produce nothing;
+- a push that fails CI and a deploy preview produces one notice and one
+  investigation that covers them all;
+- a review whose only content is inline comments produces an investigation that
+  refers to those comments;
 - during an investigation, an attempt to edit a file or push is refused, and an
   approved command runs;
 - in brainstorm mode, a file-changing shell command is refused even when the Clot
@@ -334,6 +414,10 @@ spend log.
   machine at a stable public HTTPS address.
 - GitHub names the machine account, not the user, as the sender of what the Clot
   does; and names the pusher as the actor of a `workflow_run`.
+- A `workflow_run` delivery for a branch of the same repository lists that
+  branch's pull request, and a deploy service's comments come from an account
+  whose login ends in `[bot]`. (Both seen in the deliveries recorded and received
+  while building 2a.)
 - A message fed into a running turn that is under the lock is accepted in the same
   way as in a working turn. (Checked while planning; the plan repeats the check.)
 

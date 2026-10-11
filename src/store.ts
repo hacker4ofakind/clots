@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import type { ClotEvent } from "./events/types.js";
 import type { Effort, Mode, SeedReason, TailMessage } from "./types.js";
 
 export interface ClotRow {
@@ -22,6 +23,9 @@ export interface SessionRow {
 
 export type InboxStatus = "pending" | "running" | "done";
 
+/** A message from the user, or an event waiting for its own locked turn. */
+export type InboxKind = "message" | "event";
+
 export interface InboxRow {
   id: string;
   clot: string;
@@ -29,6 +33,31 @@ export interface InboxRow {
   text: string;
   receivedAt: number;
   status: InboxStatus;
+  kind: InboxKind;
+}
+
+/**
+ * Where an event stands. "received": stored, the pipeline has not finished with it.
+ * "held": an automated event waiting a short while for others about the same subject.
+ * "merged": gathered into a batch event, or a repeat of another; the note names it.
+ * "asking": a steering question is open. "queued": waiting for, or given, its own turn.
+ * "steered": fed into a running turn. "dropped": will not be acted on; the note says why.
+ */
+export type EventStatus = "received" | "held" | "merged" | "asking" | "queued" | "steered" | "dropped";
+
+export interface EventRow extends ClotEvent {
+  clot: string | null;
+  status: EventStatus;
+  note: string | null;
+  triageMessage: string | null;
+  urgent: boolean;
+}
+
+/** An open steering question: the temporary channel in which the user is asked about an event. */
+export interface AskRow {
+  eventId: string;
+  clot: string;
+  channelId: string;
 }
 
 const SCHEMA = `
@@ -55,6 +84,30 @@ CREATE TABLE IF NOT EXISTS inbox (
   received_at INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending'
 );
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  url TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  automated INTEGER NOT NULL DEFAULT 0,
+  received_at INTEGER NOT NULL,
+  clot TEXT,
+  status TEXT NOT NULL DEFAULT 'received',
+  note TEXT,
+  triage_message TEXT,
+  urgent INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS asks (
+  event_id TEXT PRIMARY KEY,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE
+);
 CREATE TABLE IF NOT EXISTS tail (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   clot TEXT NOT NULL,
@@ -77,7 +130,33 @@ function toSession(r: any): SessionRow {
 }
 
 function toInbox(r: any): InboxRow {
-  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status };
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind };
+}
+
+function toEvent(r: any): EventRow {
+  return {
+    id: r.id,
+    source: r.source,
+    kind: r.kind,
+    repo: r.repo,
+    actor: r.actor,
+    title: r.title,
+    body: r.body,
+    url: r.url,
+    ref: r.ref,
+    subject: r.subject,
+    automated: r.automated === 1,
+    receivedAt: r.received_at,
+    clot: r.clot,
+    status: r.status,
+    note: r.note,
+    triageMessage: r.triage_message,
+    urgent: r.urgent === 1,
+  };
+}
+
+function toAsk(r: any): AskRow {
+  return { eventId: r.event_id, clot: r.clot, channelId: r.channel_id };
 }
 
 export class Store {
@@ -89,6 +168,9 @@ export class Store {
     this.db.exec(SCHEMA);
     this.addColumn("sessions", "seed_reason", "TEXT NOT NULL DEFAULT 'context'");
     this.addColumn("clots", "next_effort", "TEXT");
+    this.addColumn("inbox", "kind", "TEXT NOT NULL DEFAULT 'message'");
+    this.addColumn("events", "subject", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
   }
 
   /** Columns added after the first release, so a database created by an earlier version keeps working. */
@@ -169,11 +251,64 @@ export class Store {
     this.db.prepare("UPDATE sessions SET interrupted = ? WHERE id = ?").run(interrupted ? 1 : 0, id);
   }
 
-  enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number }): boolean {
+  enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind }): boolean {
     const info = this.db
-      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at) VALUES (?, ?, ?, ?, ?)")
-      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt);
+      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at, kind) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt, m.kind ?? "message");
     return info.changes === 1;
+  }
+
+  /** Stores a new event. Returns false when one with the same ID is already stored. */
+  insertEvent(e: ClotEvent): boolean {
+    const info = this.db
+      .prepare("INSERT OR IGNORE INTO events (id, source, kind, repo, actor, title, body, url, ref, subject, automated, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(e.id, e.source, e.kind, e.repo, e.actor, e.title, e.body, e.url, e.ref, e.subject, e.automated ? 1 : 0, e.receivedAt);
+    return info.changes === 1;
+  }
+
+  getEvent(id: string): EventRow | undefined {
+    const r = this.db.prepare("SELECT * FROM events WHERE id = ?").get(id);
+    return r ? toEvent(r) : undefined;
+  }
+
+  /** Events in a given state, oldest first. */
+  eventsWithStatus(status: EventStatus): EventRow[] {
+    return this.db.prepare("SELECT * FROM events WHERE status = ? ORDER BY rowid").all(status).map(toEvent);
+  }
+
+  setEventStatus(id: string, status: EventStatus, note: string | null = null): void {
+    this.db.prepare("UPDATE events SET status = ?, note = ? WHERE id = ?").run(status, note, id);
+  }
+
+  /** Replaces an event's body, after the daemon has added to it. */
+  setEventBody(id: string, body: string): void {
+    this.db.prepare("UPDATE events SET body = ? WHERE id = ?").run(body, id);
+  }
+
+  setEventClot(id: string, clot: string): void {
+    this.db.prepare("UPDATE events SET clot = ? WHERE id = ?").run(clot, id);
+  }
+
+  recordTriage(id: string, message: string, urgent: boolean): void {
+    this.db.prepare("UPDATE events SET triage_message = ?, urgent = ? WHERE id = ?").run(message, urgent ? 1 : 0, id);
+  }
+
+  createAsk(a: AskRow): void {
+    this.db.prepare("INSERT INTO asks (event_id, clot, channel_id) VALUES (?, ?, ?)").run(a.eventId, a.clot, a.channelId);
+  }
+
+  askByChannel(channelId: string): AskRow | undefined {
+    const r = this.db.prepare("SELECT * FROM asks WHERE channel_id = ?").get(channelId);
+    return r ? toAsk(r) : undefined;
+  }
+
+  /** Open steering questions for a Clot, oldest first. */
+  openAsks(clot: string): AskRow[] {
+    return this.db.prepare("SELECT * FROM asks WHERE clot = ? ORDER BY rowid").all(clot).map(toAsk);
+  }
+
+  deleteAsk(eventId: string): void {
+    this.db.prepare("DELETE FROM asks WHERE event_id = ?").run(eventId);
   }
 
   nextPending(clot: string): InboxRow | undefined {

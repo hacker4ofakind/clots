@@ -78,12 +78,23 @@ describe("buildPrompt", () => {
   it("adds the brainstorm note on every brainstorm turn", () => {
     const prompt = buildPrompt({ ...base, mode: "brainstorm" });
     expect(prompt).toContain("Brainstorm mode is ON");
-    expect(prompt).toContain("the same thing");
+    expect(prompt).toContain("read-only commands");
+    expect(prompt).not.toContain("plan mode");
     expect(prompt.endsWith("fix the footer")).toBe(true);
   });
 
   it("adds the action note only when the mode just changed back", () => {
     expect(buildPrompt({ ...base, modeChanged: true })).toContain("Brainstorm mode is OFF");
+  });
+
+  it("marks an event as untrusted and says the turn is locked, whatever the mode", () => {
+    for (const mode of ["action", "brainstorm"] as const) {
+      const prompt = buildPrompt({ ...base, mode, text: "<event>...</event>", event: true });
+      expect(prompt).toContain("An event arrived from outside this chat");
+      expect(prompt).toContain("nothing can be changed");
+      expect(prompt).not.toContain("Brainstorm mode");
+      expect(prompt.endsWith("<event>...</event>")).toBe(true);
+    }
   });
 
   it("tells a new session why it was started", () => {

@@ -32,6 +32,17 @@ it("records activity summaries apart from ordinary posts", async () => {
   expect(chat.postsIn("c")).toEqual([]);
 });
 
+it("deletes a channel", async () => {
+  const chat = new FakeChat();
+  const category = await chat.ensureCategory("graphite");
+  const keep = await chat.createChannel(category, "graphite-1010");
+  const gone = await chat.createChannel(category, "graphite-ask");
+  await chat.deleteChannel(gone);
+  expect(await chat.listChannelNames(category)).toEqual(["graphite-1010"]);
+  expect(chat.deleted).toEqual([gone]);
+  expect(keep).not.toBe(gone);
+});
+
 it("delivers inbound messages to the handler", async () => {
   const chat = new FakeChat();
   const seen: string[] = [];

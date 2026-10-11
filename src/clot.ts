@@ -3,6 +3,8 @@ import { buildPrompt, CONTINUE_TEXT, MIDTURN_PREFIX, recapPrompt } from "./agent
 import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
 import { sessionChannelName } from "./chat/names.js";
 import { COMMAND_USAGE, parseCommand, type Command } from "./commands.js";
+import { formatEvent } from "./events/format.js";
+import type { ClotEvent } from "./events/types.js";
 import { nextMode, type Router } from "./router.js";
 import type { InboxRow, SessionRow, Store } from "./store.js";
 import type { Mode, SeedReason } from "./types.js";
@@ -19,6 +21,8 @@ export interface ClotDeps {
   now: () => Date;
   newId: () => string;
   schedule: (ms: number, fn: () => void) => void;
+  /** Called when no turn is running any more: after each turn, and once at startup. */
+  onTurnEnd?: (clot: string) => Promise<void>;
 }
 
 /** A command the daemon answers at once, without a turn and without the session. */
@@ -63,6 +67,8 @@ export class Clot {
     }
 
     if (store.requeueRunning(name) > 0) store.setInterrupted(store.activeSession(name)!.id, true);
+    // Nothing is running after a restart either.
+    await this.turnEnded();
 
     // A pause that expired while the daemon was down still goes through the resume path, so the cut-off work continues.
     if (clot.pausedUntil !== null) this.scheduleResume(clot.pausedUntil);
@@ -122,6 +128,39 @@ export class Clot {
     await this.drain();
   }
 
+  /** Whether a turn is running. */
+  isBusy(): boolean {
+    return this.live !== undefined;
+  }
+
+  /**
+   * Feeds text into the running turn. Returns false when it was not delivered: no turn
+   * is running, the turn no longer accepts input, or something the user sent earlier is
+   * still waiting for the turn to end and must not be overtaken.
+   */
+  steerEvent(text: string): boolean {
+    if (!this.live || this.d.store.nextPending(this.d.name)) return false;
+    return this.live.push(text);
+  }
+
+  /**
+   * Puts an event in the queue for a locked turn of its own, and posts its one-line
+   * notice. With kick false the caller is the Clot's own after-turn hook, and the
+   * drain that called it carries on by itself.
+   */
+  async queueEvent(event: ClotEvent, notice: string, kick = true): Promise<void> {
+    const { store, chat, name } = this.d;
+    const session = store.activeSession(name)!;
+    store.enqueue({ id: `event:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event" });
+    store.setEventStatus(event.id, "queued");
+    await chat.post(session.channelId, `${notice} <${event.url}>`).catch(() => undefined);
+    if (kick) void this.drain().catch((error) => console.error(`[${name}]`, error));
+  }
+
+  private async turnEnded(): Promise<void> {
+    await this.d.onTurnEnd?.(this.d.name).catch((error) => console.error(`[${this.d.name}] after-turn hook failed:`, error));
+  }
+
   /** Works through pending messages one at a time. Only one drain runs; a call made while one is active does nothing. */
   private async drain(): Promise<void> {
     const { store, name } = this.d;
@@ -158,7 +197,9 @@ export class Clot {
     const session = store.activeSession(name)!;
     const mode = store.getClot(name)!.mode;
 
-    const command = parseCommand(row.text);
+    // An event is data: text in it that looks like a command is not one.
+    const isEvent = row.kind === "event";
+    const command: Command = isEvent ? { kind: "none" } : parseCommand(row.text);
     const instant = instantCommand(command);
     if (instant) {
       await this.runInstant(row.id, session.channelId, instant);
@@ -186,7 +227,7 @@ export class Clot {
     const stopTyping = chat.startTyping(session.channelId);
     let result: TurnResult;
     try {
-      result = await this.runTurn(row, session, mode, command);
+      result = isEvent ? await this.runEventTurn(row, session, mode) : await this.runTurn(row, session, mode, command);
     } finally {
       this.live = undefined;
       stopTyping();
@@ -195,6 +236,7 @@ export class Clot {
     if (result.activity && result.activity.files.length + result.activity.commands.length > 0) {
       await chat.postActivity(session.channelId, result.activity).catch(() => undefined);
     }
+    await this.turnEnded();
 
     // The session exists on disk once any model response has come back.
     if (result.ok || result.contextPercent > 0) store.markSessionStarted(session.id);
@@ -202,7 +244,10 @@ export class Clot {
     store.finishRunning(name);
 
     if (!result.ok && !result.limit) {
-      await chat.post(session.channelId, "That turn ended with an error. Send your message again to retry.");
+      await chat.post(
+        session.channelId,
+        isEvent ? "Looking into that event ended with an error. Ask me about it to try again." : "That turn ended with an error. Send your message again to retry.",
+      );
       return true;
     }
 
@@ -241,6 +286,33 @@ export class Clot {
     store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime() });
   }
 
+  /**
+   * Runs an event as a turn of its own, under the lock. The router still picks the
+   * effort. An event cannot change the mode, and does not use up a one-off effort:
+   * both belong to the user's own messages.
+   */
+  private async runEventTurn(row: InboxRow, session: SessionRow, mode: Mode): Promise<TurnResult> {
+    const { store, name } = this.d;
+    const decision = await this.d.router.decide({ text: row.text, mode, tail: store.tail(name, 4) });
+    store.setInboxStatus(row.id, "running");
+    this.live = this.d.runner.startTurn({
+      ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
+      prompt: buildPrompt({ text: row.text, mode, modeChanged: false, seed: session.seed, seedReason: session.seedReason, interrupted: session.interrupted, event: true }),
+      effort: decision.effort,
+      locked: true,
+      onText: this.sayIn(session.channelId),
+    });
+    return this.live.done;
+  }
+
+  /** What to do with each piece of text the Clot writes during a turn: remember it and post it, in order. */
+  private sayIn(channelId: string): (text: string) => void {
+    return (text) => {
+      this.d.store.appendTail(this.d.name, "clot", text);
+      this.posts = this.posts.then(() => this.d.chat.post(channelId, text)).catch(() => undefined);
+    };
+  }
+
   /** Routes the message, applies any mode change and runs the turn to its end. */
   private async runTurn(row: InboxRow, session: SessionRow, mode: Mode, command: Command): Promise<TurnResult> {
     const { store, chat, name } = this.d;
@@ -271,11 +343,8 @@ export class Clot {
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt,
       effort,
-      planMode: newMode === "brainstorm",
-      onText: (text) => {
-        store.appendTail(name, "clot", text);
-        this.posts = this.posts.then(() => chat.post(session.channelId, text)).catch(() => undefined);
-      },
+      locked: newMode === "brainstorm",
+      onText: this.sayIn(session.channelId),
     });
     return this.live.done;
   }
@@ -314,7 +383,7 @@ export class Clot {
         resume: old.id,
         prompt: recapPrompt(reason),
         effort: "medium",
-        planMode: true,
+        locked: true,
         onText: (text) => void parts.push(text),
       });
       await chat.post(old.channelId, words.notice).catch(() => undefined);
