@@ -112,9 +112,11 @@ login, and it is exactly what the Clot must hear about.
    urgent, suspicious. When a turn is running for that Clot, triage also receives
    the last four messages of the conversation and returns a fifth answer: relevant
    to what is happening right now.
-   - Needs no action: the event stops here, silently.
    - Suspicious: a warning with the one-line message is posted in the Clot's
-     channel, and the event goes no further.
+     channel, and the event goes no further. This is checked first: triage usually
+     says of an injection attempt both that it is suspicious and that it needs no
+     action.
+   - Needs no action: the event stops here, silently.
    - `urgent` is recorded. It has no effect until stage 2d.
 7. **Steering question**, only when a turn is running and triage said relevant now
    (section 8). Its outcome is steer, queue or drop.
@@ -265,8 +267,10 @@ for the turn to end and is handled in order.
 The plan walks the user through each of these. None is automated in 2a.
 
 - Create the Clots' GitHub account, invite it to the test repository as a
-  collaborator, and make a fine-grained token on it with the stage 1 permissions.
-  Replace `CLOT_GITHUB_TOKEN`.
+  collaborator, and make a classic token on it with the `repo` scope. A
+  fine-grained token cannot reach a repository its account is only a collaborator
+  on; a classic token reaches exactly the repositories the account has been invited
+  to. Replace `CLOT_GITHUB_TOKEN`.
 - Install Tailscale and enable Funnel for the intake port.
 - Add a webhook on the repository: the Funnel address, a secret that is also put in
   `.env`, content type JSON, and the five GitHub events of section 4.
