@@ -1,9 +1,10 @@
 # Clots stage 2a: pipeline with one source
 
 Date: 2026-10-11
-Status: approved in brainstorming; ready for an implementation plan.
+Status: implemented.
 Parent design: `.superpowers/specs/2026-10-10-clots-design.md`. This document
-specifies the first of the four parts of stage 2 (section 16 there).
+specifies the first of the four parts of stage 2 (section 16 there). Plan:
+`.superpowers/plans/2026-10-11-clots-stage-2a-pipeline.md`.
 
 ## 1. What 2a delivers
 
@@ -21,26 +22,26 @@ the Clot together with its inline comments.
 
 GitHub is the only source. The rulebook is read from files and edited by hand.
 
-## 2. Changes to the parent design
+## 2. Where 2a sits in the parent design
 
-2a settles these points, which the parent design left open or decided differently:
+2a builds these parts of the parent design, and is where each is specified in
+full:
 
-- **The Clots have their own GitHub account.** One machine account serves all of a
-  user's Clots. Each Clot's token belongs to it, and it is a collaborator on each
-  bound repository. This replaces acting as the user's account.
-- **One built-in drop.** The parent design has no built-in drops. 2a adds one:
-  events the Clot caused itself (section 5).
-- **Investigation is locked by the daemon**, not only by instruction (section 7).
-- **Brainstorm mode moves onto the same lock.** Stage 1 ran it in plan mode with a
-  callback that refuses everything. Plan mode never consults that callback: a
-  session in that configuration ran file-changing shell commands when told to. Only
-  the model's own restraint was holding. Brainstorm mode no longer uses plan mode.
-- **Relevance to a running turn applies to every turn**, with the user's approval
-  (section 8). The parent design has it for brainstorm mode only, decided by triage
-  alone; stage 2d builds its brainstorm gate on the mechanism defined here.
-- **Webhooks reach the development machine through Tailscale Funnel.** The parent
-  design prefers Cloudflare Tunnel where the user's DNS is on Cloudflare; this
-  user's is not, and moving it is not acceptable.
+- **The Clots' own GitHub account** (parent section 7). One machine account serves
+  all of a user's Clots. Each Clot's token belongs to it, and it is a collaborator
+  on each bound repository.
+- **The one built-in drop** (parent section 3): events the Clot caused itself
+  (section 5 here).
+- **The lock** (parent section 7), enforced by the daemon and not only by
+  instruction (section 7 here).
+- **Brainstorm mode on the same lock** (parent section 6). Plan mode is not used
+  for it: plan mode never consults the daemon, so only the model's restraint would
+  hold.
+- **The steering question** (parent section 3): an event that bears on a running
+  turn joins it only with the user's approval, whatever kind of turn it is
+  (section 8 here). The brainstorm gate of stage 2d is built on it.
+- **Holding automated events** (parent section 3), in section 6 here.
+- **Tailscale Funnel** as the way webhooks reach the daemon (parent section 9).
 
 ## 3. Components
 

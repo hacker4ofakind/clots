@@ -1,7 +1,7 @@
 # Clots: design
 
 Date: 2026-10-10
-Status: approved in brainstorming. Stage 1 is implemented; stage 2 is next.
+Status: approved in brainstorming. Stages 1 and 2a are implemented; stage 2b is next.
 
 ## 1. What Clots is
 
@@ -11,8 +11,9 @@ belong to no project. A Clot:
 
 - is triggered by events from connected services, by the user's chat messages, and
   by a 90-minute clock;
-- investigates on its own, proposes one or two actions, and after the user's
-  go-ahead carries the work through to an open pull request;
+- investigates on its own, under a lock that lets it change nothing, proposes one
+  or two actions, and after the user's go-ahead carries the work through to an open
+  pull request;
 - has its own isolated computer (a container with a repo clone and a browser);
 - lives in one long session, rolled over into a fresh session with a written recap
   when context reaches 65% or when the user closes it;
@@ -42,9 +43,12 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 
 | Component | Responsibility | Depends on |
 |---|---|---|
-| Intake | Receive webhooks, hold IMAP IDLE connections, run watch recipes, fire the 90-minute tick. Normalise everything into one event format carrying source, arrival time and payload. | Tunnel, source credentials |
-| Rulebook | Files under version control, one global and one per Clot: pre-filters, routing match rules, triage guidance, urgency markers, standing-rule templates, watch recipes. | None |
+| Intake | Receive webhooks, hold IMAP IDLE connections, run watch recipes, fire the 90-minute tick. Verify each delivery, drop repeats, store the event and answer the source at once. Normalise everything into one event format (section 3). | Tunnel, source credentials |
+| Rulebook | A folder and git repository of its own, one file for every Clot and one per Clot: pre-filters, routing match rules, triage guidance, urgency markers, standing-rule templates, watch recipes. | None |
+| Hold | Keeps automated events (CI runs, anything from a bot account) back for a minute or two and gathers those about the same pull request or branch into one event. | A timer |
 | Triage | Sonnet 5.5 (`claude-sonnet-5-5`), low effort, no tools, fixed output schema. | Rulebook |
+| Steering | Asks the user, in a temporary channel, whether an event that bears on the running turn should be fed into it. The question is written by the explainer: Haiku 5.5, medium effort, no tools. | Chat adapter |
+| Lock | Decides what a locked turn may do: read, look things up, and run a fixed list of read-only commands. Asked before every tool call. | None |
 | Gates | Decide whether an event is delivered now or queued. | Usage events, schedule, mode |
 | Router | Haiku 5.5 (`claude-haiku-5-5`), medium effort, no tools. Picks the effort level for every prompt and detects brainstorm start and stop. | Recent messages |
 | Session manager | Start a Clot's process for a turn, resume its session, apply effort and mode, stop the process afterwards. Enforce one heavy job at a time per host. | Agent SDK, Docker |
@@ -57,38 +61,119 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 
 ## 3. Event pipeline
 
-1. **Intake** receives the event and stamps the arrival time.
-2. **Pre-filter**: deterministic rulebook rules drop events. Nothing is dropped
-   unless a rule says so; there are no built-in drops (the user's own pull requests,
-   for example, pass through).
-3. **Routing**: match rules bind the event to a project (section 5). Unmatched
-   events from shared sources are routed by triage in step 4. If triage is not
+1. **Intake** verifies the delivery, drops a repeat, stores the event, stamps the
+   arrival time and answers the source. Everything after this happens once the
+   source has its answer, so an event that was acknowledged is never lost.
+2. **Self-caused drop**: an event the Clots' own account caused is dropped: the
+   Clot's own pull requests, comments and reviews. A failed CI run is never
+   dropped this way, although the account that pushed is named as its actor. This
+   is the only built-in drop.
+3. **Pre-filter**: deterministic rulebook rules drop events. Nothing else is
+   dropped without a rule (the user's own pull requests, for example, pass
+   through).
+4. **Routing**: match rules bind the event to a project (section 5). Unmatched
+   events from shared sources are routed by triage in step 7. If triage is not
    confident, the event goes to the home Clot.
-4. **Triage** returns: needs action (yes or no), project, a one-line message for
-   the user, urgent (yes or no), suspicious (yes or no). Events that need no action
-   stop here.
-5. **Gates** deliver the event now or queue it (section 8).
-6. The one-line message is posted in the Clot's live channel, for example "Sentry
-   just reported a crash – investigating it now."
-7. **Router** picks the effort level.
-8. **Session manager** resumes the Clot's session, applies the effort level, and
-   delivers the event wrapped and labelled as untrusted external data.
-9. The Clot investigates read-only, using subagents for the digging, then proposes
-   one or two options and waits.
-10. After the user's go-ahead it works through to an open pull request
-    (section 7).
-11. After the turn the daemon posts a summary of what the turn changed and ran,
+5. **Hold**: an automated event waits a short while and is gathered with others
+   about the same subject ("Automated events" below). Events written by people
+   skip this step.
+6. **Enrichment**: what the source left out of the delivery and the Clot will
+   need is fetched and added to the event. For GitHub that is a review's inline
+   comments, with file, line and the code commented on.
+7. **Triage** returns: needs action (yes or no), project, a one-line message for
+   the user, urgent (yes or no), suspicious (yes or no), and, when a turn is
+   running for that Clot, whether the event bears on that turn right now. A
+   suspicious event is reported to the user and goes no further; this is checked
+   first. Events that need no action stop here, silently. If the triage call
+   fails, the event is delivered.
+8. **Gates** deliver the event now or queue it (section 8).
+9. **Steering question**, only when a turn is running and triage said the event
+   bears on it ("Steering" below). The user decides: feed it into the turn, queue
+   it, or drop it.
+10. **Queue**: the one-line message is posted in the Clot's live channel, for
+    example "Sentry just reported a crash – investigating it now.", and the event
+    joins the Clot's queue. Events and the user's messages share one queue and are
+    handled in arrival order.
+11. **Router** picks the effort level.
+12. **Session manager** resumes the Clot's session, applies the effort level, and
+    delivers the event as a turn of its own, wrapped and labelled as untrusted
+    external data.
+13. The Clot investigates under the lock (section 7), using subagents for the
+    digging, then proposes one or two options and waits.
+14. The user answers in chat, which starts a normal turn. After the go-ahead the
+    Clot works through to an open pull request (section 7). What the user writes
+    on the source itself, such as a comment on GitHub, is an event like any other:
+    instructions come only through chat.
+15. After the turn the daemon posts a summary of what the turn changed and ran,
     reads context usage, and rolls the session over at 65% or more (section 6).
 
 Entry points other than events:
 
-- **User messages** enter at step 7. Triage does not run on them. A message that
+- **User messages** enter at step 11. Triage does not run on them. A message that
   is a command (section 6) is handled by the daemon and goes no further.
 - **The 90-minute tick** starts a sweep (section 9). It is skipped while the Clot
-  is working. Sweep findings enter at step 2 as ordinary events.
+  is working. Sweep findings enter at step 3 as ordinary events.
 
 Whenever several queued events are delivered together, each is shown with its
 arrival time in the user's configured timezone.
+
+### The common event
+
+Every source is turned into the same shape before anything else looks at it:
+
+| Field | Meaning |
+|---|---|
+| `id` | The source's delivery ID. Unique; used to drop repeats. |
+| `source` | Where it came from |
+| `kind` | What happened. For GitHub: an issue opened, a comment, a review, a pull request opened, a failed CI run. |
+| `repo` | The project it belongs to at the source |
+| `actor` | Who caused it |
+| `title` | One line: what happened |
+| `body` | The relevant text, trimmed to a fixed length |
+| `url` | A link to the thing at the source |
+| `ref` | The issue or pull request number, or the branch for a CI run |
+| `subject` | What the event is about: a pull request, an issue or a branch |
+| `automated` | Whether a machine produced it |
+| `receivedAt` | When the daemon received it |
+
+One more kind, `batch`, is never produced by a source: the daemon makes it from
+several automated events about one subject.
+
+### Automated events
+
+One push often sets off several automated reports within a minute: a failed CI
+run, the same failure reported again for the pull request, a comment from each
+deploy service. Investigated one by one they would produce the same findings
+several times over.
+
+- Automated events are held, grouped by Clot and subject. A group is released 60
+  seconds after its last event and at most 120 seconds after its first; both are
+  configurable.
+- Within a group the same CI failure counts once. If one event is left it goes on
+  unchanged; several become one `batch` event that lists them.
+- From there a batch is an event like any other: one triage call, one notice, one
+  question or one investigation.
+- Held events are stored. After a restart their wait is over and each group is
+  released at once. Storing a batch and marking what it was made from is one
+  database transaction.
+
+### Steering
+
+An event never joins a running turn by itself. When triage says an event bears on
+the turn that is running, whatever kind of turn it is:
+
+- the daemon opens a temporary channel in the Clot's category (`<clot>-ask`),
+  mentions the user, and says what happened and how it bears on the work, in the
+  explainer's words;
+- the user's reply is matched exactly, after lowercasing and removing
+  punctuation: `yes`, `sure`, `do that` or `yeah` feeds the event into the turn;
+  `after`, `not rn` or `once youre done` queues it; `dont`, `not at all` or `no`
+  drops it; anything else repeats the question;
+- the channel is deleted when the outcome has been carried out;
+- an unanswered question lapses to "queue" when the turn ends, and at startup,
+  when no turn is running; each question is closed exactly once;
+- a steered event is still untrusted data: the user's yes lets it into the turn
+  and does not make its text an instruction.
 
 ## 4. Models and effort
 
@@ -97,6 +182,7 @@ arrival time in the user's configured timezone.
 | Clot main session | Opus 5.5 (`claude-opus-5-5`) | Chosen per prompt by the router |
 | Triage | Sonnet 5.5 | Low |
 | Router | Haiku 5.5 | Medium |
+| Explainer (steering questions) | Haiku 5.5 | Medium |
 | Sweep | Sonnet 5.5 | Medium |
 | Subagents | Chosen by the main session; default Sonnet 5.5 at medium | |
 
@@ -124,10 +210,13 @@ The router sees the new prompt and the last few messages, because a reply such a
 ### Subagents
 
 A message sent while the Clot is working is fed into the live turn through
-streaming input. Three kinds of message wait for a turn of their own instead, so
-that messages always take effect in the order the user sent them:
+streaming input. Four kinds of message wait for a turn of their own instead, so
+that messages always take effect in the order the user sent them, and in a turn
+that can do what they ask:
 
 - one that changes the mode, because a turn's permissions are fixed when it starts;
+- one sent in action mode while an investigation is running: the investigation is
+  locked, and the message is owed a working turn;
 - one sent after an earlier message that is itself still waiting;
 - one that arrives after the turn has stopped accepting input.
 
@@ -144,7 +233,8 @@ second router.
 ### Routing
 
 - Each source is bound to one project at setup. Sources that belong to no project
-  are bound to the home Clot.
+  are bound to the home Clot. A GitHub repository is bound to the Clot whose
+  `repoUrl` names it.
 - A shared source (one inbox or one Stripe account serving several projects) carries
   several bindings, each with a deterministic match condition: recipient alias,
   sender domain, subject keyword, product or price ID.
@@ -153,9 +243,16 @@ second router.
 
 ### Rulebook
 
-- Readable files under version control: one global, one per Clot.
+- Readable files in a folder and git repository of their own, apart from the
+  Clots code: `global.yaml` for every Clot and `<clot>.yaml` for one. The daemon
+  creates the folder and its starter files when they are missing.
 - Contents: pre-filters, routing match rules, plain-language triage guidance,
-  urgency markers, standing-rule templates, watch recipes.
+  urgency markers, standing-rule templates, watch recipes. A pre-filter drops an
+  event when every field it names matches: kind, actor, and text the title
+  contains.
+- The daemon reloads a file when it changes. A file that cannot be read or does
+  not fit the schema is ignored: its last good version stays in force and the user
+  is told once.
 - Edits the user asks for in chat are applied immediately and the resulting rule is
   shown.
 - Edits the Clot suggests need the user's yes.
@@ -254,13 +351,14 @@ yet and no recap, it does nothing.
 ### Brainstorm mode
 
 - The router detects the user asking to start or stop brainstorming.
-- While brainstorming, the daemon runs the session in plan mode and refuses every
-  tool request that needs permission. The Clot can read code, browse and look
-  things up; it cannot change anything.
-- A mode instruction tells the Clot that brainstorm mode and plan mode are the same
-  thing here, to stay in ideation, and not to close replies with offers to act. The
-  user usually reads on a phone and cannot open files, so thinking and plans go in
-  the reply; a plan file is written only when the user asks for one.
+- While brainstorming, every turn runs under the lock (section 7), the same one
+  that holds during an investigation. The Clot can read code, run read-only
+  commands, browse and look things up; it cannot change anything. Claude Code's
+  plan mode is not used for this: it never consults the daemon, so only the
+  model's restraint would hold.
+- A mode instruction tells the Clot what it can and cannot do, to stay in
+  ideation, and not to close replies with offers to act. The user usually reads on
+  a phone and cannot open files, so thinking and plans go in the reply.
 - The Clot asks questions as plain text. The interactive question tool cannot reach
   the chat, so it is disabled in every mode.
 - The Clot posts a one-line marker when the mode changes.
@@ -283,15 +381,20 @@ yet and no recap, it does nothing.
 
 ### Enforcement
 
-- **Identity**: each Clot has its own least-privilege credentials scoped to its
-  project. On GitHub, a token that can push branches and open pull requests on the
-  bound repository. Elsewhere, read-only keys unless a standing rule needs more.
-- **Merges**: GitHub cannot tell a Clot from the user when the token belongs to the
-  user's own account, and the permission that pushes a branch also merges a pull
-  request. Blocking merges therefore needs the Clot to have its own GitHub account,
-  added as a collaborator, and a branch rule that requires an approving review.
-  GitHub enforces branch rules on private repositories only on paid plans. Without
-  these, the Clot's instructions are the only gate on merging.
+- **Identity**: the Clots act under credentials of their own, never the user's.
+  On GitHub, one machine account serves all of a user's Clots. It is invited as a
+  collaborator to each bound repository and holds a classic token with the `repo`
+  scope, which reaches exactly the repositories it was invited to. (A fine-grained
+  token cannot reach a repository its account is only a collaborator on.)
+  Elsewhere, read-only keys unless a standing rule needs more.
+- **Knowing its own work**: the daemon reads the account's login from the token
+  at startup. That is how an event the Clot caused itself is recognised (section
+  3).
+- **Merges**: the permission that pushes a branch also merges a pull request.
+  Because the Clots have their own account, a branch rule that requires an
+  approving review blocks them from merging. GitHub enforces branch rules on
+  private repositories only on paid plans. Without such a rule, the Clot's
+  instructions are the only gate on merging.
 - **Authorship**: commits are authored as `<name>-clot`, with the no-reply address
   of the GitHub account that owns the Clot's token. Hosts such as Vercel refuse to
   build a commit whose email matches no GitHub account. Pull request descriptions
@@ -300,21 +403,58 @@ yet and no recap, it does nothing.
 - **Sign-in**: each container is logged in to Claude once (section 10). Without that
   login the daemon falls back to a token from `claude setup-token`.
 - **Isolation**: the Claude Code process and all its built-in tools run inside the
-  container. Inside the container, tool calls are auto-approved; the container and
-  the scoped credentials are the boundary.
+  container. In a working turn, tool calls inside the container are auto-approved;
+  the container and the scoped credentials are the boundary. In a locked turn the
+  lock decides every call.
 - **Privileged actions** (sending from a template, editing the rulebook, posting to
   chat) exist only as daemon tools, outside the container.
 - **Secrets** are entered through the `clots` CLI, never through chat.
 
+### The lock
+
+A locked turn cannot change anything. Two kinds of turn are locked: a turn started
+for an event, and every turn while brainstorm mode is on. Editing, committing,
+pushing and sending are impossible until the lock is off: for an event, when the
+user replies; for brainstorming, when the mode ends.
+
+- **Enforced by the daemon, not by instruction.** A hook is asked before every
+  tool call of the turn, ahead of Claude Code's own permission rules, and refuses
+  whatever the lock does not approve. Nothing can pre-approve a call past it: not
+  an allow rule in the repository's settings, and not Claude Code's own list of
+  commands it considers read-only. The turn also runs in the default permission
+  mode with a callback that gives the same answer, and the tools that edit and
+  write files are removed from it.
+- **What is approved**: reading, searching and listing files; web search and web
+  fetch; subagents and skills; and a fixed list of shell commands that only read,
+  plus the project's own test command, given exactly. The list, and the flags and
+  shell features that are refused because they would make a reader write or run
+  something, are in the stage 2a specification.
+- **Refused when in doubt.** A command line is approved only when every command in
+  it is approved. Redirection, substitution, variables, subshells and background
+  execution are refused. Anything the checker cannot parse with confidence is
+  refused, and the refusal tells the Clot why, so it can say what it could not
+  check.
+- **A turn's lock is fixed when it starts, and what continues a turn keeps it.** A
+  message from the user is never used up in a turn with a different lock. An
+  investigation cut off by the usage limit is picked up again under the lock,
+  across a restart of the daemon as well.
+- **Known limit**: web fetch, web search and `ping` send a request to an address
+  of the Clot's choosing, so a Clot hijacked by an event's text could leak a short
+  secret through them. This is accepted: an investigation often needs the web.
+
 ### Untrusted input
 
-- Triage and the router have no tools and return a fixed schema.
+- Triage and the router have no tools and return a fixed schema. The explainer
+  has no tools either.
 - Their system prompts instruct them to treat event content as data and to
   disregard instructions inside it.
 - Event payloads are wrapped and labelled as untrusted when passed to the main
   session. The Clot's system prompt states that instructions come only from the
   user through chat.
-- A suspected injection is flagged to the user. The Clot takes no action on it.
+- A suspected injection is flagged to the user in the Clot's channel and never
+  reaches the Clot.
+- Text from an event that looks like a command is not one: an event cannot change
+  the mode, close a session or set an effort level.
 
 ## 8. Gates
 
@@ -322,11 +462,12 @@ An event that needs action passes these checks in order.
 
 1. **Usage limit reached**: queue. The Clot tells the user once, with the reset
    time. Work resumes when the limit resets.
-2. **Brainstorm mode on**: triage also receives the last two user messages and the
-   last two Clot messages, and judges whether the event is relevant to the
-   discussion. Relevant events are delivered now. Others are queued silently and
-   delivered as one batch when brainstorming ends. Exception: an event marked urgent
-   still gets its one-line notice immediately, with no investigation.
+2. **Brainstorm mode on**: events are queued silently and delivered as one batch
+   when brainstorming ends. An event that bears on the discussion is the
+   exception: it goes through the steering question of section 3, as during any
+   other turn, and nothing joins the conversation without the user's yes. An event
+   marked urgent still gets its one-line notice immediately, with no
+   investigation.
 3. **Scarce mode** (15:00–18:00, Monday to Friday by default, configurable per
    weekday): urgent events and the user's direct messages run normally. Other events
    get their one-line notice and are queued until the window ends. Sweeps are
@@ -354,10 +495,15 @@ passes a configured threshold.
 | Any other MCP connector | Watch recipe | 1 to 5 minutes |
 | Connectors that exist only in the user's claude.ai account | Sweep | Up to 90 minutes |
 
-- **Webhooks** reach the Pi through a tunnel: Cloudflare Tunnel on a subdomain of
-  the user's domain if its DNS can be hosted on Cloudflare, otherwise Tailscale
-  Funnel. Signatures are verified per source and duplicates are dropped by delivery
-  ID.
+- **Webhooks** reach the daemon through Tailscale Funnel, which gives the machine
+  a stable public HTTPS address without touching the user's DNS. The intake server
+  listens on localhost only (port 8787 by default, one path per source, such as
+  `/webhooks/github`). Signatures are verified per source and duplicates are
+  dropped by delivery ID. The source is answered as soon as the event is stored.
+- **GitHub** sends five kinds of event: an issue opened or reopened, a comment on
+  an issue or pull request, a review submitted, a pull request opened or reopened,
+  and a workflow run that failed or timed out. Every other delivery is
+  acknowledged and discarded.
 - **Watch recipes**: the daemon acts as an MCP client. On a timer it calls one
   read-only tool on a connector and diffs the result against the previous result.
   No model is involved. A recipe names the tool, its arguments, the field that
@@ -420,12 +566,20 @@ onboarding can be resumed.
 ## 12. Failure handling
 
 - **Daemon crash or power loss**: systemd restarts the daemon. The queue and state
-  are in SQLite with write-ahead logging. Sessions resume from disk.
+  are in SQLite with write-ahead logging. Sessions resume from disk. An event that
+  was stored is picked up from the step it had reached; events that were being
+  held are released at once; open steering questions lapse to the queue.
+- **Daemon starting**: the intake port is taken before anything else is read or
+  changed, and deliveries are stored from that moment. A second daemon finds the
+  port taken, says so and stops, having touched nothing.
+- **Triage or explainer call fails**: the event is delivered as needing action;
+  the steering question falls back to the event's bare facts.
 - **Turn interrupted**: the session is resumed and told its last turn was cut off.
   A session interrupted during its very first turn already has a transcript, so it
   is resumed, not created again.
 - **Paused at restart**: a usage-limit pause that expired while the daemon was down
-  is resumed at startup like one that expires while it is running.
+  is resumed at startup like one that expires while it is running. A turn that is
+  picked up again keeps its lock.
 - **Limit during a handoff**: a usage limit hit while the recap is being written
   pauses the Clot like any other. A `&close` is retried after the reset; a context
   rollover is retried after the next turn.
@@ -439,7 +593,8 @@ onboarding can be resumed.
   (`applyFlagSettings`) exists only in the TypeScript Agent SDK.
 - `@anthropic-ai/claude-agent-sdk`.
 - SQLite for the queue, events, bindings and spend log.
-- Plain files in a git repository for the rulebook.
+- Plain YAML files in a git repository of their own for the rulebook.
+- Node's built-in HTTP server for intake, behind Tailscale Funnel.
 - discord.js for Discord, behind the chat adapter interface.
 - An IMAP library with IDLE support.
 - Docker; one image built for arm64 and x64.
@@ -448,7 +603,10 @@ onboarding can be resumed.
 ## 14. Testing
 
 - Unit tests for pure logic: pre-filters, routing, gates, the five-word check,
-  schedules, channel naming.
+  schedules, channel naming, reply matching, the hold's timing.
+- The lock's command checker is tested against two tables: commands that must
+  pass and commands that must be refused. A command added to the approved list
+  brings its ways of writing or executing into the second table.
 - Source adapters tested against recorded real payloads.
 - Model steps sit behind an interface. The pipeline is tested with fakes. A small
   labelled set of events scores the triage and router prompts whenever they change.
@@ -496,9 +654,10 @@ Each stage gets its own specification and plan.
 1. **Runtime and Discord.**
 2. **Intake, triage and rulebook**, built in four parts, each with its own
    specification and plan:
-   - **2a. Pipeline with one source**: the event format, intake, pre-filter,
-     routing, triage, delivery under an investigate lock, a read-only rulebook, and
-     GitHub as the only source
+   - **2a. Pipeline with one source**: the event format, intake, the self-caused
+     drop, pre-filter, routing, holding automated events, triage, the steering
+     question, the lock for investigations and for brainstorm mode, the Clots' own
+     GitHub account, a rulebook edited by hand, and GitHub as the only source
      (`.superpowers/specs/2026-10-11-clots-stage-2a-pipeline-design.md`).
    - **2b. Rulebook editing and standing rules**, and the home Clot.
    - **2c. More sources**: Sentry, Stripe, Vercel, email, PostHog, Calendar, watch
@@ -518,7 +677,7 @@ In scope:
 - the Discord adapter with the category and `project-DDMM` channel layout, and a
   typing indicator while a turn runs;
 - the router: effort level per prompt, and brainstorm detection;
-- brainstorm mode: plan mode, mode instruction, marker;
+- brainstorm mode: detection, mode instruction, marker;
 - approval scope, enforced by the Clot's system prompt and a scoped GitHub token;
 - commit authorship and the pull request attribution line;
 - the turn summary;
@@ -532,8 +691,10 @@ In scope:
 Out of scope for stage 1: event intake, triage, the rulebook, the gates other than
 the usage-limit pause, the sweep (so rollover re-grounding is added in stage 2), the
 browser, the `clots` CLI, running on the Pi, copying the user's Claude setup into
-the container, a separate GitHub account for the Clot, pruning old channels. The
-container login is done by hand in stage 1.
+the container, a separate GitHub account for the Clots, the lock (both arrive in
+stage 2a; until then brainstorm mode rests on Claude Code's plan mode and the Clot
+uses a token of the user's), pruning old channels. The container login is done by
+hand in stage 1.
 
 Stage 1 is done when, in a development environment:
 
@@ -582,8 +743,10 @@ If any of these fails, stop and bring the finding to the user before continuing.
 - microSD speed and wear under container workloads. An NVMe or USB SSD is the
   planned upgrade.
 - Chromium's memory use on an 8 GB Pi.
-- Until a Clot has its own GitHub account, nothing on GitHub's side stops it from
-  merging; and on a free plan, branch rules on a private repository are not enforced
-  at all.
+- Nothing on GitHub's side stops the Clots' account from merging unless a branch
+  rule requires an approving review; and on a free plan, branch rules on a private
+  repository are not enforced at all.
+- A locked turn can still send data out through the web tools and `ping`
+  (section 7).
 - Agent SDK billing terms changed three times in 2026. As of 2026-10-07, SDK usage
   draws from subscription limits.

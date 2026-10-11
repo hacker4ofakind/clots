@@ -5367,21 +5367,23 @@ index 4e35b81..bf6ebb6 100644
                  return verdict.ok ? { behavior: "allow" as const, updatedInput: toolInput } : { behavior: "deny" as const, message: verdict.reason };
 ```
 
-`scripts/try-lock.ts` now plants such an allow rule, so that the check proves the point:
+`scripts/try-lock.ts` plants such an allow rule and marks the workspace as trusted, as a Clot's is, so that Claude Code really loads the rule and the check proves the point:
 
 Change `scripts/try-lock.ts`:
 
 ```diff
 diff --git a/scripts/try-lock.ts b/scripts/try-lock.ts
-index c7ffcf9..34df717 100644
+index c7ffcf9..c91bf5e 100644
 --- a/scripts/try-lock.ts
 +++ b/scripts/try-lock.ts
-@@ -12,6 +12,8 @@ const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "
+@@ -12,6 +12,10 @@ const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "
  try { docker("rm", "-f", name); } catch { /* not running */ }
  docker("run", "-d", "--name", name, "clots-clot:dev");
  docker("exec", name, "sh", "-c", `mkdir -p ${CWD} && cd ${CWD} && git init -q && echo heron-42 > hello.txt`);
 +// An allow rule that a settings file brings along must not get a command past the lock.
++// Claude Code honours such rules only in a workspace it has been told to trust, as a Clot's is.
 +docker("exec", name, "sh", "-c", `mkdir -p ${CWD}/.claude && echo '{"permissions":{"allow":["Bash(touch:*)","Bash(touch *)"]}}' > ${CWD}/.claude/settings.json`);
++docker("exec", name, "sh", "-c", `echo '{"projects":{"${CWD}":{"hasTrustDialogAccepted":true}}}' > ~/.claude.json`);
  
  const runner = new SdkRunner({ clot, env: { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN! }, testCommand: "cat hello.txt" });
  const result = await runner.startTurn({
