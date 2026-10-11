@@ -27,6 +27,10 @@ GitHub is the only source. The rulebook is read from files and edited by hand.
 - **One built-in drop.** The parent design has no built-in drops. 2a adds one:
   events the Clot caused itself (section 5).
 - **Investigation is locked by the daemon**, not only by instruction (section 7).
+- **Brainstorm mode moves onto the same lock.** Stage 1 ran it in plan mode with a
+  callback that refuses everything. Plan mode never consults that callback: a
+  session in that configuration ran file-changing shell commands when told to. Only
+  the model's own restraint was holding. Brainstorm mode no longer uses plan mode.
 - **Relevance to a running turn applies to every turn**, with the user's approval
   (section 8). The parent design has it for brainstorm mode only, decided by triage
   alone; stage 2d builds its brainstorm gate on the mechanism defined here.
@@ -43,10 +47,11 @@ GitHub is the only source. The rulebook is read from files and edited by hand.
 | Rulebook | Loads the rule files; answers whether an event is dropped and what triage guidance applies. Read-only in 2a. | Rule files |
 | Triage | One Sonnet 5.5 call at low effort, no tools, fixed output schema. | Rulebook guidance |
 | Explainer | One Haiku 5.5 call at medium effort, no tools. Writes the message for a steering question. | None |
-| Command checker | Decides whether a shell command is read-only (section 7). Pure. | None |
+| Command checker | Decides whether a shell command is read-only, and whether a tool call is allowed under the lock (section 7). Pure. | None |
 | Pipeline | Runs an event through the steps of section 6 and hands it to the Clot. | All of the above |
-| Clot (changed) | Runs an event as a turn of its own under the investigate lock; steers an approved event into a running turn. | Runner, store, chat |
-| Runner (changed) | Gains the investigate lock as a third way to start a turn. | Command checker |
+| Clot (changed) | Runs an event as a turn of its own under the lock; runs brainstorm turns under it too; steers an approved event into a running turn. | Runner, store, chat |
+| Runner (changed) | Starts a turn unlocked, or under the lock for brainstorming or for investigating. | Command checker |
+| Clot image (changed) | Gains `ping`, `ps`, `tree` and `file`, which the approved list names and the image lacked. | None |
 | Chat adapter (changed) | Can delete a channel. | Discord |
 
 ## 4. The common event
@@ -117,7 +122,7 @@ login, and it is exactly what the Clot must hear about.
    event joins the Clot's queue. Events and the user's messages share one queue and
    are handled in arrival order. An event never joins a running turn except through
    step 7.
-9. **Investigate.** The event runs as a turn of its own under the investigate lock
+9. **Investigate.** The event runs as a turn of its own under the lock
    (section 7), wrapped and labelled as untrusted external data. The Clot replies
    with what it found and one or two options.
 10. **The user answers in chat**, which starts a normal turn. A comment the user
@@ -130,17 +135,26 @@ rollover.
 If the triage call fails, the event is treated as needing action, not urgent, not
 suspicious and not relevant now, so it is queued and nothing is lost silently.
 
-## 7. The investigate lock
+## 7. The lock
 
-A turn started for an event cannot change anything. This is enforced by the daemon:
-the turn's permission callback approves reading and a fixed set of read-only
-commands, and refuses everything else. Editing, committing, pushing and sending are
-impossible until the user replies.
+A locked turn cannot change anything. Two kinds of turn are locked: a turn started
+for an event, and every turn while brainstorm mode is on.
 
-Approved without a command check: the built-in tools that only read the
-container's files (reading, searching and listing). Tools that reach the network,
-such as web fetch and web search, are refused: a request to an address of the
-Clot's choosing is a way to send data out.
+The lock is enforced by the daemon, in three parts:
+
+- The turn runs in Claude Code's default permission mode, in which anything not
+  plainly read-only is put to the daemon's permission callback. Plan mode is not
+  used: it does not consult the callback.
+- The callback approves reading and a fixed set of read-only commands, and refuses
+  everything else.
+- The tools that edit and write files are removed from the turn altogether.
+
+Editing, committing, pushing and sending are impossible until the lock is off: for
+an event, when the user replies; for brainstorming, when the mode ends.
+
+Approved without a command check: the tools that read, search and list the
+container's files, web search and web fetch, and subagents (whose own tool calls
+pass through the same callback).
 
 Approved shell commands:
 
@@ -155,21 +169,39 @@ Approved shell commands:
   exactly
 
 A command line is approved only when every command in it is approved. Commands may
-be joined with pipes, `&&` and `;`. The checker refuses, wherever they appear:
+be joined with pipes, `&&`, `||` and `;`. The checker refuses, wherever they
+appear:
 
-- output or input redirection, command substitution and background execution;
+- output or input redirection, command substitution, subshells and background
+  execution;
 - flags that make a reader write or execute: `find` with `-exec`, `-execdir`,
-  `-ok`, `-delete` or any `-fprint` form; `rg` with `--pre`; `sort` with `-o`;
-  `git` with `-c`, `--output` or `--ext-diff`; `tree` with `-o`;
+  `-ok`, `-okdir`, `-delete` or any `-fprint` or `-fls` form; `rg` with `--pre`
+  or `--hostname-bin`; `sort` with `-o`, `--output` or `--compress-program`;
+  `git` with any option before the subcommand, or with `--output`, `--ext-diff`
+  or `--open-files-in-pager`; `tree` with `-o`; `gh` with `--web`;
 - `ping` without a count, or with a count above ten.
 
 Anything the checker cannot parse with confidence is refused. A refusal tells the
-Clot which command was refused and why, and the Clot says in its proposal what it
+Clot which command was refused and why, and the Clot says in its reply what it
 could not check.
 
-Known limit: `ping` takes a hostname, so a Clot that had been hijacked could leak a
-short secret through a DNS lookup. Every other approved command only reads. The
-user chose to include it.
+Three things to know about the approved set:
+
+- **Claude Code approves its own short list of plainly read-only commands**
+  (`ls`, `cat` and similar) without asking the callback. The effective set is
+  that list plus the one above.
+- **Allow rules in the repository's own `.claude/settings.json` are honoured by
+  Claude Code before the callback is asked.** A project that pre-approves a command
+  there has approved it for locked turns too.
+- **`docker` and `pm2` act inside the Clot's container.** They are useful when the
+  project itself runs them there. They do not show the host's processes, and the
+  container is not given the host's Docker socket.
+- **Known limit: two approved things can carry data out.** Web fetch and web search
+  send a request to an address or query of the Clot's choosing, and `ping` looks
+  up a hostname. A Clot that had been hijacked by an event's text could leak a
+  short secret through either. The user chose to allow both: an investigation
+  often needs the web, for example to learn that a vulnerability is fixed in a
+  release newer than the model's knowledge.
 
 ## 8. Steering a relevant event into a running turn
 
@@ -273,6 +305,8 @@ In the development environment:
 - the Clot's own pull requests and comments produce nothing;
 - during an investigation, an attempt to edit a file or push is refused, and an
   approved command runs;
+- in brainstorm mode, a file-changing shell command is refused even when the Clot
+  is told to run it;
 - a pre-filter rule written by hand stops a matching event, without a restart;
 - events queued before a restart are delivered after it;
 - an event that triage judges relevant during a turn produces a temporary channel,
@@ -288,15 +322,15 @@ spend log.
 
 ## 15. Assumptions to verify first
 
-- A turn can be started with a permission callback that approves some shell
-  commands and refuses the rest, and with file-changing tools unavailable. The
-  check must find which permission mode makes this hold: plan mode with the
-  callback, or the default mode with the callback.
+- A turn in the default permission mode, with a permission callback and with the
+  file-changing tools removed, runs the commands the callback approves and nothing
+  else that changes anything. (Checked while planning, on 2026-10-11: this holds in
+  the default mode and does not hold in plan mode. The plan repeats the check.)
 - Tailscale Funnel can expose the intake port of the daemon on the development
   machine at a stable public HTTPS address.
 - GitHub names the machine account, not the user, as the sender of what the Clot
   does; and names the pusher as the actor of a `workflow_run`.
-- A message fed into a running turn that is under the investigate lock is accepted
-  in the same way as in a working turn.
+- A message fed into a running turn that is under the lock is accepted in the same
+  way as in a working turn. (Checked while planning; the plan repeats the check.)
 
 If any of these fails, stop and bring the finding to the user before continuing.
