@@ -252,6 +252,42 @@ describe("Clot", () => {
     expect(chat.postsIn(channel)).toContain("Brainstorm mode off. Back to work.");
   });
 
+  it("keeps later messages behind a deferred &close instead of feeding them to the old session", async () => {
+    runner.script = [{ hold: true }, {}];
+
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    await clot.onMessage(msg("&close nosummary"));
+    await clot.onMessage(msg("now write the tests"));
+    expect(runner.pushes).toEqual([]);
+    runner.release!();
+    await first;
+
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[1]).toMatchObject({ newSessionId: "sess-2", prompt: "now write the tests" });
+  });
+
+  it("keeps later messages behind a deferred mode change instead of feeding them to the writable turn", async () => {
+    runner.script = [{ hold: true }, {}, {}];
+    router.next = [
+      { effort: "medium", modeChange: "none" },
+      { effort: "medium", modeChange: "enter_brainstorm" },
+      { effort: "medium", modeChange: "enter_brainstorm" },
+      { effort: "medium", modeChange: "none" },
+    ];
+
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    await clot.onMessage(msg("wait, let's brainstorm first"));
+    await clot.onMessage(msg("I'm unsure about the hero section"));
+    expect(runner.pushes).toEqual([]);
+    runner.release!();
+    await first;
+
+    expect(runner.calls.map((c) => c.planMode)).toEqual([false, true, true]);
+    expect(runner.calls[2].prompt).toContain("I'm unsure about the hero section");
+  });
+
   it("keeps a message for the next turn when the live turn no longer accepts input", async () => {
     runner.script = [{ hold: true }, {}];
     runner.acceptPushes = false;
@@ -424,6 +460,45 @@ describe("Clot", () => {
     expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt);
   });
 
+  it("does not lose the wake-up when the reset timer fires while the pause notice is being posted", async () => {
+    const resetsAt = Math.floor(now.getTime() / 1000) + 1;
+    runner.script = [{ ok: false, limit: { resetsAt } }, {}];
+    const post = chat.post.bind(chat);
+    chat.post = async (channelId, text) => {
+      if (text.startsWith("Paused")) {
+        now = new Date(resetsAt * 1000);
+        timers[0].fn();
+      }
+      return post(channelId, text);
+    };
+
+    await clot.onMessage(msg("big task"));
+
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[1].prompt).toContain("The usage limit has reset");
+    expect(store.getClot("graphite")!.pausedUntil).toBeNull();
+  });
+
+  it("pauses when a rollover's recap hits the usage limit, and does not invent a continuation", async () => {
+    const channel = store.activeSession("graphite")!.channelId;
+    const resetsAt = Math.floor(now.getTime() / 1000) + 3600;
+    runner.script = [{ contextPercent: 70 }, { ok: false, say: [], limit: { resetsAt } }, { contextPercent: 70 }, { say: ["RECAP"] }];
+
+    await clot.onMessage(msg("do the thing"));
+    expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt);
+    expect(store.activeSession("graphite")!.channelId).toBe(channel);
+    expect(chat.postsIn(channel).at(-1)).toBe("Paused: usage limit reached. I'll resume at 13:00.");
+
+    now = new Date(resetsAt * 1000);
+    timers[0].fn();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(runner.calls).toHaveLength(2);
+
+    await clot.onMessage(msg("carry on"));
+    expect(runner.calls[2].prompt).toBe("carry on");
+    expect(store.activeSession("graphite")!.id).toBe("sess-2");
+  });
+
   it("asks the session to continue after a pause when nothing is queued", async () => {
     const resetsAt = Math.floor(now.getTime() / 1000) + 60;
     runner.script = [{ ok: false, limit: { resetsAt } }, {}];
@@ -509,6 +584,83 @@ describe("Clot", () => {
       await clot.onMessage(msg("hello"));
       expect(runner.calls[1]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", planMode: false });
       expect(router.inputs.at(-1)!.tail).toEqual([]);
+    });
+
+    it("&effort alone is used up by the next message even when that message joins a running turn", async () => {
+      runner.script = [{ hold: true }, {}];
+      router.next = [{ effort: "medium", modeChange: "none" }, { effort: "low", modeChange: "none" }, { effort: "low", modeChange: "none" }];
+
+      const first = clot.onMessage(msg("build the page"));
+      await vi.waitFor(() => expect(runner.release).toBeDefined());
+      await clot.onMessage(msg("&effort high"));
+      await clot.onMessage(msg("also check the footer"));
+      expect(runner.pushes).toEqual([{ text: "[sent while you were working]\nalso check the footer", effort: "high" }]);
+      runner.release!();
+      await first;
+
+      await clot.onMessage(msg("and the header"));
+      expect(runner.calls[1].effort).toBe("low");
+    });
+
+    it("&effort alone is kept when the running turn refuses the message", async () => {
+      runner.script = [{ hold: true }, {}];
+      runner.acceptPushes = false;
+      router.next = [{ effort: "medium", modeChange: "none" }, { effort: "low", modeChange: "none" }, { effort: "low", modeChange: "none" }];
+
+      const first = clot.onMessage(msg("build the page"));
+      await vi.waitFor(() => expect(runner.release).toBeDefined());
+      await clot.onMessage(msg("&effort high"));
+      await clot.onMessage(msg("also check the footer"));
+      runner.release!();
+      await first;
+
+      expect(runner.calls[1]).toMatchObject({ prompt: "also check the footer", effort: "high" });
+    });
+
+    it("an explicit &effort on the next message replaces an earlier &effort, which is then spent", async () => {
+      await clot.onMessage(msg("&effort high"));
+      await clot.onMessage(msg("&effort low check the link"));
+      await clot.onMessage(msg("and the footer"));
+      expect(runner.calls.map((c) => c.effort)).toEqual(["low", "medium"]);
+    });
+
+    it("&close nosummary discards a recap the new session has not used yet", async () => {
+      runner.script = [{ contextPercent: 70 }, { say: ["RECAP"] }, {}];
+      await clot.onMessage(msg("do the thing"));
+      const channel = store.activeSession("graphite")!.channelId;
+      store.setMode("graphite", "brainstorm");
+
+      await clot.onMessage(msg("&close nosummary"));
+
+      expect(store.activeSession("graphite")).toMatchObject({ id: "sess-2", channelId: channel, seed: null });
+      expect(chat.postsIn(channel).at(-1)).toBe("Recap discarded. This session now starts from scratch.");
+      expect(runner.calls).toHaveLength(2);
+
+      await clot.onMessage(msg("hello"));
+      expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", planMode: false });
+    });
+
+    it("&close keeps a recap the new session has not used yet", async () => {
+      runner.script = [{ contextPercent: 70 }, { say: ["RECAP"] }];
+      await clot.onMessage(msg("do the thing"));
+      await clot.onMessage(msg("&close"));
+      expect(store.activeSession("graphite")).toMatchObject({ id: "sess-2", seed: "RECAP" });
+    });
+
+    it("pauses and retries &close after the reset when the recap turn hits the usage limit", async () => {
+      const resetsAt = Math.floor(now.getTime() / 1000) + 3600;
+      runner.script = [{}, { ok: false, say: [], limit: { resetsAt } }, { say: ["RECAP"] }];
+      await clot.onMessage(msg("do the thing"));
+
+      await clot.onMessage(msg("&close"));
+      expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt);
+      expect(store.activeSession("graphite")!.id).toBe("sess-1");
+
+      now = new Date(resetsAt * 1000);
+      timers[0].fn();
+      await vi.waitFor(() => expect(store.activeSession("graphite")!.id).toBe("sess-2"));
+      expect(runner.calls).toHaveLength(3);
+      expect(store.activeSession("graphite")).toMatchObject({ seed: "RECAP", seedReason: "user" });
     });
 
     it("&close on a session that has not been used does nothing", async () => {

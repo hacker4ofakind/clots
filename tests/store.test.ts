@@ -54,6 +54,18 @@ describe("Store", () => {
     expect(store.takeNextEffort("graphite")).toBeNull();
   });
 
+  it("shows a one-off effort override without using it up", () => {
+    store.setNextEffort("graphite", "low");
+    expect(store.nextEffort("graphite")).toBe("low");
+    expect(store.nextEffort("graphite")).toBe("low");
+  });
+
+  it("drops a session's seed", () => {
+    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: "recap" });
+    store.clearSeed("s1");
+    expect(store.activeSession("graphite")!.seed).toBeNull();
+  });
+
   it("clears the tail", () => {
     store.appendTail("graphite", "user", "old");
     store.clearTail("graphite");

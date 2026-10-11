@@ -102,12 +102,21 @@ export class Store {
     this.db.prepare("UPDATE clots SET next_effort = ? WHERE name = ?").run(effort, name);
   }
 
+  /** The one-off effort, if any, left in place. */
+  nextEffort(name: string): Effort | null {
+    const r: any = this.db.prepare("SELECT next_effort FROM clots WHERE name = ?").get(name);
+    return r?.next_effort ?? null;
+  }
+
   /** Returns the one-off effort, if any, and clears it. */
   takeNextEffort(name: string): Effort | null {
-    const r: any = this.db.prepare("SELECT next_effort FROM clots WHERE name = ?").get(name);
-    const effort: Effort | null = r?.next_effort ?? null;
+    const effort = this.nextEffort(name);
     if (effort !== null) this.setNextEffort(name, null);
     return effort;
+  }
+
+  clearSeed(id: string): void {
+    this.db.prepare("UPDATE sessions SET seed = NULL WHERE id = ?").run(id);
   }
 
   clearTail(clot: string): void {
