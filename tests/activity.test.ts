@@ -4,8 +4,13 @@ import { formatActivity } from "../src/chat/activity-format.js";
 
 const ROOT = "/workspace/repo";
 
-function bash(command: string) {
-  return { type: "assistant", message: { content: [{ type: "tool_use", id: "t", name: "Bash", input: { command } }] } };
+let nextId = 0;
+function bash(command: string, id = `t${(nextId += 1)}`) {
+  return { type: "assistant", message: { content: [{ type: "tool_use", id, name: "Bash", input: { command } }] } };
+}
+
+function refused(id: string) {
+  return { type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, is_error: true, content: "Refused: `touch` is not on the approved list." }] } };
 }
 
 function edited(filePath: string, lines: string[], extra: Record<string, unknown> = {}) {
@@ -22,6 +27,15 @@ describe("ActivityCollector", () => {
     c.observe(bash("git status"));
     c.observe(bash("npm test"));
     expect(c.activity().commands).toEqual(["git status", "npm test"]);
+  });
+
+  it("leaves out a command the lock refused, and keeps one that merely failed", () => {
+    const c = new ActivityCollector(ROOT);
+    c.observe(bash("touch a.txt", "call-1"));
+    c.observe(refused("call-1"));
+    c.observe(bash("cat missing.txt", "call-2"));
+    c.observe({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "call-2", is_error: true, content: "cat: missing.txt: No such file or directory" }] } });
+    expect(c.activity().commands).toEqual(["cat missing.txt"]);
   });
 
   it("counts added and removed lines from an edit, with the path relative to the repo", () => {

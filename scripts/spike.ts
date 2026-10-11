@@ -107,7 +107,7 @@ results["C: authenticated with the subscription token only"] = sessionId !== "";
 results["result messages for 2 user messages"] = resultCount;
 results["process ended after input closed"] = true;
 
-// Turn 2: a new process resumes the session, in plan mode, at a different effort.
+// Turn 2: a new process resumes the session, under the lock, at a different effort.
 // The prompt is a generator because canUseTool needs streaming input.
 async function* second(): AsyncGenerator<SDKUserMessage, void> {
   yield userMessage("What hostname did you print earlier? Then create the file /workspace/spike.txt.");
@@ -120,8 +120,11 @@ for await (const message of query({
     effort: "medium",
     resume: sessionId,
     cwd: "/workspace",
-    permissionMode: "plan",
-    canUseTool: async () => ({ behavior: "deny", message: "Brainstorm mode: no changes." }),
+    // The lock: in the default mode everything that is not plainly read-only is put to the
+    // callback, which refuses it. Plan mode is not used, because it never consults the callback.
+    permissionMode: "default",
+    disallowedTools: ["Edit", "Write", "NotebookEdit"],
+    canUseTool: async () => ({ behavior: "deny", message: "Locked: no changes." }),
     spawnClaudeCodeProcess: spawnInContainer,
   },
 })) {
@@ -132,7 +135,7 @@ for await (const message of query({
 let fileExists = true;
 try { docker("exec", CONTAINER, "test", "-e", "/workspace/spike.txt"); } catch { fileExists = false; }
 results["D: resumed session remembers the hostname"] = text2.includes(containerHost);
-results["D: plan mode blocked the write"] = !fileExists;
+results["D: the lock blocked the write"] = !fileExists;
 
 console.log("\nSpawn received:", JSON.stringify(lastSpawn));
 console.log("Message types seen:", [...messageTypes].join(", "));

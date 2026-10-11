@@ -20,6 +20,7 @@
 - Every built-in tool call made by the Clot must execute inside the container. The working directory inside the container is `/workspace/repo`.
 - The Clot's process runs only during a turn. A turn is over at the result that leaves nothing outstanding: `queued_turn_count` on the result says whether another follows, and the bookkeeping messages the SDK sends after a result must not keep a turn open. A result with `is_error` set is a failed turn.
 - Messages take effect in the order the user sent them. A message joins the running turn only when it does not change the mode, nothing earlier is waiting, and the turn still accepts input; otherwise it waits for a turn of its own.
+- Brainstorm mode is enforced by a lock, not only by instruction. A locked turn runs in Claude Code's default permission mode with a daemon callback that refuses everything put to it, and without the tools that edit and write files; what Claude Code considers plainly read-only still runs. Plan mode is not used: it never consults the callback.
 - A message that starts with `&` and a word is a command. The daemon handles it; it never reaches the model.
 - Approval scope: after the user's go-ahead the Clot may edit, test, commit to a branch and open a pull request. Merging to the main branch, deploying, spending money, deleting data and sending anything to a person each need a separate yes; messages to people are drafts.
 - Commits are authored as `<name>-clot` with the no-reply address of the GitHub account that owns the Clot's token. Pull request descriptions end with "Created with a Clot.", linked to the Clots repository.
@@ -27,7 +28,7 @@
 - The turn summary is posted by the daemon. It never enters the Clot's session or the router's context.
 - A handoff saves the new session before announcing it, and a failed chat call never aborts one.
 - Secrets live in `.env`, which is never committed and never posted to Discord.
-- Not in this plan: event intake, triage, the rulebook, gates other than the usage-limit pause, the sweep, the browser, the `clots` CLI, copying the user's Claude setup into the container, a separate GitHub account for the Clot, pruning old channels, running on the Pi.
+- Not in this plan: event intake, triage, the rulebook, gates other than the usage-limit pause, the sweep, the browser, the `clots` CLI, copying the user's Claude setup into the container, a separate GitHub account for the Clot, the lock's list of approved read-only commands (in this plan a locked turn is refused everything that needs permission), pruning old channels, running on the Pi.
 - Commit once, at the end of Task 10. Work on the existing `clots-design` branch.
 - If any assumption check in Task 2 fails, stop and report to the user. Do not work around it.
 
@@ -370,7 +371,7 @@ results["C: authenticated with the subscription token only"] = sessionId !== "";
 results["result messages for 2 user messages"] = resultCount;
 results["process ended after input closed"] = true;
 
-// Turn 2: a new process resumes the session, in plan mode, at a different effort.
+// Turn 2: a new process resumes the session, under the lock, at a different effort.
 // The prompt is a generator because canUseTool needs streaming input.
 async function* second(): AsyncGenerator<SDKUserMessage, void> {
   yield userMessage("What hostname did you print earlier? Then create the file /workspace/spike.txt.");
@@ -383,8 +384,11 @@ for await (const message of query({
     effort: "medium",
     resume: sessionId,
     cwd: "/workspace",
-    permissionMode: "plan",
-    canUseTool: async () => ({ behavior: "deny", message: "Brainstorm mode: no changes." }),
+    // The lock: in the default mode everything that is not plainly read-only is put to the
+    // callback, which refuses it. Plan mode is not used, because it never consults the callback.
+    permissionMode: "default",
+    disallowedTools: ["Edit", "Write", "NotebookEdit"],
+    canUseTool: async () => ({ behavior: "deny", message: "Locked: no changes." }),
     spawnClaudeCodeProcess: spawnInContainer,
   },
 })) {
@@ -395,7 +399,7 @@ for await (const message of query({
 let fileExists = true;
 try { docker("exec", CONTAINER, "test", "-e", "/workspace/spike.txt"); } catch { fileExists = false; }
 results["D: resumed session remembers the hostname"] = text2.includes(containerHost);
-results["D: plan mode blocked the write"] = !fileExists;
+results["D: the lock blocked the write"] = !fileExists;
 
 console.log("\nSpawn received:", JSON.stringify(lastSpawn));
 console.log("Message types seen:", [...messageTypes].join(", "));
@@ -1204,7 +1208,7 @@ describe("buildPrompt", () => {
   it("adds the brainstorm note on every brainstorm turn", () => {
     const prompt = buildPrompt({ ...base, mode: "brainstorm" });
     expect(prompt).toContain("Brainstorm mode is ON");
-    expect(prompt).toContain("the same thing");
+    expect(prompt).toContain("Nothing can be changed");
     expect(prompt.endsWith("fix the footer")).toBe(true);
   });
 
@@ -1678,7 +1682,7 @@ Messages that arrive while you are working are marked "[sent while you were work
 /** Replaces Claude Code's own "Generated with Claude Code" line at the end of pull request descriptions. */
 export const PR_ATTRIBUTION = "Created with a [Clot](https://github.com/hacker4ofakind/clots).";
 
-const BRAINSTORM_NOTE =`[Brainstorm mode is ON. It is built on Claude Code's plan mode, so when you are told plan mode is active, that is this mode: they are the same thing, not two sets of rules. Think and explore ideas with the user. You may read code and look things up, but change nothing. Put your thinking, and any plan, in your reply: the user usually reads this chat on a phone and cannot open files. A plan file is allowed but rarely wanted, so write one only when the user asks for it, and never ask to exit plan mode or to have a plan approved. Do not offer to start, set up or implement anything, and do not end your reply with an offer to act. Stay in this mode until told it is off.]`;
+const BRAINSTORM_NOTE = `[Brainstorm mode is ON. Think and explore ideas with the user. You can read code and look things up. Nothing can be changed: the tools that edit files are switched off, and anything else that would change something is refused. Put your thinking, and any plan, in your reply: the user usually reads this chat on a phone and cannot open files. Do not offer to start, set up or implement anything, and do not end your reply with an offer to act. Stay in this mode until told it is off.]`;
 
 const ACTION_NOTE = `[Brainstorm mode is OFF. The user has told you to start working. Act on what was agreed.]`;
 
@@ -1977,7 +1981,7 @@ export interface TurnRequest {
   newSessionId?: string;
   prompt: string;
   effort: Effort;
-  planMode: boolean;
+  locked: boolean;
   onText: (text: string) => void;
 }
 export interface TurnResult {
@@ -2023,7 +2027,8 @@ export interface TurnRequest {
   newSessionId?: string;
   prompt: string;
   effort: Effort;
-  planMode: boolean;
+  /** Runs the turn under the lock: it can read and look things up, and can change nothing. */
+  locked: boolean;
   onText: (text: string) => void;
 }
 
@@ -2044,6 +2049,9 @@ export interface TurnHandle {
 export interface AgentRunner {
   startTurn(req: TurnRequest): TurnHandle;
 }
+
+/** Tools removed from a locked turn altogether, so the model does not reach for them. */
+const LOCK_REMOVED_TOOLS = ["Edit", "Write", "NotebookEdit"];
 
 const CWD = "/workspace/repo";
 
@@ -2074,14 +2082,15 @@ export class SdkRunner implements AgentRunner {
         effort: req.effort,
         ...(resume ? { resume } : { sessionId: req.newSessionId }),
         cwd: CWD,
-        permissionMode: req.planMode ? "plan" : "bypassPermissions",
+        // The lock: in the default mode Claude Code puts everything that is not plainly read-only
+        // to the callback below, which refuses it. Plan mode is not used, because it never consults the callback.
+        permissionMode: req.locked ? "default" : "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         settings: { attribution: { pr: PR_ATTRIBUTION } },
-        // Its prompts cannot be shown in chat; the Clot asks in plain text instead.
-        disallowedTools: ["AskUserQuestion"],
-        // Only consulted in plan mode; bypassPermissions approves before the callback.
-        ...(req.planMode
-          ? { canUseTool: async () => ({ behavior: "deny" as const, message: "Brainstorm mode: no changes until the user says to start working." }) }
+        // AskUserQuestion: its prompts cannot be shown in chat; the Clot asks in plain text instead.
+        disallowedTools: req.locked ? ["AskUserQuestion", ...LOCK_REMOVED_TOOLS] : ["AskUserQuestion"],
+        ...(req.locked
+          ? { canUseTool: async () => ({ behavior: "deny" as const, message: "Locked: nothing can be changed until the user says to start working." }) }
           : {}),
         systemPrompt: { type: "preset", preset: "claude_code", append: CLOT_SYSTEM_PROMPT },
         spawnClaudeCodeProcess: makeSpawn({ container, cwd: CWD, env: this.o.env }),
@@ -2171,7 +2180,7 @@ const first = await runner.startTurn({
   newSessionId: id,
   prompt: "Use Bash to run `pwd` and tell me the result. Remember the word 'heron'.",
   effort: "low",
-  planMode: false,
+  locked: false,
   onText: (t) => console.log("[clot]", t),
 }).done;
 console.log("first:", first);
@@ -2180,7 +2189,7 @@ const second = await runner.startTurn({
   resume: id,
   prompt: "Which word did I ask you to remember?",
   effort: "low",
-  planMode: true,
+  locked: true,
   onText: (t) => console.log("[clot]", t),
 }).done;
 console.log("second:", second);
@@ -2656,7 +2665,7 @@ describe("Clot", () => {
 
     await clot.onMessage(msg("check the footer link"));
 
-    expect(runner.calls[0]).toMatchObject({ newSessionId: "sess-1", effort: "low", planMode: false, prompt: "check the footer link" });
+    expect(runner.calls[0]).toMatchObject({ newSessionId: "sess-1", effort: "low", locked: false, prompt: "check the footer link" });
     expect(runner.calls[0].resume).toBeUndefined();
     expect(chat.postsIn(channel)).toContain("On it.");
   });
@@ -2717,7 +2726,7 @@ describe("Clot", () => {
     expect(router.inputs[2].tail.map((t) => t.text)).toEqual(["q1", "a1", "q2", "a2"]);
   });
 
-  it("enters brainstorm mode, announces it, and uses plan mode until told to work", async () => {
+  it("enters brainstorm mode, announces it, and stays locked until told to work", async () => {
     const channel = store.activeSession("graphite")!.channelId;
     router.next = [
       { effort: "medium", modeChange: "enter_brainstorm" },
@@ -2729,7 +2738,7 @@ describe("Clot", () => {
     await clot.onMessage(msg("what about mobile?"));
     await clot.onMessage(msg("sounds good, start working"));
 
-    expect(runner.calls.map((c) => c.planMode)).toEqual([true, true, false]);
+    expect(runner.calls.map((c) => c.locked)).toEqual([true, true, false]);
     expect(runner.calls[1].prompt).toContain("Brainstorm mode is ON");
     expect(runner.calls[2].prompt).toContain("Brainstorm mode is OFF");
     expect(chat.postsIn(channel)).toContain("Brainstorm mode on.");
@@ -2752,7 +2761,7 @@ describe("Clot", () => {
     expect(store.nextPending("graphite")).toBeUndefined();
   });
 
-  it("holds back a mid-turn message that starts brainstorming and runs it next, in plan mode", async () => {
+  it("holds back a mid-turn message that starts brainstorming and runs it next, under the lock", async () => {
     const channel = store.activeSession("graphite")!.channelId;
     runner.script = [{ hold: true }, {}];
     router.next = [
@@ -2768,7 +2777,7 @@ describe("Clot", () => {
     runner.release!();
     await first;
 
-    expect(runner.calls.map((c) => c.planMode)).toEqual([false, true]);
+    expect(runner.calls.map((c) => c.locked)).toEqual([false, true]);
     expect(chat.postsIn(channel)).toContain("Brainstorm mode on.");
     expect(store.getClot("graphite")!.mode).toBe("brainstorm");
   });
@@ -2790,7 +2799,7 @@ describe("Clot", () => {
     runner.release!();
     await first;
 
-    expect(runner.calls.map((c) => c.planMode)).toEqual([true, false]);
+    expect(runner.calls.map((c) => c.locked)).toEqual([true, false]);
     expect(chat.postsIn(channel)).toContain("Brainstorm mode off. Back to work.");
   });
 
@@ -2826,7 +2835,7 @@ describe("Clot", () => {
     runner.release!();
     await first;
 
-    expect(runner.calls.map((c) => c.planMode)).toEqual([false, true, true]);
+    expect(runner.calls.map((c) => c.locked)).toEqual([false, true, true]);
     expect(runner.calls[2].prompt).toContain("I'm unsure about the hero section");
   });
 
@@ -2864,7 +2873,7 @@ describe("Clot", () => {
 
     await clot.onMessage(msg("do the thing"));
 
-    expect(runner.calls[1]).toMatchObject({ resume: "sess-1", planMode: true });
+    expect(runner.calls[1]).toMatchObject({ resume: "sess-1", locked: true });
     expect(runner.calls[1].prompt).toContain("Write a recap");
     const fresh = store.activeSession("graphite")!;
     expect(fresh).toMatchObject({ id: "sess-2", started: false, seed: "RECAP: built the footer." });
@@ -3076,7 +3085,7 @@ describe("Clot", () => {
     it("&effort still lets the router change the mode", async () => {
       router.next = [{ effort: "low", modeChange: "enter_brainstorm" }];
       await clot.onMessage(msg("&effort high let's brainstorm the pricing"));
-      expect(runner.calls[0]).toMatchObject({ effort: "high", planMode: true });
+      expect(runner.calls[0]).toMatchObject({ effort: "high", locked: true });
     });
 
     it("answers a wrong or unknown command without involving the model", async () => {
@@ -3095,7 +3104,7 @@ describe("Clot", () => {
 
       await clot.onMessage(msg("&close"));
 
-      expect(runner.calls[1]).toMatchObject({ resume: "sess-1", planMode: true });
+      expect(runner.calls[1]).toMatchObject({ resume: "sess-1", locked: true });
       expect(runner.calls[1].prompt).toContain("The user has asked to close this session");
       expect(chat.postsIn(oldChannel)).toContain("Closing this session at your request. Waiting on handoff...");
       const fresh = store.activeSession("graphite")!;
@@ -3124,7 +3133,7 @@ describe("Clot", () => {
       expect(store.getClot("graphite")!.mode).toBe("action");
 
       await clot.onMessage(msg("hello"));
-      expect(runner.calls[1]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", planMode: false });
+      expect(runner.calls[1]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", locked: false });
       expect(router.inputs.at(-1)!.tail).toEqual([]);
     });
 
@@ -3179,7 +3188,7 @@ describe("Clot", () => {
       expect(runner.calls).toHaveLength(2);
 
       await clot.onMessage(msg("hello"));
-      expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", planMode: false });
+      expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", locked: false });
     });
 
     it("&close keeps a recap the new session has not used yet", async () => {
@@ -3535,7 +3544,7 @@ export class Clot {
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt,
       effort,
-      planMode: newMode === "brainstorm",
+      locked: newMode === "brainstorm",
       onText: (text) => {
         store.appendTail(name, "clot", text);
         this.posts = this.posts.then(() => chat.post(session.channelId, text)).catch(() => undefined);
@@ -3578,7 +3587,7 @@ export class Clot {
         resume: old.id,
         prompt: recapPrompt(reason),
         effort: "medium",
-        planMode: true,
+        locked: true,
         onText: (text) => void parts.push(text),
       });
       await chat.post(old.channelId, words.notice).catch(() => undefined);
@@ -3827,7 +3836,7 @@ Work through the checks with the user, in the Clot's channel. Record the result 
 | 1 | Send: "Run `cat /etc/hostname` and `pwd` and tell me the output." | The Clot shows as typing until it replies. The reply has a container hostname and `/workspace/repo`; `docker exec clot-<name> cat /etc/hostname` prints the same hostname. A summary embed follows, listing the commands. |
 | 2 | Stop the daemon, start it again, send: "What did I ask you a moment ago?" | It answers correctly. No new channel is created. |
 | 3 | Send a trivial request ("what is this repo?"), then a request that hands over many decisions ("plan a mobile app for this; I haven't built one before, your call on everything"). Before each, add a temporary `console.log(decision)` after the `router.decide` call in `runTurn` in `src/clot.ts`. | The first logs `low` or `medium`; the second logs `high`. Remove the logging afterwards. |
-| 4 | Send: "I like that, but let's brainstorm a bit." Then a question about the idea. Then: "Okay, create a file called test.txt in the repo." | "Brainstorm mode on." appears. The answer to the question changes nothing, puts any questions as plain text, does not end with an offer to act, and does not speak of plan mode as something separate. The instruction brings "Brainstorm mode off. Back to work." and the file is created on a branch. |
+| 4 | Send: "I like that, but let's brainstorm a bit." Then a question about the idea. Then: "Okay, create a file called test.txt in the repo." | "Brainstorm mode on." appears. The answer to the question changes nothing, puts any questions as plain text, and does not end with an offer to act. The instruction brings "Brainstorm mode off. Back to work." and the file is created on a branch. |
 | 5 | Stop the daemon, set `CLOTS_ROLLOVER_PERCENT=1` in `.env`, start it, send any message. | Right after the reply: "This thread hit the context limit and will be closed. Waiting on handoff...". Then a second channel `<name>-DDMM-2` at the top of the category, with a mention and the recap as its first message. The old channel ends with a link to it and is read-only for ordinary members. A message typed in the old channel (the server owner still can) is answered with a pointer to the new one. A message in the new channel shows the Clot knows the recap. Set the value back to `65` afterwards. |
 | 6 | Send: "Write a 600-word summary of this repository's structure into NOTES.md on a branch and open a PR." While it is working, send: "Oh, and in the meantime, check what the latest Node LTS version is." | Both get answered, and the first task still finishes with a pull request. The turn then ends: the typing indicator stops, and the next message starts a new turn. |
 | 7 | Open that pull request and its commit on GitHub. | The description ends with "Created with a Clot." The commit's author name is `<name>-clot`, and GitHub attributes it to the account that owns the token. |

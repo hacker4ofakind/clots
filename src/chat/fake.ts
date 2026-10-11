@@ -8,6 +8,7 @@ export class FakeChat implements ChatAdapter {
   activities: { channelId: string; activity: TurnActivity }[] = [];
   readOnly = new Set<string>();
   typing = new Set<string>();
+  deleted: string[] = [];
   private handler: (m: InboundMessage) => void = () => undefined;
   private counter = 0;
 
@@ -54,6 +55,11 @@ export class FakeChat implements ChatAdapter {
 
   async makeReadOnly(channelId: string): Promise<void> {
     this.readOnly.add(channelId);
+  }
+
+  async deleteChannel(channelId: string): Promise<void> {
+    this.channels = this.channels.filter((c) => c.id !== channelId);
+    this.deleted.push(channelId);
   }
 
   mention(userId: string): string {

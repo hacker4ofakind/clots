@@ -2,5 +2,8 @@
   "timeZone": "UTC",
   "image": "clots-clot:dev",
   "discord": { "guildId": "", "userId": "" },
-  "clots": [{ "name": "graphite", "repoUrl": "https://github.com/OWNER/REPO.git" }]
+  "intake": { "port": 8787 },
+  "rulebookDir": "rulebook",
+  "hold": { "quietSeconds": 60, "capSeconds": 120 },
+  "clots": [{ "name": "graphite", "repoUrl": "https://github.com/OWNER/REPO.git", "testCommand": "npm test" }]
 }
