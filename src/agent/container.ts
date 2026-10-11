@@ -33,9 +33,31 @@ export function toContainerCommand(command: string, args: string[]): string[] {
 export function pickSdkEnv(env: Record<string, string | undefined>): Record<string, string> {
   const picked: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
+    // The daemon's own token is in its environment too; a session's credentials come only from sessionEnv.
+    if (key === "CLAUDE_CODE_OAUTH_TOKEN") continue;
     if (value !== undefined && /^(CLAUDE_CODE_|CLAUDE_AGENT_)/.test(key)) picked[key] = value;
   }
   return picked;
+}
+
+/**
+ * The secrets a session in the container receives. A container that has been
+ * logged in with `claude /login` uses that login, which also brings the
+ * account's connectors (such as Claude Docs); the token from `claude
+ * setup-token` carries none, and would override the login if passed.
+ */
+export function sessionEnv(o: { claudeToken: string; githubToken: string; ownLogin: boolean }): Record<string, string> {
+  return { ...(o.ownLogin ? {} : { CLAUDE_CODE_OAUTH_TOKEN: o.claudeToken }), GH_TOKEN: o.githubToken };
+}
+
+/** Whether the container holds a login made with `claude /login`. */
+export function hasOwnLogin(container: string): boolean {
+  try {
+    execFileSync("docker", ["exec", container, "test", "-s", "/home/clot/.claude/.credentials.json"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** `-e NAME` without a value makes docker read it from its own environment, keeping secrets off the command line. */

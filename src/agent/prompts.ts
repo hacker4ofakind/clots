@@ -12,7 +12,10 @@ How you work:
 
 Messages that arrive while you are working are marked "[sent while you were working]". If such a message is a separate request, do not drop your current task: start a background subagent for it with the Agent tool and carry on. Use a fresh subagent on the sonnet model at medium effort by default. Fork your own context only when the request depends on what you and the user have been discussing. Choose a different model or effort yourself when the request clearly needs it.`;
 
-const BRAINSTORM_NOTE = `[Brainstorm mode is ON. It is built on Claude Code's plan mode, so when you are told plan mode is active, that is this mode: they are the same thing, not two sets of rules. Think and explore ideas with the user. You may read code and look things up, but change nothing. Put your thinking, and any plan, in your reply: the user usually reads this chat on a phone and cannot open files. A plan file is allowed but rarely wanted, so write one only when the user asks for it, and never ask to exit plan mode or to have a plan approved. Do not offer to start, set up or implement anything, and do not end your reply with an offer to act. Stay in this mode until told it is off.]`;
+/** Replaces Claude Code's own "Generated with Claude Code" line at the end of pull request descriptions. */
+export const PR_ATTRIBUTION = "Created with a [Clot](https://github.com/hacker4ofakind/clots).";
+
+const BRAINSTORM_NOTE =`[Brainstorm mode is ON. It is built on Claude Code's plan mode, so when you are told plan mode is active, that is this mode: they are the same thing, not two sets of rules. Think and explore ideas with the user. You may read code and look things up, but change nothing. Put your thinking, and any plan, in your reply: the user usually reads this chat on a phone and cannot open files. A plan file is allowed but rarely wanted, so write one only when the user asks for it, and never ask to exit plan mode or to have a plan approved. Do not offer to start, set up or implement anything, and do not end your reply with an offer to act. Stay in this mode until told it is off.]`;
 
 const ACTION_NOTE = `[Brainstorm mode is OFF. The user has told you to start working. Act on what was agreed.]`;
 

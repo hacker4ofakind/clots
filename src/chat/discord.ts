@@ -62,6 +62,8 @@ export class DiscordChat implements ChatAdapter {
 
   async makeReadOnly(channelId: string): Promise<void> {
     const channel = await this.textChannel(channelId);
+    // The bot is a member of @everyone, so it needs its own allowance or the denial silences it too.
+    await channel.permissionOverwrites.edit(this.client.user!.id, { SendMessages: true });
     await channel.permissionOverwrites.edit(this.guild.roles.everyone, { SendMessages: false });
   }
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { isTurnActivity, TurnTracker } from "../src/agent/turn-tracker.js";
 import { parseRateLimit } from "../src/agent/usage.js";
-import { buildPrompt, CLOT_SYSTEM_PROMPT } from "../src/agent/prompts.js";
-import { containerName, dockerExecArgs, gitIdentity, noreplyEmail, pickSdkEnv, toContainerCommand } from "../src/agent/container.js";
+import { buildPrompt, CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "../src/agent/prompts.js";
+import { containerName, dockerExecArgs, gitIdentity, noreplyEmail, pickSdkEnv, sessionEnv, toContainerCommand } from "../src/agent/container.js";
 
 describe("TurnTracker", () => {
   it("finishes on a result when nothing was pushed", () => {
@@ -73,6 +73,12 @@ describe("buildPrompt", () => {
   });
 });
 
+describe("PR_ATTRIBUTION", () => {
+  it("credits the Clot and links to the Clots repository", () => {
+    expect(PR_ATTRIBUTION).toBe("Created with a [Clot](https://github.com/hacker4ofakind/clots).");
+  });
+});
+
 describe("CLOT_SYSTEM_PROMPT", () => {
   it("tells the Clot to ask questions as plain text", () => {
     expect(CLOT_SYSTEM_PROMPT).toContain("ask them as plain text");
@@ -109,6 +115,18 @@ describe("container helpers", () => {
       CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
       CLAUDE_AGENT_SDK_VERSION: "1",
     });
+  });
+
+  it("never forwards the daemon's own Claude token; credentials are passed explicitly", () => {
+    expect(pickSdkEnv({ CLAUDE_CODE_OAUTH_TOKEN: "secret", CLAUDE_CODE_ENTRYPOINT: "sdk-ts" })).toEqual({ CLAUDE_CODE_ENTRYPOINT: "sdk-ts" });
+  });
+
+  it("gives a session the token when the container has no login of its own", () => {
+    expect(sessionEnv({ claudeToken: "c", githubToken: "gh", ownLogin: false })).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "c", GH_TOKEN: "gh" });
+  });
+
+  it("leaves the token out when the container is logged in, so its login and connectors are used", () => {
+    expect(sessionEnv({ claudeToken: "c", githubToken: "gh", ownLogin: true })).toEqual({ GH_TOKEN: "gh" });
   });
 
   it("builds docker exec arguments that pass env by name only", () => {

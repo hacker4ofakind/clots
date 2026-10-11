@@ -2,7 +2,7 @@ import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Effort, LimitInfo, TurnActivity } from "../types.js";
 import { ActivityCollector } from "./activity.js";
 import { containerName, makeSpawn, sessionExists } from "./container.js";
-import { CLOT_SYSTEM_PROMPT } from "./prompts.js";
+import { CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "./prompts.js";
 import { isTurnActivity, TurnTracker } from "./turn-tracker.js";
 import { parseRateLimit } from "./usage.js";
 
@@ -77,6 +77,7 @@ export class SdkRunner implements AgentRunner {
         cwd: CWD,
         permissionMode: req.planMode ? "plan" : "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        settings: { attribution: { pr: PR_ATTRIBUTION } },
         // Its prompts cannot be shown in chat; the Clot asks in plain text instead.
         disallowedTools: ["AskUserQuestion"],
         // Only consulted in plan mode; bypassPermissions approves before the callback.

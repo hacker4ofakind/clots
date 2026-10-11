@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { ensureContainer } from "./agent/container.js";
+import { containerName, ensureContainer, hasOwnLogin, sessionEnv } from "./agent/container.js";
 import { SdkRunner } from "./agent/runner.js";
 import { DiscordChat } from "./chat/discord.js";
 import { Clot } from "./clot.js";
@@ -25,6 +25,8 @@ await chat.start((m) => {
 for (const c of config.clots) {
   console.log(`[${c.name}] preparing container`);
   await ensureContainer({ clot: c.name, image: config.image, repoUrl: c.repoUrl, githubToken: config.githubToken });
+  const ownLogin = hasOwnLogin(containerName(c.name));
+  console.log(`[${c.name}] signing in with ${ownLogin ? "the container's own login" : "the token from .env"}`);
   const clot = new Clot({
     name: c.name,
     store,
@@ -32,7 +34,7 @@ for (const c of config.clots) {
     router,
     runner: new SdkRunner({
       clot: c.name,
-      env: { CLAUDE_CODE_OAUTH_TOKEN: config.claudeToken, GH_TOKEN: config.githubToken },
+      env: sessionEnv({ claudeToken: config.claudeToken, githubToken: config.githubToken, ownLogin }),
     }),
     timeZone: config.timeZone,
     userId: config.userId,
