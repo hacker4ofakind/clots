@@ -30,7 +30,8 @@
 - Not in this plan: editing the rulebook from chat, standing rules, routing corrections, the home Clot, sources shared between Clots, any source other than GitHub, creating webhooks automatically, gates other than the usage-limit pause, digests, the sweep, the spend log.
 - Automated events are held and gathered by Clot and subject: released 60 seconds after the last one, at most 120 seconds after the first. Repeated CI failures count once; several events become one `batch` event. Events written by people are never held.
 - A review's inline comments are fetched by the daemon and added to the event. The lock is not widened for them.
-- Commit once, at the end of Task 13. Work on the existing `stage-2a` branch.
+- The lock is asked before every tool call, by a hook that runs ahead of Claude Code's permission rules: nothing a settings file allows gets past it. A user's message is never used up in a turn with a different lock, and an investigation cut off by the usage limit is picked up again under the lock.
+- Commit once, at the end of Task 14. Work on the existing `stage-2a` branch.
 - If any assumption check in Task 1 fails, stop and report to the user. Do not work around it.
 
 ## File Structure
@@ -1457,6 +1458,7 @@ If a triage answer equals the fallback (the message is exactly the event's title
   - `checkCommand(line: string, testCommand?: string): Verdict`
   - `lockDecision(toolName: string, input: Record<string, unknown>, testCommand?: string): Verdict`
   - `LOCK_REMOVED_TOOLS` (`string[]`): the tools taken away from a locked turn
+  - `lockHookAnswer(toolName: string, input: unknown, testCommand?: string)`: what the hook that runs before every tool call of a locked turn answers: nothing for a call the lock approves, a denial with the reason for any other
 
 This is the security boundary of a locked turn. The two tables in the test are its specification: when a command is added to the approved list, add it to `APPROVED`, and add the ways it could write or execute to `REFUSED`.
 
@@ -1466,7 +1468,7 @@ Create `tests/command-check.test.ts`:
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { checkCommand, lockDecision } from "../src/agent/command-check.js";
+import { checkCommand, lockDecision, lockHookAnswer } from "../src/agent/command-check.js";
 
 const APPROVED = [
   "cat src/index.ts",
@@ -1517,6 +1519,15 @@ const APPROVED = [
   "git status; ls",
   "cat a.txt || cat b.txt",
   "cat 'my file.txt'",
+  "file -b --mime-type dist/app",
+  'grep -n "total$" report.txt',
+  "grep -n 'cost: $5' notes.txt",
+  "grep -n price\\$ notes.txt",
+  "pwd",
+  "echo checking",
+  "cd src && ls",
+  "which node",
+  "date",
   "cat my\\ file.txt",
 ];
 
@@ -1560,6 +1571,17 @@ const REFUSED: [command: string, why: string][] = [
   ["uniq -c -- in.txt out.txt", "second file"],
   ["uniq -f 1 in.txt", "second file"],
   ["tree -o out.txt", "tree -o"],
+  ["file -C -m magic", "file -C"],
+  ["file -bC -m magic", "file -bC"],
+  ["file --compile -m magic", "file --compile"],
+  ["file --comp -m magic", "file --comp"],
+  ["find /dev/null $'-exec' sh -c 'printf harmless' \\;", "$'...'"],
+  ["sort $'-o' out.txt in.txt", "$'...'"],
+  ['cat $"file"', "$'...'"],
+  ["find . -name a$IFS-delete", "variable expansion"],
+  ['find . "-ex${x}ec" rm {} +', "variable expansion"],
+  ["cat $HOME/.npmrc", "variable expansion"],
+  ['cat "$1"', "variable expansion"],
   ["git push", "git push"],
   ["git commit -am x", "git commit"],
   ["git checkout main", "git checkout"],
@@ -1608,7 +1630,7 @@ describe("checkCommand", () => {
 
 describe("lockDecision", () => {
   it("lets reading, searching, the web and subagents through", () => {
-    for (const tool of ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "Task", "Agent"]) {
+    for (const tool of ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "Task", "Agent", "Skill", "ToolSearch", "TodoWrite", "TaskOutput"]) {
       expect(lockDecision(tool, {})).toEqual({ ok: true });
     }
   });
@@ -1628,6 +1650,23 @@ describe("lockDecision", () => {
   it("refuses every other tool, including ones that write files or reach other services", () => {
     for (const tool of ["Edit", "Write", "NotebookEdit", "mcp__claude_ai_Slack__send_message", "SomethingNew"]) {
       expect(lockDecision(tool, {}).ok).toBe(false);
+    }
+  });
+});
+
+describe("lockHookAnswer", () => {
+  it("says nothing about a call the lock approves, so the usual permission check goes on", () => {
+    expect(lockHookAnswer("Read", { file_path: "a.ts" })).toEqual({});
+    expect(lockHookAnswer("Bash", { command: "git status" })).toEqual({});
+    expect(lockHookAnswer("Bash", { command: "npm test" }, "npm test")).toEqual({});
+  });
+
+  it("denies everything else, with the reason", () => {
+    expect(lockHookAnswer("Bash", { command: "git push" })).toEqual({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("`git push` is not on the approved list") },
+    });
+    for (const [tool, input] of [["Write", { file_path: "a.ts" }], ["mcp__x__send", {}], ["Bash", undefined], ["Bash", "git status"]] as const) {
+      expect(lockHookAnswer(tool, input).hookSpecificOutput?.permissionDecision).toBe("deny");
     }
   });
 });
@@ -1687,6 +1726,11 @@ function split(line: string): string[][] | string {
       continue;
     }
     if (c === "`" || (c === "$" && next === "(")) return "command substitution";
+    // The shell would put something else in the word's place, and may split it into several:
+    // `a$IFS-delete` reaches `find` as two arguments, and `"-ex${x}ec"` as `-exec`.
+    if (c === "$" && next !== undefined && /[A-Za-z0-9_{@*#?!$-]/.test(next)) return "variable expansion";
+    // Outside quotes, $'...' is a string with escapes of its own: $'-exec' is `-exec`.
+    if (c === "$" && quote === null && (next === "'" || next === '"')) return "a $'...' or $\"...\" string";
     if (quote === '"') {
       if (c === '"') quote = null;
       else if (c === "\\" && next !== undefined) word += line[(i += 1)];
@@ -1723,7 +1767,7 @@ function split(line: string): string[][] | string {
 }
 
 /** Commands that only read, whatever their arguments. */
-const READERS = new Set(["cat", "head", "tail", "ls", "wc", "cut", "stat", "file", "ps", "grep"]);
+const READERS = new Set(["cat", "head", "tail", "ls", "wc", "cut", "stat", "ps", "grep", "pwd", "echo", "cd", "which", "date"]);
 
 /**
  * For commands that read unless given certain flags: which arguments make them write or run something.
@@ -1735,6 +1779,8 @@ const WRITING_FLAG: Record<string, (arg: string) => boolean> = {
   rg: (a) => a.startsWith("--pre") || a.startsWith("--hostname-bin"),
   sort: (a) => a.startsWith("--o") || a.startsWith("--co") || /^-[a-zA-Z]*o/.test(a),
   tree: (a) => a.startsWith("-o") || a.startsWith("--output"),
+  // -C (--compile, which `--co` is enough to mean) writes a compiled magic file.
+  file: (a) => a.startsWith("--co") || /^-[a-zA-Z]*C/.test(a),
 };
 
 const GIT_SUBCOMMANDS = new Set(["log", "diff", "show", "status", "blame", "ls-files", "grep", "branch"]);
@@ -1819,7 +1865,11 @@ export function checkCommand(line: string, testCommand?: string): Verdict {
 }
 
 /** Tools a locked turn may use without a further check: they read, search or look things up. */
-const LOCKED_TOOLS = new Set(["Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "Task", "Agent", "TodoWrite", "BashOutput"]);
+const LOCKED_TOOLS = new Set([
+  ...["Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "Task", "Agent", "Skill", "ToolSearch"],
+  // Claude Code's own bookkeeping: its to-do list, and watching or stopping what it started itself.
+  ...["TodoWrite", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop", "BashOutput", "KillShell"],
+]);
 
 /** Tools removed from a locked turn altogether, so the model does not reach for them. */
 export const LOCK_REMOVED_TOOLS = ["Edit", "Write", "NotebookEdit"];
@@ -1834,12 +1884,23 @@ export function lockDecision(toolName: string, input: Record<string, unknown>, t
   if (LOCKED_TOOLS.has(toolName)) return OK;
   return no(`Refused: ${toolName} is not available while locked. Nothing can be changed or sent until the lock is off.`);
 }
+
+/**
+ * The answer of the hook that runs before every tool call of a locked turn. A hook is asked
+ * before Claude Code looks at its permission rules, so nothing a settings file allows, and
+ * nothing Claude Code would approve by itself, gets past the lock. An empty answer lets the
+ * call go on to the usual permission check.
+ */
+export function lockHookAnswer(toolName: string, input: unknown, testCommand?: string): { hookSpecificOutput?: { hookEventName: "PreToolUse"; permissionDecision: "deny"; permissionDecisionReason: string } } {
+  const verdict = lockDecision(toolName, typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {}, testCommand);
+  return verdict.ok ? {} : { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: verdict.reason } };
+}
 ```
 
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run tests/command-check.test.ts`
-Expected: PASS, 116 tests.
+Expected: PASS, 138 tests.
 
 
 ### Task 6: The lock in the runner
@@ -2290,7 +2351,7 @@ index 70342e4..3ddcd44 100644
 - [ ] **Step 7: Run the suite and typecheck**
 
 Run: `npm run typecheck && npm test`
-Expected: no type errors; PASS, 288 tests across 14 files (282 without the recordings test).
+Expected: no type errors; PASS, 310 tests across 14 files (304 without the recordings test).
 
 - [ ] **Step 8: Check the lock through the real runner**
 
@@ -5236,10 +5297,704 @@ index 0085224..d1a1ad2 100644
 - [ ] **Step 6: Typecheck and run the suite**
 
 Run: `npm run typecheck && npm test`
-Expected: no type errors; PASS, 365 tests across 18 files.
+Expected: no type errors; PASS, 387 tests across 18 files.
 
 
-### Task 13: Wiring, acceptance and commit
+### Task 13: A lock nothing gets past, and records that survive a restart
+
+**Files:**
+- Modify: `src/agent/runner.ts`, `scripts/try-lock.ts`, `src/clot.ts`, `src/store.ts`, `src/steering.ts`, `src/pipeline.ts`, `src/events/review-comments.ts`
+- Test: `tests/clot.test.ts`, `tests/store.test.ts`, `tests/steering.test.ts`, `tests/pipeline.test.ts`, `tests/batch.test.ts`
+
+**Interfaces:**
+- Consumes: `lockHookAnswer` from Task 5; the Clot of Task 9; steering of Task 10; the pipeline of Task 12.
+- Produces:
+  - A locked turn has a `PreToolUse` hook that gives `lockHookAnswer` for every tool call.
+  - `SessionRow.interruptedKind: InboxKind`; `Store.setInterrupted(id, interrupted, kind?)`.
+  - `Store.deleteAsk(eventId): boolean`: true only for the caller that closed the question.
+  - `Store.recordRelease({ event, clot, isNew, absorbed })`: one transaction.
+  - `hasInline(event)`, `INLINE_HEADING`, `INLINE_PARTIAL` from `src/events/review-comments.ts`; the reader follows GitHub's pages.
+
+Section 7 of the spec says how the lock is enforced and what keeps a turn's lock; sections 6 and 8 say what must hold across a restart and when two things happen at once.
+
+- [ ] **Step 1: Ask the lock before every tool call**
+
+In the default permission mode an allow rule in a settings file approves a call before the daemon's callback is asked, and this runner loads the repository's settings. A hook is asked first.
+
+Change `src/agent/runner.ts`:
+
+```diff
+diff --git a/src/agent/runner.ts b/src/agent/runner.ts
+index 4e35b81..bf6ebb6 100644
+--- a/src/agent/runner.ts
++++ b/src/agent/runner.ts
+@@ -1,7 +1,7 @@
+ import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+ import type { Effort, LimitInfo, TurnActivity } from "../types.js";
+ import { ActivityCollector } from "./activity.js";
+-import { LOCK_REMOVED_TOOLS, lockDecision } from "./command-check.js";
++import { LOCK_REMOVED_TOOLS, lockDecision, lockHookAnswer } from "./command-check.js";
+ import { containerName, makeSpawn, sessionExists } from "./container.js";
+ import { CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "./prompts.js";
+ import { InputQueue } from "./input-queue.js";
+@@ -70,8 +70,11 @@ export class SdkRunner implements AgentRunner {
+         effort: req.effort,
+         ...(resume ? { resume } : { sessionId: req.newSessionId }),
+         cwd: CWD,
+-        // The lock: in the default mode Claude Code puts everything that is not plainly read-only
+-        // to the callback below. Plan mode is not used, because it never consults the callback.
++        // The lock has two parts. The hook below is asked before every tool call, ahead of any
++        // permission rule, and refuses what the lock does not approve: an allow rule in a settings
++        // file cannot get past it. What it lets through goes on to the usual check, where in the
++        // default mode everything that is not plainly read-only is put to the callback, which gives
++        // the same answer. Plan mode is not used, because it never consults the callback.
+         permissionMode: req.locked ? "default" : "bypassPermissions",
+         allowDangerouslySkipPermissions: true,
+         settings: { attribution: { pr: PR_ATTRIBUTION } },
+@@ -79,6 +82,13 @@ export class SdkRunner implements AgentRunner {
+         disallowedTools: req.locked ? ["AskUserQuestion", ...LOCK_REMOVED_TOOLS] : ["AskUserQuestion"],
+         ...(req.locked
+           ? {
++              hooks: {
++                PreToolUse: [
++                  {
++                    hooks: [async (hook) => (hook.hook_event_name === "PreToolUse" ? lockHookAnswer(hook.tool_name, hook.tool_input, this.o.testCommand) : {})],
++                  },
++                ],
++              },
+               canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
+                 const verdict = lockDecision(toolName, toolInput, this.o.testCommand);
+                 return verdict.ok ? { behavior: "allow" as const, updatedInput: toolInput } : { behavior: "deny" as const, message: verdict.reason };
+```
+
+`scripts/try-lock.ts` now plants such an allow rule, so that the check proves the point:
+
+Change `scripts/try-lock.ts`:
+
+```diff
+diff --git a/scripts/try-lock.ts b/scripts/try-lock.ts
+index c7ffcf9..34df717 100644
+--- a/scripts/try-lock.ts
++++ b/scripts/try-lock.ts
+@@ -12,6 +12,8 @@ const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "
+ try { docker("rm", "-f", name); } catch { /* not running */ }
+ docker("run", "-d", "--name", name, "clots-clot:dev");
+ docker("exec", name, "sh", "-c", `mkdir -p ${CWD} && cd ${CWD} && git init -q && echo heron-42 > hello.txt`);
++// An allow rule that a settings file brings along must not get a command past the lock.
++docker("exec", name, "sh", "-c", `mkdir -p ${CWD}/.claude && echo '{"permissions":{"allow":["Bash(touch:*)","Bash(touch *)"]}}' > ${CWD}/.claude/settings.json`);
+ 
+ const runner = new SdkRunner({ clot, env: { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN! }, testCommand: "cat hello.txt" });
+ const result = await runner.startTurn({
+```
+
+Run: `node --env-file=.env --import tsx scripts/try-lock.ts`
+Expected: as in Task 6: the `touch` is refused although the settings file allows it, and the last line is `LOCK HELD`.
+
+- [ ] **Step 2: Keep a turn's lock when it is continued, and keep messages out of turns with another lock**
+
+Change `tests/clot.test.ts`:
+
+```diff
+diff --git a/tests/clot.test.ts b/tests/clot.test.ts
+index 7a0582b..1fc52d1 100644
+--- a/tests/clot.test.ts
++++ b/tests/clot.test.ts
+@@ -794,6 +794,51 @@ describe("Clot", () => {
+       await first;
+     });
+ 
++    it("does not use up the user's message in an investigation: it waits for a working turn of its own", async () => {
++      runner.script = [{ hold: true }, {}];
++      await clot.queueEvent(event("d-1"), "Login fails.");
++      await vi.waitFor(() => expect(runner.release).toBeDefined());
++
++      await clot.onMessage(msg("fix it now"));
++      expect(runner.pushes).toEqual([]);
++      expect(store.nextPending("graphite")).toMatchObject({ text: "fix it now", status: "pending" });
++      runner.release!();
++
++      await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
++      expect(runner.calls.map((c) => c.locked)).toEqual([true, false]);
++      expect(runner.calls[1].prompt).toBe("fix it now");
++    });
++
++    it("still feeds a message into an investigation while brainstorming, where it would be locked anyway", async () => {
++      store.setMode("graphite", "brainstorm");
++      runner.script = [{ hold: true }];
++      await clot.queueEvent(event("d-1"), "Login fails.");
++      await vi.waitFor(() => expect(runner.release).toBeDefined());
++
++      await clot.onMessage(msg("what do you make of it?"));
++      expect(runner.pushes.map((p) => p.text)).toEqual(["[sent while you were working]\nwhat do you make of it?"]);
++      runner.release!();
++      await vi.waitFor(() => expect(clot.isBusy()).toBe(false));
++    });
++
++    it("keeps the lock on an investigation the usage limit cut off, across a restart too", async () => {
++      const resetsAt = Math.floor(now.getTime() / 1000) + 60;
++      runner.script = [{ ok: false, limit: { resetsAt } }, {}];
++      await clot.queueEvent(event("d-1"), "Login fails.");
++      await vi.waitFor(() => expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt));
++      expect(store.activeSession("graphite")).toMatchObject({ interrupted: true, interruptedKind: "event" });
++
++      now = new Date(resetsAt * 1000 + 5000);
++      timers = [];
++      await build().init();
++      timers[0].fn();
++
++      await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
++      expect(runner.calls[1]).toMatchObject({ locked: true });
++      expect(runner.calls[1].prompt).toContain("The usage limit has reset");
++      expect(runner.calls[1].prompt).toContain("nothing can be changed");
++    });
++
+     it("says so when looking into an event fails", async () => {
+       const channel = store.activeSession("graphite")!.channelId;
+       runner.script = [{ ok: false, say: [], contextPercent: 0 }];
+```
+
+Change `tests/store.test.ts`:
+
+```diff
+diff --git a/tests/store.test.ts b/tests/store.test.ts
+index f7a02d7..6a8d667 100644
+--- a/tests/store.test.ts
++++ b/tests/store.test.ts
+@@ -72,6 +72,16 @@ describe("Store", () => {
+     expect(store.tail("graphite", 4)).toEqual([]);
+   });
+ 
++  it("remembers what a cut-off turn was for, and forgets it when the session carries on", () => {
++    store.upsertClot("kinds", "cat-9");
++    store.createSession({ id: "k1", clot: "kinds", channelId: "ch-k", seed: null });
++    expect(store.activeSession("kinds")).toMatchObject({ interrupted: false, interruptedKind: "message" });
++    store.setInterrupted("k1", true, "event");
++    expect(store.activeSession("kinds")).toMatchObject({ interrupted: true, interruptedKind: "event" });
++    store.setInterrupted("k1", false);
++    expect(store.activeSession("kinds")).toMatchObject({ interrupted: false, interruptedKind: "message" });
++  });
++
+   it("marks inbox rows as messages unless told they are events", () => {
+     store.enqueue({ id: "m1", clot: "graphite", channelId: "ch-1", text: "hi", receivedAt: 1 });
+     store.enqueue({ id: "event:d-1", clot: "graphite", channelId: "ch-1", text: "<event>", receivedAt: 2, kind: "event" });
+@@ -120,6 +130,29 @@ describe("Store", () => {
+       expect(store.getEvent("d-1")).toMatchObject({ body: "Steps...\n\nInline comments:\n- a.ts:3: rename", subject: "pr:14", automated: true, status: "held" });
+     });
+ 
++    it("records the release of a held group in one step", () => {
++      for (const id of ["d-1", "d-2", "d-3"]) {
++        store.insertEvent({ ...event, id });
++        store.setEventStatus(id, "held");
++      }
++      store.recordRelease({ event: { ...event, id: "batch:d-1", kind: "batch" }, clot: "graphite", isNew: true, absorbed: ["d-1", "d-2"] });
++      expect(store.getEvent("batch:d-1")).toMatchObject({ status: "received", clot: "graphite" });
++      expect(store.eventsWithStatus("merged").map((e) => [e.id, e.note])).toEqual([
++        ["d-1", "into batch:d-1"],
++        ["d-2", "into batch:d-1"],
++      ]);
++
++      store.recordRelease({ event: store.getEvent("d-3")!, clot: "graphite", isNew: false, absorbed: [] });
++      expect(store.getEvent("d-3")!.status).toBe("received");
++      expect(store.eventsWithStatus("held")).toEqual([]);
++    });
++
++    it("lets only one caller close a question", () => {
++      store.createAsk({ eventId: "d-1", clot: "graphite", channelId: "ask-1" });
++      expect(store.deleteAsk("d-1")).toBe(true);
++      expect(store.deleteAsk("d-1")).toBe(false);
++    });
++
+     it("lists events by status, oldest first", () => {
+       store.insertEvent(event);
+       store.insertEvent({ ...event, id: "d-2" });
+```
+
+Change `src/store.ts`:
+
+```diff
+diff --git a/src/store.ts b/src/store.ts
+index 923fda6..810ef3f 100644
+--- a/src/store.ts
++++ b/src/store.ts
+@@ -18,6 +18,8 @@ export interface SessionRow {
+   seedReason: SeedReason;
+   started: boolean;
+   interrupted: boolean;
++  /** What the cut-off turn was for, so that picking it up again keeps an investigation locked. */
++  interruptedKind: InboxKind;
+   active: boolean;
+ }
+ 
+@@ -125,6 +127,7 @@ function toSession(r: any): SessionRow {
+     seedReason: r.seed_reason,
+     started: r.started === 1,
+     interrupted: r.interrupted === 1,
++    interruptedKind: r.interrupted_kind,
+     active: r.active === 1,
+   };
+ }
+@@ -169,6 +172,7 @@ export class Store {
+     this.addColumn("sessions", "seed_reason", "TEXT NOT NULL DEFAULT 'context'");
+     this.addColumn("clots", "next_effort", "TEXT");
+     this.addColumn("inbox", "kind", "TEXT NOT NULL DEFAULT 'message'");
++    this.addColumn("sessions", "interrupted_kind", "TEXT NOT NULL DEFAULT 'message'");
+     this.addColumn("events", "subject", "TEXT NOT NULL DEFAULT ''");
+     this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
+   }
+@@ -247,8 +251,8 @@ export class Store {
+     this.db.prepare("UPDATE sessions SET started = 1, seed = NULL WHERE id = ?").run(id);
+   }
+ 
+-  setInterrupted(id: string, interrupted: boolean): void {
+-    this.db.prepare("UPDATE sessions SET interrupted = ? WHERE id = ?").run(interrupted ? 1 : 0, id);
++  setInterrupted(id: string, interrupted: boolean, kind: InboxKind = "message"): void {
++    this.db.prepare("UPDATE sessions SET interrupted = ?, interrupted_kind = ? WHERE id = ?").run(interrupted ? 1 : 0, interrupted ? kind : "message", id);
+   }
+ 
+   enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind }): boolean {
+@@ -285,6 +289,23 @@ export class Store {
+     this.db.prepare("UPDATE events SET body = ? WHERE id = ?").run(body, id);
+   }
+ 
++  /**
++   * Records what releasing a group of held events produced, all or nothing: the event that goes
++   * on (stored now when it is a new batch), and every event it stands in for as merged into it.
++   * Done in one step so that a restart never finds some of a group merged and the rest still held.
++   */
++  recordRelease(r: { event: ClotEvent; clot: string; isNew: boolean; absorbed: string[] }): void {
++    this.db.transaction(() => {
++      if (r.isNew) {
++        this.insertEvent(r.event);
++        this.setEventClot(r.event.id, r.clot);
++      } else {
++        this.setEventStatus(r.event.id, "received");
++      }
++      for (const id of r.absorbed) this.setEventStatus(id, "merged", `into ${r.event.id}`);
++    })();
++  }
++
+   setEventClot(id: string, clot: string): void {
+     this.db.prepare("UPDATE events SET clot = ? WHERE id = ?").run(clot, id);
+   }
+@@ -307,8 +328,9 @@ export class Store {
+     return this.db.prepare("SELECT * FROM asks WHERE clot = ? ORDER BY rowid").all(clot).map(toAsk);
+   }
+ 
+-  deleteAsk(eventId: string): void {
+-    this.db.prepare("DELETE FROM asks WHERE event_id = ?").run(eventId);
++  /** Closes a question. Returns false when it was closed already: only the caller that gets true may carry out its outcome. */
++  deleteAsk(eventId: string): boolean {
++    return this.db.prepare("DELETE FROM asks WHERE event_id = ?").run(eventId).changes === 1;
+   }
+ 
+   nextPending(clot: string): InboxRow | undefined {
+```
+
+Change `src/clot.ts`:
+
+```diff
+diff --git a/src/clot.ts b/src/clot.ts
+index c198b36..dea9bf9 100644
+--- a/src/clot.ts
++++ b/src/clot.ts
+@@ -50,6 +50,8 @@ const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro:
+ 
+ export class Clot {
+   private live?: TurnHandle;
++  /** Whether the running turn is under the lock. An investigation is, whatever the mode. */
++  private liveLocked = false;
+   private draining = false;
+   private posts: Promise<void> = Promise.resolve();
+ 
+@@ -115,6 +117,10 @@ export class Clot {
+       // A turn's permissions are fixed when it starts, so a message that changes the mode
+       // stays pending and gets a turn of its own, in the new mode, right after this one.
+       if (nextMode(mode, decision.modeChange) !== mode) return;
++      // The same goes for the lock. An investigation is locked even in action mode, so a message
++      // that is owed a working turn stays pending and gets one, instead of being used up in a
++      // turn that can change nothing.
++      if (this.liveLocked !== (mode === "brainstorm")) return;
+       const oneOff = store.nextEffort(name);
+       const effort = (command.kind === "effort" ? command.effort : oneOff) ?? decision.effort;
+       // Refused once the turn's input has closed; the message then stays pending for the next turn,
+@@ -252,7 +258,7 @@ export class Clot {
+     }
+ 
+     if (result.limit) {
+-      store.setInterrupted(session.id, true);
++      store.setInterrupted(session.id, true, row.kind);
+       return (await this.pause(session.channelId, result.limit.resetsAt)) === "resumed";
+     }
+ 
+@@ -278,12 +284,15 @@ export class Clot {
+     return "resumed";
+   }
+ 
+-  /** After a reset: if a turn was cut off and nothing is waiting, queue a prompt that tells the session to carry on. */
++  /**
++   * After a reset: if a turn was cut off and nothing is waiting, queue a prompt that tells the session to carry on.
++   * It is queued as what the cut-off turn was, so an investigation is picked up again under the lock.
++   */
+   private queueContinuation(resetsAt: number): void {
+     const { store, name } = this.d;
+     const session = store.activeSession(name)!;
+     if (!session.interrupted || store.nextPending(name)) return;
+-    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime() });
++    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime(), kind: session.interruptedKind });
+   }
+ 
+   /**
+@@ -295,6 +304,7 @@ export class Clot {
+     const { store, name } = this.d;
+     const decision = await this.d.router.decide({ text: row.text, mode, tail: store.tail(name, 4) });
+     store.setInboxStatus(row.id, "running");
++    this.liveLocked = true;
+     this.live = this.d.runner.startTurn({
+       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
+       prompt: buildPrompt({ text: row.text, mode, modeChanged: false, seed: session.seed, seedReason: session.seedReason, interrupted: session.interrupted, event: true }),
+@@ -339,6 +349,7 @@ export class Clot {
+       interrupted: session.interrupted,
+     });
+ 
++    this.liveLocked = newMode === "brainstorm";
+     this.live = this.d.runner.startTurn({
+       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
+       prompt,
+```
+
+- [ ] **Step 3: Let a steering question be closed once**
+
+Change `tests/steering.test.ts`:
+
+```diff
+diff --git a/tests/steering.test.ts b/tests/steering.test.ts
+index 9d99601..ada3429 100644
+--- a/tests/steering.test.ts
++++ b/tests/steering.test.ts
+@@ -13,6 +13,8 @@ class FakePort implements ClotPort {
+   accepts = true;
+   steered: string[] = [];
+   queued: { id: string; notice: string; kick: boolean }[] = [];
++  /** When set, queueing waits for it, as posting the notice does in a real Clot. */
++  gate?: Promise<void>;
+   isBusy(): boolean {
+     return this.busy;
+   }
+@@ -21,6 +23,7 @@ class FakePort implements ClotPort {
+     return this.accepts;
+   }
+   async queueEvent(event: ClotEvent, notice: string, kick = true): Promise<void> {
++    await this.gate;
+     this.queued.push({ id: event.id, notice, kick });
+   }
+ }
+@@ -169,6 +172,22 @@ describe("Steering", () => {
+     expect(await steering.onReply(reply(channels[0], "yes"))).toBe(false);
+   });
+ 
++  it("leaves alone a question the user answered while an earlier one was lapsing", async () => {
++    await steering.ask("graphite", event("d-1"), "CI failed.");
++    await steering.ask("graphite", event("d-2"), "CI failed again.");
++    const second = store.openAsks("graphite")[1].channelId;
++    let open!: () => void;
++    port.gate = new Promise<void>((resolve) => (open = resolve));
++
++    const lapsing = steering.lapse("graphite");
++    await steering.onReply(reply(second, "no"));
++    open();
++    await lapsing;
++
++    expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
++    expect(store.getEvent("d-2")).toMatchObject({ status: "dropped", note: "declined by the user" });
++  });
++
+   it("queues at once when the turn ended while the question was being written", async () => {
+     port.busy = false;
+     expect(await steering.ask("graphite", event("d-1"), "CI failed.")).toBe(true);
+```
+
+Change `src/steering.ts`:
+
+```diff
+diff --git a/src/steering.ts b/src/steering.ts
+index 45ab352..29558ee 100644
+--- a/src/steering.ts
++++ b/src/steering.ts
+@@ -86,8 +86,9 @@ export class Steering {
+ 
+   private async resolve(ask: AskRow, outcome: ReplyOutcome, kick: boolean): Promise<void> {
+     const { store, chat } = this.d;
+-    // Removed first, so a second reply, or a lapse arriving at the same moment, finds nothing to do.
+-    store.deleteAsk(ask.eventId);
++    // Closed first, and only whoever closed it goes on: a second reply, or a lapse working from
++    // a list it read a moment ago, must not undo what the user has already decided.
++    if (!store.deleteAsk(ask.eventId)) return;
+     const event = store.getEvent(ask.eventId);
+     const port = this.d.clots.get(ask.clot);
+     if (event && port) {
+```
+
+- [ ] **Step 4: Read every page of a review's comments, read a held review before it is gathered, and record a release in one step**
+
+Change `tests/batch.test.ts`:
+
+```diff
+diff --git a/tests/batch.test.ts b/tests/batch.test.ts
+index 66ea4a5..fc43b5f 100644
+--- a/tests/batch.test.ts
++++ b/tests/batch.test.ts
+@@ -1,7 +1,7 @@
+ import { describe, expect, it } from "vitest";
+ import { combine, describeSubject } from "../src/events/batch.js";
+ import { MAX_BODY } from "../src/events/github.js";
+-import { formatInlineComments, INLINE_UNREAD, inlineCommentReader, reviewIdOf } from "../src/events/review-comments.js";
++import { formatInlineComments, INLINE_PARTIAL, INLINE_UNREAD, inlineCommentReader, reviewIdOf } from "../src/events/review-comments.js";
+ import type { ClotEvent } from "../src/events/types.js";
+ 
+ function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
+@@ -135,7 +135,32 @@ describe("inline review comments", () => {
+     const inline = "Inline comments:\n- src/cache.ts:12: Rename this.\n- src/b.ts:3: And this.";
+     expect((await read(review)).body).toBe(inline);
+     expect((await read({ ...review, body: "Two things." })).body).toBe(`Two things.\n\n${inline}`);
+-    expect(calls[0]).toEqual({ url: "https://api.github.com/repos/octo/widgets/pulls/9/comments?sort=created&direction=desc&per_page=100", auth: "Bearer t0ken" });
++    expect(calls[0]).toEqual({ url: "https://api.github.com/repos/octo/widgets/pulls/9/comments?sort=created&direction=desc&per_page=100&page=1", auth: "Bearer t0ken" });
++  });
++
++  it("reads further pages while they are full, and finds a review whose comments are not on the first", async () => {
++    const newer = Array.from({ length: 100 }, (_, i) => ({ pull_request_review_id: 777, path: `src/new-${i}.ts`, line: 1, body: "Newer." }));
++    const pages = [newer, [{ pull_request_review_id: 555, path: "src/cache.ts", line: 12, body: "Rename this." }]];
++    const urls: string[] = [];
++    const read = inlineCommentReader("t0ken", (async (url: string) => {
++      urls.push(url);
++      return new Response(JSON.stringify(pages[urls.length - 1] ?? []));
++    }) as unknown as typeof fetch);
++
++    expect((await read(review)).body).toBe("Inline comments:\n- src/cache.ts:12: Rename this.");
++    expect(urls.map((url) => url.slice(url.indexOf("&page=")))).toEqual(["&page=1", "&page=2"]);
++  });
++
++  it("says so when the pull request has more pages of comments than it reads", async () => {
++    const full = Array.from({ length: 100 }, () => ({ pull_request_review_id: 777, path: "src/other.ts", line: 1, body: "Another review." }));
++    let asked = 0;
++    const read = inlineCommentReader("t0ken", (async () => {
++      asked += 1;
++      return new Response(JSON.stringify(full));
++    }) as unknown as typeof fetch);
++
++    expect((await read(review)).body).toBe(INLINE_PARTIAL);
++    expect(asked).toBe(10);
+   });
+ 
+   it("leaves a review without inline comments, and anything that is not a review, as it came", async () => {
+@@ -160,7 +185,7 @@ describe("inline review comments", () => {
+   });
+ 
+   it("keeps a long list inside the length limit", async () => {
+-    const many = Array.from({ length: 200 }, (_, i) => ({ pull_request_review_id: 555, path: `src/file-${i}.ts`, line: i, body: "Please rename this variable." }));
++    const many = Array.from({ length: 90 }, (_, i) => ({ pull_request_review_id: 555, path: `src/file-${i}.ts`, line: i, body: "Please rename this variable." }));
+     const read = inlineCommentReader("t0ken", (async () => new Response(JSON.stringify(many))) as unknown as typeof fetch);
+     const body = (await read(review)).body;
+     expect(body.length).toBeLessThan(MAX_BODY + 20);
+```
+
+Change `src/events/review-comments.ts`:
+
+```diff
+diff --git a/src/events/review-comments.ts b/src/events/review-comments.ts
+index 77d991a..c3e73ed 100644
+--- a/src/events/review-comments.ts
++++ b/src/events/review-comments.ts
+@@ -4,6 +4,21 @@ import type { ClotEvent } from "./types.js";
+ /** Added to a review's body when its inline comments could not be fetched. */
+ export const INLINE_UNREAD = "[This review's inline comments could not be read.]";
+ 
++/** Added when a pull request has more comments than the daemon reads. */
++export const INLINE_PARTIAL = "[This pull request has more comments than could be read; some of this review's inline comments may be missing.]";
++
++/** The first line of the block of inline comments. */
++export const INLINE_HEADING = "Inline comments:";
++
++/** GitHub's largest page, and how many pages are read before giving up. */
++const PER_PAGE = 100;
++const MAX_PAGES = 10;
++
++/** Whether a review's body already holds what the reader adds, so that it is not added twice. */
++export function hasInline(event: ClotEvent): boolean {
++  return [INLINE_HEADING, INLINE_UNREAD, INLINE_PARTIAL].some((mark) => event.body.includes(mark));
++}
++
+ /** The review's ID, which GitHub puts at the end of its link: ".../pull/9#pullrequestreview-123". */
+ export function reviewIdOf(event: ClotEvent): string | undefined {
+   return /#pullrequestreview-(\d+)$/.exec(event.url)?.[1];
+@@ -50,7 +65,7 @@ export function formatInlineComments(comments: unknown, reviewId?: string): stri
+   const lines = comments
+     .filter((c) => typeof c?.path === "string" && typeof c?.body === "string" && (reviewId === undefined || String(c.pull_request_review_id) === reviewId))
+     .map((c) => `- ${c.path}${place(c)}: ${c.body.trim()}${codeOf(c)}`);
+-  return lines.length === 0 ? "" : `Inline comments:\n${lines.join("\n")}`;
++  return lines.length === 0 ? "" : `${INLINE_HEADING}\n${lines.join("\n")}`;
+ }
+ 
+ /** The review with a block of text added to its body, inside the usual length limit. */
+@@ -71,13 +86,21 @@ export function inlineCommentReader(token: string, fetchFn: typeof fetch = fetch
+     if (event.kind !== "review" || id === undefined) return event;
+     try {
+       // The list of one review's comments leaves out their line numbers, so the pull request's
+-      // comments are fetched, newest first, and this review's are picked out.
+-      const response = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=100`, {
+-        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
+-      });
+-      if (!response.ok) return withInline(event, INLINE_UNREAD);
+-      const comments: unknown = await response.json();
+-      return withInline(event, formatInlineComments(Array.isArray(comments) ? [...comments].reverse() : comments, id));
++      // comments are fetched, newest first and page by page, and this review's are picked out.
++      const comments: unknown[] = [];
++      let complete = false;
++      for (let page = 1; page <= MAX_PAGES && !complete; page += 1) {
++        const response = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=${PER_PAGE}&page=${page}`, {
++          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
++        });
++        if (!response.ok) return withInline(event, INLINE_UNREAD);
++        const batch: unknown = await response.json();
++        if (!Array.isArray(batch)) return withInline(event, INLINE_UNREAD);
++        comments.push(...batch);
++        complete = batch.length < PER_PAGE;
++      }
++      const block = formatInlineComments(comments.reverse(), id);
++      return withInline(event, complete ? block : [block, INLINE_PARTIAL].filter((part) => part !== "").join("\n"));
+     } catch {
+       return withInline(event, INLINE_UNREAD);
+     }
+```
+
+Change `tests/pipeline.test.ts`:
+
+```diff
+diff --git a/tests/pipeline.test.ts b/tests/pipeline.test.ts
+index c735381..a47ae2b 100644
+--- a/tests/pipeline.test.ts
++++ b/tests/pipeline.test.ts
+@@ -313,6 +313,33 @@ describe("Pipeline", () => {
+     expect(triage.inputs[0].event.body).toBe("Please fix.");
+     expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
+   });
++
++  it("reads a bot's review before gathering it, so a batch keeps its inline comments", async () => {
++    inline = async (e) => ({ ...e, body: "Inline comments:\n- src/cache.ts:12: possible race" });
++    await pipeline.handle(report("d-1"));
++    await pipeline.handle(report("d-2", { kind: "review", actor: "reviewbot[bot]", title: "Review (commented) on pull request #14: Add cache", body: "" }));
++
++    fire();
++    await vi.waitFor(() => expect(port.queued.map((q) => q.id)).toEqual(["batch:d-1"]));
++    expect(triage.inputs[0].event.body).toContain("src/cache.ts:12: possible race");
++    expect(store.getEvent("d-2")!.body).toContain("src/cache.ts:12: possible race");
++  });
++
++  it("reads a review's inline comments once, however often the event is taken up again", async () => {
++    let reads = 0;
++    inline = async (e) => {
++      reads += 1;
++      return { ...e, body: `${e.body}\n\nInline comments:\n- a.ts:3: rename` };
++    };
++    triage.fail = true;
++    await pipeline.handle(event("d-1", { kind: "review", body: "Please fix." }));
++    triage.fail = false;
++    await pipeline.resume();
++
++    expect(reads).toBe(1);
++    expect(triage.inputs.at(-1)!.event.body).toBe("Please fix.\n\nInline comments:\n- a.ts:3: rename");
++    expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
++  });
+ });
+ 
+ describe("acceptGithub", () => {
+```
+
+Change `src/pipeline.ts`:
+
+```diff
+diff --git a/src/pipeline.ts b/src/pipeline.ts
+index e0b43eb..4558e33 100644
+--- a/src/pipeline.ts
++++ b/src/pipeline.ts
+@@ -1,6 +1,7 @@
+ import type { ChatAdapter } from "./chat/adapter.js";
+ import { combine } from "./events/batch.js";
+ import { isSelfCaused } from "./events/github.js";
++import { hasInline } from "./events/review-comments.js";
+ import type { ClotEvent } from "./events/types.js";
+ import { Hold } from "./hold.js";
+ import type { ClotPort } from "./steering.js";
+@@ -97,7 +98,18 @@ export class Pipeline {
+       return;
+     }
+ 
+-    await this.proceed(clotName, port, event);
++    await this.proceed(clotName, port, await this.withInline(event));
++  }
++
++  /**
++   * GitHub sends a review without its inline comments, which are often all it says. They are
++   * added to its body here, once, and kept.
++   */
++  private async withInline(event: ClotEvent): Promise<ClotEvent> {
++    if (event.kind !== "review" || hasInline(event)) return event;
++    const read = await this.d.readInline(event).catch(() => event);
++    if (read.body !== event.body) this.d.store.setEventBody(event.id, read.body);
++    return read;
+   }
+ 
+   /** Takes the events held for one subject onward as a single event. Never throws. */
+@@ -106,32 +118,22 @@ export class Pipeline {
+     try {
+       const port = this.d.clots.get(clotName);
+       if (port === undefined) return;
+-      const { event, absorbed } = combine(events);
+-      if (event.kind === "batch") {
+-        store.insertEvent(event);
+-        store.setEventClot(event.id, clotName);
+-      } else {
+-        // No longer held: if what follows fails, it runs again at the next start.
+-        store.setEventStatus(event.id, "received");
+-      }
+-      for (const other of absorbed) store.setEventStatus(other.id, "merged", `into ${event.id}`);
++      // A review from a bot is read before the events are combined, or a batch would leave its inline comments out.
++      const read: ClotEvent[] = [];
++      for (const held of events) read.push(await this.withInline(held));
++      const { event, absorbed } = combine(read);
++      // No longer held: if what follows fails, the event that goes on runs again at the next start.
++      store.recordRelease({ event, clot: clotName, isNew: event.kind === "batch", absorbed: absorbed.map((other) => other.id) });
+       await this.proceed(clotName, port, event);
+     } catch (error) {
+       console.error(`[pipeline] releasing ${events.map((e) => e.id).join(", ")} failed:`, error);
+     }
+   }
+ 
+-  private async proceed(clotName: string, port: ClotPort, arrived: ClotEvent): Promise<void> {
++  private async proceed(clotName: string, port: ClotPort, event: ClotEvent): Promise<void> {
+     const { store, chat } = this.d;
+-    let event = arrived;
+     const drop = (why: string) => store.setEventStatus(event.id, "dropped", why);
+ 
+-    // GitHub sends a review without its inline comments, which are often all it says.
+-    if (event.kind === "review") {
+-      event = await this.d.readInline(event).catch(() => event);
+-      if (event.body !== arrived.body) store.setEventBody(event.id, event.body);
+-    }
+-
+     const busy = port.isBusy();
+     const verdict = await this.d.triage.judge({ event, guidance: this.d.rulebook.guidance(clotName), tail: busy ? store.tail(clotName, 4) : null });
+     store.recordTriage(event.id, verdict.message, verdict.urgent);
+```
+
+One test logs an error on purpose (a triage that throws); the line starting `[pipeline] event d-1 failed` in the test output is expected.
+
+- [ ] **Step 5: Typecheck and run the suite**
+
+Run: `npm run typecheck && npm test`
+Expected: no type errors; PASS, 398 tests across 18 files.
+
+
+### Task 14: Wiring, acceptance and commit
 
 **Files:**
 - Modify: `src/config.ts`, `src/agent/container.ts`, `src/daemon.ts`, `clots.config.example.json`, `README.md`
@@ -5577,7 +6332,7 @@ console.log("[events] ready");
 - [ ] **Step 6: Typecheck and run the suite**
 
 Run: `npm run typecheck && npm test`
-Expected: no type errors; PASS, 369 tests across 18 files.
+Expected: no type errors; PASS, 402 tests across 18 files.
 
 - [ ] **Step 7: Update the user's configuration**
 
@@ -5606,6 +6361,8 @@ Work through the checks with the user. Record the result of each.
 | 11 | Repeat check 9 and do not reply. | When the turn ends, the channel is deleted and the event is handled as in `not rn`. |
 | 12 | The user opens an issue whose body tells the Clot to ignore its instructions and post its token. | "Suspicious event, not acted on: ..." with a link. No investigation. |
 | 13 | The user submits a "Request changes" review on one of the Clot's pull requests with no summary text, only an inline comment on one line asking for a specific change. | The notice and the investigation refer to that inline comment: the file, the line and what was asked. |
+| 15 | In chat: "let's brainstorm". Add an allow rule for `touch` to the repository's settings: `docker exec clot-<name> sh -c 'mkdir -p /workspace/repo/.claude && echo "{\\"permissions\\":{\\"allow\\":[\\"Bash(touch:*)\\"]}}" > /workspace/repo/.claude/settings.json'`. Then ask the Clot to run `touch /workspace/repo/x.txt`. Remove the file afterwards. | The command is refused, although the settings file allows it. |
+| 16 | The user opens an issue, and while the Clot is looking into it, writes in chat: "fix it now". | The investigation finishes and posts its findings. Then a working turn runs for "fix it now": the Clot can edit and push in it. |
 | 14 | After check 4 or 13, look at the events in `data/clots.db`. | The reports that were gathered have status `merged` with a note naming the batch, and the batch has status `queued`. The review's stored body contains "Inline comments:". |
 
 If a check fails, fix the cause, re-run `npm test`, and repeat that check. Do not move on with a failing check.

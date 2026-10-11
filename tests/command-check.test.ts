@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkCommand, lockDecision } from "../src/agent/command-check.js";
+import { checkCommand, lockDecision, lockHookAnswer } from "../src/agent/command-check.js";
 
 const APPROVED = [
   "cat src/index.ts",
@@ -50,6 +50,15 @@ const APPROVED = [
   "git status; ls",
   "cat a.txt || cat b.txt",
   "cat 'my file.txt'",
+  "file -b --mime-type dist/app",
+  'grep -n "total$" report.txt',
+  "grep -n 'cost: $5' notes.txt",
+  "grep -n price\\$ notes.txt",
+  "pwd",
+  "echo checking",
+  "cd src && ls",
+  "which node",
+  "date",
   "cat my\\ file.txt",
 ];
 
@@ -93,6 +102,17 @@ const REFUSED: [command: string, why: string][] = [
   ["uniq -c -- in.txt out.txt", "second file"],
   ["uniq -f 1 in.txt", "second file"],
   ["tree -o out.txt", "tree -o"],
+  ["file -C -m magic", "file -C"],
+  ["file -bC -m magic", "file -bC"],
+  ["file --compile -m magic", "file --compile"],
+  ["file --comp -m magic", "file --comp"],
+  ["find /dev/null $'-exec' sh -c 'printf harmless' \\;", "$'...'"],
+  ["sort $'-o' out.txt in.txt", "$'...'"],
+  ['cat $"file"', "$'...'"],
+  ["find . -name a$IFS-delete", "variable expansion"],
+  ['find . "-ex${x}ec" rm {} +', "variable expansion"],
+  ["cat $HOME/.npmrc", "variable expansion"],
+  ['cat "$1"', "variable expansion"],
   ["git push", "git push"],
   ["git commit -am x", "git commit"],
   ["git checkout main", "git checkout"],
@@ -141,7 +161,7 @@ describe("checkCommand", () => {
 
 describe("lockDecision", () => {
   it("lets reading, searching, the web and subagents through", () => {
-    for (const tool of ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "Task", "Agent"]) {
+    for (const tool of ["Read", "Glob", "Grep", "WebSearch", "WebFetch", "Task", "Agent", "Skill", "ToolSearch", "TodoWrite", "TaskOutput"]) {
       expect(lockDecision(tool, {})).toEqual({ ok: true });
     }
   });
@@ -161,6 +181,23 @@ describe("lockDecision", () => {
   it("refuses every other tool, including ones that write files or reach other services", () => {
     for (const tool of ["Edit", "Write", "NotebookEdit", "mcp__claude_ai_Slack__send_message", "SomethingNew"]) {
       expect(lockDecision(tool, {}).ok).toBe(false);
+    }
+  });
+});
+
+describe("lockHookAnswer", () => {
+  it("says nothing about a call the lock approves, so the usual permission check goes on", () => {
+    expect(lockHookAnswer("Read", { file_path: "a.ts" })).toEqual({});
+    expect(lockHookAnswer("Bash", { command: "git status" })).toEqual({});
+    expect(lockHookAnswer("Bash", { command: "npm test" }, "npm test")).toEqual({});
+  });
+
+  it("denies everything else, with the reason", () => {
+    expect(lockHookAnswer("Bash", { command: "git push" })).toEqual({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("`git push` is not on the approved list") },
+    });
+    for (const [tool, input] of [["Write", { file_path: "a.ts" }], ["mcp__x__send", {}], ["Bash", undefined], ["Bash", "git status"]] as const) {
+      expect(lockHookAnswer(tool, input).hookSpecificOutput?.permissionDecision).toBe("deny");
     }
   });
 });

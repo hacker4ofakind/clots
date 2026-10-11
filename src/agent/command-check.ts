@@ -42,6 +42,11 @@ function split(line: string): string[][] | string {
       continue;
     }
     if (c === "`" || (c === "$" && next === "(")) return "command substitution";
+    // The shell would put something else in the word's place, and may split it into several:
+    // `a$IFS-delete` reaches `find` as two arguments, and `"-ex${x}ec"` as `-exec`.
+    if (c === "$" && next !== undefined && /[A-Za-z0-9_{@*#?!$-]/.test(next)) return "variable expansion";
+    // Outside quotes, $'...' is a string with escapes of its own: $'-exec' is `-exec`.
+    if (c === "$" && quote === null && (next === "'" || next === '"')) return "a $'...' or $\"...\" string";
     if (quote === '"') {
       if (c === '"') quote = null;
       else if (c === "\\" && next !== undefined) word += line[(i += 1)];
@@ -78,7 +83,7 @@ function split(line: string): string[][] | string {
 }
 
 /** Commands that only read, whatever their arguments. */
-const READERS = new Set(["cat", "head", "tail", "ls", "wc", "cut", "stat", "file", "ps", "grep"]);
+const READERS = new Set(["cat", "head", "tail", "ls", "wc", "cut", "stat", "ps", "grep", "pwd", "echo", "cd", "which", "date"]);
 
 /**
  * For commands that read unless given certain flags: which arguments make them write or run something.
@@ -90,6 +95,8 @@ const WRITING_FLAG: Record<string, (arg: string) => boolean> = {
   rg: (a) => a.startsWith("--pre") || a.startsWith("--hostname-bin"),
   sort: (a) => a.startsWith("--o") || a.startsWith("--co") || /^-[a-zA-Z]*o/.test(a),
   tree: (a) => a.startsWith("-o") || a.startsWith("--output"),
+  // -C (--compile, which `--co` is enough to mean) writes a compiled magic file.
+  file: (a) => a.startsWith("--co") || /^-[a-zA-Z]*C/.test(a),
 };
 
 const GIT_SUBCOMMANDS = new Set(["log", "diff", "show", "status", "blame", "ls-files", "grep", "branch"]);
@@ -174,7 +181,11 @@ export function checkCommand(line: string, testCommand?: string): Verdict {
 }
 
 /** Tools a locked turn may use without a further check: they read, search or look things up. */
-const LOCKED_TOOLS = new Set(["Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "Task", "Agent", "TodoWrite", "BashOutput"]);
+const LOCKED_TOOLS = new Set([
+  ...["Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "Task", "Agent", "Skill", "ToolSearch"],
+  // Claude Code's own bookkeeping: its to-do list, and watching or stopping what it started itself.
+  ...["TodoWrite", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskOutput", "TaskStop", "BashOutput", "KillShell"],
+]);
 
 /** Tools removed from a locked turn altogether, so the model does not reach for them. */
 export const LOCK_REMOVED_TOOLS = ["Edit", "Write", "NotebookEdit"];
@@ -188,4 +199,15 @@ export function lockDecision(toolName: string, input: Record<string, unknown>, t
   }
   if (LOCKED_TOOLS.has(toolName)) return OK;
   return no(`Refused: ${toolName} is not available while locked. Nothing can be changed or sent until the lock is off.`);
+}
+
+/**
+ * The answer of the hook that runs before every tool call of a locked turn. A hook is asked
+ * before Claude Code looks at its permission rules, so nothing a settings file allows, and
+ * nothing Claude Code would approve by itself, gets past the lock. An empty answer lets the
+ * call go on to the usual permission check.
+ */
+export function lockHookAnswer(toolName: string, input: unknown, testCommand?: string): { hookSpecificOutput?: { hookEventName: "PreToolUse"; permissionDecision: "deny"; permissionDecisionReason: string } } {
+  const verdict = lockDecision(toolName, typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {}, testCommand);
+  return verdict.ok ? {} : { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: verdict.reason } };
 }

@@ -18,6 +18,8 @@ export interface SessionRow {
   seedReason: SeedReason;
   started: boolean;
   interrupted: boolean;
+  /** What the cut-off turn was for, so that picking it up again keeps an investigation locked. */
+  interruptedKind: InboxKind;
   active: boolean;
 }
 
@@ -125,6 +127,7 @@ function toSession(r: any): SessionRow {
     seedReason: r.seed_reason,
     started: r.started === 1,
     interrupted: r.interrupted === 1,
+    interruptedKind: r.interrupted_kind,
     active: r.active === 1,
   };
 }
@@ -169,6 +172,7 @@ export class Store {
     this.addColumn("sessions", "seed_reason", "TEXT NOT NULL DEFAULT 'context'");
     this.addColumn("clots", "next_effort", "TEXT");
     this.addColumn("inbox", "kind", "TEXT NOT NULL DEFAULT 'message'");
+    this.addColumn("sessions", "interrupted_kind", "TEXT NOT NULL DEFAULT 'message'");
     this.addColumn("events", "subject", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
   }
@@ -247,8 +251,8 @@ export class Store {
     this.db.prepare("UPDATE sessions SET started = 1, seed = NULL WHERE id = ?").run(id);
   }
 
-  setInterrupted(id: string, interrupted: boolean): void {
-    this.db.prepare("UPDATE sessions SET interrupted = ? WHERE id = ?").run(interrupted ? 1 : 0, id);
+  setInterrupted(id: string, interrupted: boolean, kind: InboxKind = "message"): void {
+    this.db.prepare("UPDATE sessions SET interrupted = ?, interrupted_kind = ? WHERE id = ?").run(interrupted ? 1 : 0, interrupted ? kind : "message", id);
   }
 
   enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind }): boolean {
@@ -285,6 +289,23 @@ export class Store {
     this.db.prepare("UPDATE events SET body = ? WHERE id = ?").run(body, id);
   }
 
+  /**
+   * Records what releasing a group of held events produced, all or nothing: the event that goes
+   * on (stored now when it is a new batch), and every event it stands in for as merged into it.
+   * Done in one step so that a restart never finds some of a group merged and the rest still held.
+   */
+  recordRelease(r: { event: ClotEvent; clot: string; isNew: boolean; absorbed: string[] }): void {
+    this.db.transaction(() => {
+      if (r.isNew) {
+        this.insertEvent(r.event);
+        this.setEventClot(r.event.id, r.clot);
+      } else {
+        this.setEventStatus(r.event.id, "received");
+      }
+      for (const id of r.absorbed) this.setEventStatus(id, "merged", `into ${r.event.id}`);
+    })();
+  }
+
   setEventClot(id: string, clot: string): void {
     this.db.prepare("UPDATE events SET clot = ? WHERE id = ?").run(clot, id);
   }
@@ -307,8 +328,9 @@ export class Store {
     return this.db.prepare("SELECT * FROM asks WHERE clot = ? ORDER BY rowid").all(clot).map(toAsk);
   }
 
-  deleteAsk(eventId: string): void {
-    this.db.prepare("DELETE FROM asks WHERE event_id = ?").run(eventId);
+  /** Closes a question. Returns false when it was closed already: only the caller that gets true may carry out its outcome. */
+  deleteAsk(eventId: string): boolean {
+    return this.db.prepare("DELETE FROM asks WHERE event_id = ?").run(eventId).changes === 1;
   }
 
   nextPending(clot: string): InboxRow | undefined {

@@ -50,6 +50,8 @@ const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: 
 
 export class Clot {
   private live?: TurnHandle;
+  /** Whether the running turn is under the lock. An investigation is, whatever the mode. */
+  private liveLocked = false;
   private draining = false;
   private posts: Promise<void> = Promise.resolve();
 
@@ -115,6 +117,10 @@ export class Clot {
       // A turn's permissions are fixed when it starts, so a message that changes the mode
       // stays pending and gets a turn of its own, in the new mode, right after this one.
       if (nextMode(mode, decision.modeChange) !== mode) return;
+      // The same goes for the lock. An investigation is locked even in action mode, so a message
+      // that is owed a working turn stays pending and gets one, instead of being used up in a
+      // turn that can change nothing.
+      if (this.liveLocked !== (mode === "brainstorm")) return;
       const oneOff = store.nextEffort(name);
       const effort = (command.kind === "effort" ? command.effort : oneOff) ?? decision.effort;
       // Refused once the turn's input has closed; the message then stays pending for the next turn,
@@ -252,7 +258,7 @@ export class Clot {
     }
 
     if (result.limit) {
-      store.setInterrupted(session.id, true);
+      store.setInterrupted(session.id, true, row.kind);
       return (await this.pause(session.channelId, result.limit.resetsAt)) === "resumed";
     }
 
@@ -278,12 +284,15 @@ export class Clot {
     return "resumed";
   }
 
-  /** After a reset: if a turn was cut off and nothing is waiting, queue a prompt that tells the session to carry on. */
+  /**
+   * After a reset: if a turn was cut off and nothing is waiting, queue a prompt that tells the session to carry on.
+   * It is queued as what the cut-off turn was, so an investigation is picked up again under the lock.
+   */
   private queueContinuation(resetsAt: number): void {
     const { store, name } = this.d;
     const session = store.activeSession(name)!;
     if (!session.interrupted || store.nextPending(name)) return;
-    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime() });
+    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime(), kind: session.interruptedKind });
   }
 
   /**
@@ -295,6 +304,7 @@ export class Clot {
     const { store, name } = this.d;
     const decision = await this.d.router.decide({ text: row.text, mode, tail: store.tail(name, 4) });
     store.setInboxStatus(row.id, "running");
+    this.liveLocked = true;
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt: buildPrompt({ text: row.text, mode, modeChanged: false, seed: session.seed, seedReason: session.seedReason, interrupted: session.interrupted, event: true }),
@@ -339,6 +349,7 @@ export class Clot {
       interrupted: session.interrupted,
     });
 
+    this.liveLocked = newMode === "brainstorm";
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt,

@@ -4,6 +4,21 @@ import type { ClotEvent } from "./types.js";
 /** Added to a review's body when its inline comments could not be fetched. */
 export const INLINE_UNREAD = "[This review's inline comments could not be read.]";
 
+/** Added when a pull request has more comments than the daemon reads. */
+export const INLINE_PARTIAL = "[This pull request has more comments than could be read; some of this review's inline comments may be missing.]";
+
+/** The first line of the block of inline comments. */
+export const INLINE_HEADING = "Inline comments:";
+
+/** GitHub's largest page, and how many pages are read before giving up. */
+const PER_PAGE = 100;
+const MAX_PAGES = 10;
+
+/** Whether a review's body already holds what the reader adds, so that it is not added twice. */
+export function hasInline(event: ClotEvent): boolean {
+  return [INLINE_HEADING, INLINE_UNREAD, INLINE_PARTIAL].some((mark) => event.body.includes(mark));
+}
+
 /** The review's ID, which GitHub puts at the end of its link: ".../pull/9#pullrequestreview-123". */
 export function reviewIdOf(event: ClotEvent): string | undefined {
   return /#pullrequestreview-(\d+)$/.exec(event.url)?.[1];
@@ -50,7 +65,7 @@ export function formatInlineComments(comments: unknown, reviewId?: string): stri
   const lines = comments
     .filter((c) => typeof c?.path === "string" && typeof c?.body === "string" && (reviewId === undefined || String(c.pull_request_review_id) === reviewId))
     .map((c) => `- ${c.path}${place(c)}: ${c.body.trim()}${codeOf(c)}`);
-  return lines.length === 0 ? "" : `Inline comments:\n${lines.join("\n")}`;
+  return lines.length === 0 ? "" : `${INLINE_HEADING}\n${lines.join("\n")}`;
 }
 
 /** The review with a block of text added to its body, inside the usual length limit. */
@@ -71,13 +86,21 @@ export function inlineCommentReader(token: string, fetchFn: typeof fetch = fetch
     if (event.kind !== "review" || id === undefined) return event;
     try {
       // The list of one review's comments leaves out their line numbers, so the pull request's
-      // comments are fetched, newest first, and this review's are picked out.
-      const response = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=100`, {
-        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
-      });
-      if (!response.ok) return withInline(event, INLINE_UNREAD);
-      const comments: unknown = await response.json();
-      return withInline(event, formatInlineComments(Array.isArray(comments) ? [...comments].reverse() : comments, id));
+      // comments are fetched, newest first and page by page, and this review's are picked out.
+      const comments: unknown[] = [];
+      let complete = false;
+      for (let page = 1; page <= MAX_PAGES && !complete; page += 1) {
+        const response = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=${PER_PAGE}&page=${page}`, {
+          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
+        });
+        if (!response.ok) return withInline(event, INLINE_UNREAD);
+        const batch: unknown = await response.json();
+        if (!Array.isArray(batch)) return withInline(event, INLINE_UNREAD);
+        comments.push(...batch);
+        complete = batch.length < PER_PAGE;
+      }
+      const block = formatInlineComments(comments.reverse(), id);
+      return withInline(event, complete ? block : [block, INLINE_PARTIAL].filter((part) => part !== "").join("\n"));
     } catch {
       return withInline(event, INLINE_UNREAD);
     }

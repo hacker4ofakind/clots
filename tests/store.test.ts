@@ -72,6 +72,16 @@ describe("Store", () => {
     expect(store.tail("graphite", 4)).toEqual([]);
   });
 
+  it("remembers what a cut-off turn was for, and forgets it when the session carries on", () => {
+    store.upsertClot("kinds", "cat-9");
+    store.createSession({ id: "k1", clot: "kinds", channelId: "ch-k", seed: null });
+    expect(store.activeSession("kinds")).toMatchObject({ interrupted: false, interruptedKind: "message" });
+    store.setInterrupted("k1", true, "event");
+    expect(store.activeSession("kinds")).toMatchObject({ interrupted: true, interruptedKind: "event" });
+    store.setInterrupted("k1", false);
+    expect(store.activeSession("kinds")).toMatchObject({ interrupted: false, interruptedKind: "message" });
+  });
+
   it("marks inbox rows as messages unless told they are events", () => {
     store.enqueue({ id: "m1", clot: "graphite", channelId: "ch-1", text: "hi", receivedAt: 1 });
     store.enqueue({ id: "event:d-1", clot: "graphite", channelId: "ch-1", text: "<event>", receivedAt: 2, kind: "event" });
@@ -118,6 +128,29 @@ describe("Store", () => {
       store.setEventBody("d-1", "Steps...\n\nInline comments:\n- a.ts:3: rename");
       store.setEventStatus("d-1", "held");
       expect(store.getEvent("d-1")).toMatchObject({ body: "Steps...\n\nInline comments:\n- a.ts:3: rename", subject: "pr:14", automated: true, status: "held" });
+    });
+
+    it("records the release of a held group in one step", () => {
+      for (const id of ["d-1", "d-2", "d-3"]) {
+        store.insertEvent({ ...event, id });
+        store.setEventStatus(id, "held");
+      }
+      store.recordRelease({ event: { ...event, id: "batch:d-1", kind: "batch" }, clot: "graphite", isNew: true, absorbed: ["d-1", "d-2"] });
+      expect(store.getEvent("batch:d-1")).toMatchObject({ status: "received", clot: "graphite" });
+      expect(store.eventsWithStatus("merged").map((e) => [e.id, e.note])).toEqual([
+        ["d-1", "into batch:d-1"],
+        ["d-2", "into batch:d-1"],
+      ]);
+
+      store.recordRelease({ event: store.getEvent("d-3")!, clot: "graphite", isNew: false, absorbed: [] });
+      expect(store.getEvent("d-3")!.status).toBe("received");
+      expect(store.eventsWithStatus("held")).toEqual([]);
+    });
+
+    it("lets only one caller close a question", () => {
+      store.createAsk({ eventId: "d-1", clot: "graphite", channelId: "ask-1" });
+      expect(store.deleteAsk("d-1")).toBe(true);
+      expect(store.deleteAsk("d-1")).toBe(false);
     });
 
     it("lists events by status, oldest first", () => {

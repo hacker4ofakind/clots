@@ -86,8 +86,9 @@ export class Steering {
 
   private async resolve(ask: AskRow, outcome: ReplyOutcome, kick: boolean): Promise<void> {
     const { store, chat } = this.d;
-    // Removed first, so a second reply, or a lapse arriving at the same moment, finds nothing to do.
-    store.deleteAsk(ask.eventId);
+    // Closed first, and only whoever closed it goes on: a second reply, or a lapse working from
+    // a list it read a moment ago, must not undo what the user has already decided.
+    if (!store.deleteAsk(ask.eventId)) return;
     const event = store.getEvent(ask.eventId);
     const port = this.d.clots.get(ask.clot);
     if (event && port) {

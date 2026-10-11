@@ -169,6 +169,8 @@ investigations would say the same thing.
 - **How long:** a group is released 60 seconds after its last event arrived, and
   at the latest 120 seconds after its first. Both are set in the configuration
   (`hold.quietSeconds`, `hold.capSeconds`).
+- **Reviews:** a review in a group (from a review bot) is given its inline
+  comments before the group is combined, so a batch carries them.
 - **Repeats:** within a group, CI failures with the same title (the same workflow
   on the same branch) count once; the latest is kept.
 - **One event left:** it goes on unchanged.
@@ -179,6 +181,9 @@ investigations would say the same thing.
 - **From there on a batch is an event like any other:** one triage call, one
   notice, one steering question or one investigation. If triage finds it
   suspicious, the whole batch is reported and stopped.
+- **One step:** storing the batch and marking the events it was made from as
+  merged happens in a single database transaction, so a restart never finds part
+  of a group merged and the rest still held.
 - **Restart:** held events are stored. At startup their wait is over, and each
   group is released at once.
 - **Known limit:** a report that arrives after its group was released (a CI job
@@ -194,31 +199,55 @@ are part of the event from then on: triage sees them, the Clot sees them, and
 they are inside the same untrusted block and the same length limit as the rest
 of the body. The lock is unchanged: a locked turn is not given `gh api`.
 
+GitHub lists a pull request's comments a hundred at a time. The daemon reads on,
+newest first, until a page is not full, up to ten pages. If there are more, the
+body says that some inline comments may be missing. The comments are added to an
+event once: an event that is taken up again after a failure is not read a second
+time.
+
 ## 7. The lock
 
 A locked turn cannot change anything. Two kinds of turn are locked: a turn started
 for an event, and every turn while brainstorm mode is on.
 
-The lock is enforced by the daemon, in three parts:
+A turn's lock is fixed when it starts, and what continues a turn keeps its lock:
 
+- **A message from the user is never used up in a turn with a different lock.**
+  While an investigation runs in action mode, the user's message stays in the
+  queue and gets a working turn of its own when the investigation ends. In
+  brainstorm mode the message would be locked anyway, so it is fed into the
+  running turn as usual.
+- **An investigation cut off by the usage limit is picked up again under the
+  lock.** The kind of the cut-off turn is stored with the session, so this holds
+  across a restart of the daemon as well.
+
+The lock is enforced by the daemon, in four parts:
+
+- A hook is asked before every tool call of the turn, ahead of Claude Code's own
+  permission rules, and refuses whatever the lock does not approve. Nothing can
+  pre-approve a call past it: not an allow rule in the repository's
+  `.claude/settings.json`, and not Claude Code's own list of commands it considers
+  read-only.
 - The turn runs in Claude Code's default permission mode, in which anything not
   plainly read-only is put to the daemon's permission callback. Plan mode is not
   used: it does not consult the callback.
-- The callback approves reading and a fixed set of read-only commands, and refuses
-  everything else.
+- The callback gives the same answer as the hook: it approves reading and a fixed
+  set of read-only commands, and refuses everything else.
 - The tools that edit and write files are removed from the turn altogether.
 
 Editing, committing, pushing and sending are impossible until the lock is off: for
 an event, when the user replies; for brainstorming, when the mode ends.
 
 Approved without a command check: the tools that read, search and list the
-container's files, web search and web fetch, and subagents (whose own tool calls
-pass through the same callback).
+container's files, web search and web fetch, skills, subagents (whose own tool
+calls pass through the same hook), and Claude Code's own bookkeeping: its to-do
+list, and watching or stopping commands it started itself.
 
 Approved shell commands:
 
 - **Files and text:** `cat`, `head`, `tail`, `ls`, `find`, `rg`, `grep`, `wc`,
   `sort`, `uniq`, `cut`, `stat`, `file`, `tree`
+- **Shell:** `cd`, `pwd`, `echo`, `which`, `date`
 - **Git:** `log`, `diff`, `show`, `status`, `blame`, `branch` (listing only),
   `ls-files`, `grep`
 - **GitHub CLI:** `issue view`, `issue list`, `pr view`, `pr list`, `pr diff`,
@@ -233,12 +262,19 @@ appear:
 
 - output or input redirection, command substitution, subshells and background
   execution;
+- anything the shell would replace before running the command: a variable
+  (`$HOME`, `${x}`, `$1`), inside double quotes or outside them, and a `$'...'`
+  or `$"..."` string. The checker reads the words as written, and the shell
+  would hand the command different ones: `a$IFS-delete` reaches `find` as two
+  arguments, and `$'-exec'` as `-exec`. A `$` that stands for itself, as in
+  `grep "total$"` or inside single quotes, is fine;
 - flags that make a reader write or execute: `find` with `-exec`, `-execdir`,
   `-ok`, `-okdir`, `-delete` or any `-fprint` or `-fls` form; `rg` with `--pre`
   or `--hostname-bin`; `sort` with `-o`, or with any long option beginning
   `--o` or `--co`; `git` with any option before the subcommand, or with
   `--output` or `--ext-diff`; `git grep` with `-O` or any long option beginning
-  `--op`; `tree` with `-o`; `gh` with `--web`;
+  `--op`; `tree` with `-o`; `file` with `-C` or any long option beginning
+  `--co` (it compiles a magic file); `gh` with `--web`;
 - `uniq` with more than one argument that is not an option: it writes to a
   second file. An option's value must be attached, as in `-f1`;
 - the long options above in any shortened form. GNU `sort` and `git grep` accept
@@ -253,12 +289,9 @@ could not check.
 
 Three things to know about the approved set:
 
-- **Claude Code approves its own short list of plainly read-only commands**
-  (`ls`, `cat` and similar) without asking the callback. The effective set is
-  that list plus the one above.
-- **Allow rules in the repository's own `.claude/settings.json` are honoured by
-  Claude Code before the callback is asked.** A project that pre-approves a command
-  there has approved it for locked turns too.
+- **The list above is the whole set.** The hook decides every call, so neither
+  Claude Code's own idea of a read-only command nor an allow rule in the
+  repository's `.claude/settings.json` adds to it.
 - **`docker` and `pm2` act inside the Clot's container.** They are useful when the
   project itself runs them there. They do not show the host's processes, and the
   container is not given the host's Docker socket.
@@ -304,6 +337,9 @@ Rules that keep this from leaving an event in limbo:
 - **A steered event is still untrusted data.** The user's yes lets it into the
   turn; it does not make its text an instruction. It arrives with the same wrapper
   and label as a queued event, and a note that the user approved handling it now.
+- **An answer stands.** Each question is closed exactly once, by whoever gets to
+  it first. A lapse that began a moment before the user answered does not change
+  the outcome the user chose.
 - **Order is kept.** If one of the user's messages is already waiting for the
   running turn to end, a steer is not attempted and the outcome is queue.
 
@@ -366,7 +402,7 @@ The plan walks the user through each of these. None is automated in 2a.
   exception; pre-filter matching; the hold's timing; making a batch, including
   repeated CI failures; formatting and fetching inline comments, against a fake
   GitHub; the command checker, with a table of commands
-  that must pass and must fail; reply matching for the steering question; the
+  that must pass and must fail, and the answer of its hook; reply matching for the steering question; the
   triage and explainer output parsers.
 - Pipeline tests with a fake triage, a fake explainer, a fake timer, and the
   stage 1 fakes for chat and runner: each outcome of sections 6 and 8, including

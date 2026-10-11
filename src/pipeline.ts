@@ -1,6 +1,7 @@
 import type { ChatAdapter } from "./chat/adapter.js";
 import { combine } from "./events/batch.js";
 import { isSelfCaused } from "./events/github.js";
+import { hasInline } from "./events/review-comments.js";
 import type { ClotEvent } from "./events/types.js";
 import { Hold } from "./hold.js";
 import type { ClotPort } from "./steering.js";
@@ -97,7 +98,18 @@ export class Pipeline {
       return;
     }
 
-    await this.proceed(clotName, port, event);
+    await this.proceed(clotName, port, await this.withInline(event));
+  }
+
+  /**
+   * GitHub sends a review without its inline comments, which are often all it says. They are
+   * added to its body here, once, and kept.
+   */
+  private async withInline(event: ClotEvent): Promise<ClotEvent> {
+    if (event.kind !== "review" || hasInline(event)) return event;
+    const read = await this.d.readInline(event).catch(() => event);
+    if (read.body !== event.body) this.d.store.setEventBody(event.id, read.body);
+    return read;
   }
 
   /** Takes the events held for one subject onward as a single event. Never throws. */
@@ -106,31 +118,21 @@ export class Pipeline {
     try {
       const port = this.d.clots.get(clotName);
       if (port === undefined) return;
-      const { event, absorbed } = combine(events);
-      if (event.kind === "batch") {
-        store.insertEvent(event);
-        store.setEventClot(event.id, clotName);
-      } else {
-        // No longer held: if what follows fails, it runs again at the next start.
-        store.setEventStatus(event.id, "received");
-      }
-      for (const other of absorbed) store.setEventStatus(other.id, "merged", `into ${event.id}`);
+      // A review from a bot is read before the events are combined, or a batch would leave its inline comments out.
+      const read: ClotEvent[] = [];
+      for (const held of events) read.push(await this.withInline(held));
+      const { event, absorbed } = combine(read);
+      // No longer held: if what follows fails, the event that goes on runs again at the next start.
+      store.recordRelease({ event, clot: clotName, isNew: event.kind === "batch", absorbed: absorbed.map((other) => other.id) });
       await this.proceed(clotName, port, event);
     } catch (error) {
       console.error(`[pipeline] releasing ${events.map((e) => e.id).join(", ")} failed:`, error);
     }
   }
 
-  private async proceed(clotName: string, port: ClotPort, arrived: ClotEvent): Promise<void> {
+  private async proceed(clotName: string, port: ClotPort, event: ClotEvent): Promise<void> {
     const { store, chat } = this.d;
-    let event = arrived;
     const drop = (why: string) => store.setEventStatus(event.id, "dropped", why);
-
-    // GitHub sends a review without its inline comments, which are often all it says.
-    if (event.kind === "review") {
-      event = await this.d.readInline(event).catch(() => event);
-      if (event.body !== arrived.body) store.setEventBody(event.id, event.body);
-    }
 
     const busy = port.isBusy();
     const verdict = await this.d.triage.judge({ event, guidance: this.d.rulebook.guidance(clotName), tail: busy ? store.tail(clotName, 4) : null });

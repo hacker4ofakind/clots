@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { combine, describeSubject } from "../src/events/batch.js";
 import { MAX_BODY } from "../src/events/github.js";
-import { formatInlineComments, INLINE_UNREAD, inlineCommentReader, reviewIdOf } from "../src/events/review-comments.js";
+import { formatInlineComments, INLINE_PARTIAL, INLINE_UNREAD, inlineCommentReader, reviewIdOf } from "../src/events/review-comments.js";
 import type { ClotEvent } from "../src/events/types.js";
 
 function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
@@ -135,7 +135,32 @@ describe("inline review comments", () => {
     const inline = "Inline comments:\n- src/cache.ts:12: Rename this.\n- src/b.ts:3: And this.";
     expect((await read(review)).body).toBe(inline);
     expect((await read({ ...review, body: "Two things." })).body).toBe(`Two things.\n\n${inline}`);
-    expect(calls[0]).toEqual({ url: "https://api.github.com/repos/octo/widgets/pulls/9/comments?sort=created&direction=desc&per_page=100", auth: "Bearer t0ken" });
+    expect(calls[0]).toEqual({ url: "https://api.github.com/repos/octo/widgets/pulls/9/comments?sort=created&direction=desc&per_page=100&page=1", auth: "Bearer t0ken" });
+  });
+
+  it("reads further pages while they are full, and finds a review whose comments are not on the first", async () => {
+    const newer = Array.from({ length: 100 }, (_, i) => ({ pull_request_review_id: 777, path: `src/new-${i}.ts`, line: 1, body: "Newer." }));
+    const pages = [newer, [{ pull_request_review_id: 555, path: "src/cache.ts", line: 12, body: "Rename this." }]];
+    const urls: string[] = [];
+    const read = inlineCommentReader("t0ken", (async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify(pages[urls.length - 1] ?? []));
+    }) as unknown as typeof fetch);
+
+    expect((await read(review)).body).toBe("Inline comments:\n- src/cache.ts:12: Rename this.");
+    expect(urls.map((url) => url.slice(url.indexOf("&page=")))).toEqual(["&page=1", "&page=2"]);
+  });
+
+  it("says so when the pull request has more pages of comments than it reads", async () => {
+    const full = Array.from({ length: 100 }, () => ({ pull_request_review_id: 777, path: "src/other.ts", line: 1, body: "Another review." }));
+    let asked = 0;
+    const read = inlineCommentReader("t0ken", (async () => {
+      asked += 1;
+      return new Response(JSON.stringify(full));
+    }) as unknown as typeof fetch);
+
+    expect((await read(review)).body).toBe(INLINE_PARTIAL);
+    expect(asked).toBe(10);
   });
 
   it("leaves a review without inline comments, and anything that is not a review, as it came", async () => {
@@ -160,7 +185,7 @@ describe("inline review comments", () => {
   });
 
   it("keeps a long list inside the length limit", async () => {
-    const many = Array.from({ length: 200 }, (_, i) => ({ pull_request_review_id: 555, path: `src/file-${i}.ts`, line: i, body: "Please rename this variable." }));
+    const many = Array.from({ length: 90 }, (_, i) => ({ pull_request_review_id: 555, path: `src/file-${i}.ts`, line: i, body: "Please rename this variable." }));
     const read = inlineCommentReader("t0ken", (async () => new Response(JSON.stringify(many))) as unknown as typeof fetch);
     const body = (await read(review)).body;
     expect(body.length).toBeLessThan(MAX_BODY + 20);

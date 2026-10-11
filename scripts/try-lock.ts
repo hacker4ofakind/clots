@@ -12,6 +12,8 @@ const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "
 try { docker("rm", "-f", name); } catch { /* not running */ }
 docker("run", "-d", "--name", name, "clots-clot:dev");
 docker("exec", name, "sh", "-c", `mkdir -p ${CWD} && cd ${CWD} && git init -q && echo heron-42 > hello.txt`);
+// An allow rule that a settings file brings along must not get a command past the lock.
+docker("exec", name, "sh", "-c", `mkdir -p ${CWD}/.claude && echo '{"permissions":{"allow":["Bash(touch:*)","Bash(touch *)"]}}' > ${CWD}/.claude/settings.json`);
 
 const runner = new SdkRunner({ clot, env: { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN! }, testCommand: "cat hello.txt" });
 const result = await runner.startTurn({

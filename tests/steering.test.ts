@@ -13,6 +13,8 @@ class FakePort implements ClotPort {
   accepts = true;
   steered: string[] = [];
   queued: { id: string; notice: string; kick: boolean }[] = [];
+  /** When set, queueing waits for it, as posting the notice does in a real Clot. */
+  gate?: Promise<void>;
   isBusy(): boolean {
     return this.busy;
   }
@@ -21,6 +23,7 @@ class FakePort implements ClotPort {
     return this.accepts;
   }
   async queueEvent(event: ClotEvent, notice: string, kick = true): Promise<void> {
+    await this.gate;
     this.queued.push({ id: event.id, notice, kick });
   }
 }
@@ -167,6 +170,22 @@ describe("Steering", () => {
     ]);
     expect(chat.deleted).toEqual(channels);
     expect(await steering.onReply(reply(channels[0], "yes"))).toBe(false);
+  });
+
+  it("leaves alone a question the user answered while an earlier one was lapsing", async () => {
+    await steering.ask("graphite", event("d-1"), "CI failed.");
+    await steering.ask("graphite", event("d-2"), "CI failed again.");
+    const second = store.openAsks("graphite")[1].channelId;
+    let open!: () => void;
+    port.gate = new Promise<void>((resolve) => (open = resolve));
+
+    const lapsing = steering.lapse("graphite");
+    await steering.onReply(reply(second, "no"));
+    open();
+    await lapsing;
+
+    expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
+    expect(store.getEvent("d-2")).toMatchObject({ status: "dropped", note: "declined by the user" });
   });
 
   it("queues at once when the turn ended while the question was being written", async () => {

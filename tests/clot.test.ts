@@ -794,6 +794,51 @@ describe("Clot", () => {
       await first;
     });
 
+    it("does not use up the user's message in an investigation: it waits for a working turn of its own", async () => {
+      runner.script = [{ hold: true }, {}];
+      await clot.queueEvent(event("d-1"), "Login fails.");
+      await vi.waitFor(() => expect(runner.release).toBeDefined());
+
+      await clot.onMessage(msg("fix it now"));
+      expect(runner.pushes).toEqual([]);
+      expect(store.nextPending("graphite")).toMatchObject({ text: "fix it now", status: "pending" });
+      runner.release!();
+
+      await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
+      expect(runner.calls.map((c) => c.locked)).toEqual([true, false]);
+      expect(runner.calls[1].prompt).toBe("fix it now");
+    });
+
+    it("still feeds a message into an investigation while brainstorming, where it would be locked anyway", async () => {
+      store.setMode("graphite", "brainstorm");
+      runner.script = [{ hold: true }];
+      await clot.queueEvent(event("d-1"), "Login fails.");
+      await vi.waitFor(() => expect(runner.release).toBeDefined());
+
+      await clot.onMessage(msg("what do you make of it?"));
+      expect(runner.pushes.map((p) => p.text)).toEqual(["[sent while you were working]\nwhat do you make of it?"]);
+      runner.release!();
+      await vi.waitFor(() => expect(clot.isBusy()).toBe(false));
+    });
+
+    it("keeps the lock on an investigation the usage limit cut off, across a restart too", async () => {
+      const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+      runner.script = [{ ok: false, limit: { resetsAt } }, {}];
+      await clot.queueEvent(event("d-1"), "Login fails.");
+      await vi.waitFor(() => expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt));
+      expect(store.activeSession("graphite")).toMatchObject({ interrupted: true, interruptedKind: "event" });
+
+      now = new Date(resetsAt * 1000 + 5000);
+      timers = [];
+      await build().init();
+      timers[0].fn();
+
+      await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
+      expect(runner.calls[1]).toMatchObject({ locked: true });
+      expect(runner.calls[1].prompt).toContain("The usage limit has reset");
+      expect(runner.calls[1].prompt).toContain("nothing can be changed");
+    });
+
     it("says so when looking into an event fails", async () => {
       const channel = store.activeSession("graphite")!.channelId;
       runner.script = [{ ok: false, say: [], contextPercent: 0 }];

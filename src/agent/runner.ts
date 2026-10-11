@@ -1,7 +1,7 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Effort, LimitInfo, TurnActivity } from "../types.js";
 import { ActivityCollector } from "./activity.js";
-import { LOCK_REMOVED_TOOLS, lockDecision } from "./command-check.js";
+import { LOCK_REMOVED_TOOLS, lockDecision, lockHookAnswer } from "./command-check.js";
 import { containerName, makeSpawn, sessionExists } from "./container.js";
 import { CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "./prompts.js";
 import { InputQueue } from "./input-queue.js";
@@ -70,8 +70,11 @@ export class SdkRunner implements AgentRunner {
         effort: req.effort,
         ...(resume ? { resume } : { sessionId: req.newSessionId }),
         cwd: CWD,
-        // The lock: in the default mode Claude Code puts everything that is not plainly read-only
-        // to the callback below. Plan mode is not used, because it never consults the callback.
+        // The lock has two parts. The hook below is asked before every tool call, ahead of any
+        // permission rule, and refuses what the lock does not approve: an allow rule in a settings
+        // file cannot get past it. What it lets through goes on to the usual check, where in the
+        // default mode everything that is not plainly read-only is put to the callback, which gives
+        // the same answer. Plan mode is not used, because it never consults the callback.
         permissionMode: req.locked ? "default" : "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         settings: { attribution: { pr: PR_ATTRIBUTION } },
@@ -79,6 +82,13 @@ export class SdkRunner implements AgentRunner {
         disallowedTools: req.locked ? ["AskUserQuestion", ...LOCK_REMOVED_TOOLS] : ["AskUserQuestion"],
         ...(req.locked
           ? {
+              hooks: {
+                PreToolUse: [
+                  {
+                    hooks: [async (hook) => (hook.hook_event_name === "PreToolUse" ? lockHookAnswer(hook.tool_name, hook.tool_input, this.o.testCommand) : {})],
+                  },
+                ],
+              },
               canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
                 const verdict = lockDecision(toolName, toolInput, this.o.testCommand);
                 return verdict.ok ? { behavior: "allow" as const, updatedInput: toolInput } : { behavior: "deny" as const, message: verdict.reason };

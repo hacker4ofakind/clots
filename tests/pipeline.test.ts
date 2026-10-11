@@ -313,6 +313,33 @@ describe("Pipeline", () => {
     expect(triage.inputs[0].event.body).toBe("Please fix.");
     expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
   });
+
+  it("reads a bot's review before gathering it, so a batch keeps its inline comments", async () => {
+    inline = async (e) => ({ ...e, body: "Inline comments:\n- src/cache.ts:12: possible race" });
+    await pipeline.handle(report("d-1"));
+    await pipeline.handle(report("d-2", { kind: "review", actor: "reviewbot[bot]", title: "Review (commented) on pull request #14: Add cache", body: "" }));
+
+    fire();
+    await vi.waitFor(() => expect(port.queued.map((q) => q.id)).toEqual(["batch:d-1"]));
+    expect(triage.inputs[0].event.body).toContain("src/cache.ts:12: possible race");
+    expect(store.getEvent("d-2")!.body).toContain("src/cache.ts:12: possible race");
+  });
+
+  it("reads a review's inline comments once, however often the event is taken up again", async () => {
+    let reads = 0;
+    inline = async (e) => {
+      reads += 1;
+      return { ...e, body: `${e.body}\n\nInline comments:\n- a.ts:3: rename` };
+    };
+    triage.fail = true;
+    await pipeline.handle(event("d-1", { kind: "review", body: "Please fix." }));
+    triage.fail = false;
+    await pipeline.resume();
+
+    expect(reads).toBe(1);
+    expect(triage.inputs.at(-1)!.event.body).toBe("Please fix.\n\nInline comments:\n- a.ts:3: rename");
+    expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
+  });
 });
 
 describe("acceptGithub", () => {
