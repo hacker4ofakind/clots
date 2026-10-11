@@ -199,7 +199,7 @@ describe("Clot", () => {
     expect(router.inputs[2].tail.map((t) => t.text)).toEqual(["q1", "a1", "q2", "a2"]);
   });
 
-  it("enters brainstorm mode, announces it, and uses plan mode until told to work", async () => {
+  it("enters brainstorm mode, announces it, and stays locked until told to work", async () => {
     const channel = store.activeSession("graphite")!.channelId;
     router.next = [
       { effort: "medium", modeChange: "enter_brainstorm" },
@@ -234,7 +234,7 @@ describe("Clot", () => {
     expect(store.nextPending("graphite")).toBeUndefined();
   });
 
-  it("holds back a mid-turn message that starts brainstorming and runs it next, in plan mode", async () => {
+  it("holds back a mid-turn message that starts brainstorming and runs it next, under the lock", async () => {
     const channel = store.activeSession("graphite")!.channelId;
     runner.script = [{ hold: true }, {}];
     router.next = [

@@ -79,7 +79,6 @@ describe("buildPrompt", () => {
     const prompt = buildPrompt({ ...base, mode: "brainstorm" });
     expect(prompt).toContain("Brainstorm mode is ON");
     expect(prompt).toContain("read-only commands");
-    expect(prompt).not.toContain("plan mode");
     expect(prompt.endsWith("fix the footer")).toBe(true);
   });
 

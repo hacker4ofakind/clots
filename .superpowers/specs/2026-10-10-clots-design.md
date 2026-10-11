@@ -677,7 +677,9 @@ In scope:
 - the Discord adapter with the category and `project-DDMM` channel layout, and a
   typing indicator while a turn runs;
 - the router: effort level per prompt, and brainstorm detection;
-- brainstorm mode: detection, mode instruction, marker;
+- brainstorm mode: detection, mode instruction, marker, and the lock in its first
+  form: a locked turn runs in the default permission mode, is refused everything
+  that needs permission, and has no tools that edit or write files;
 - approval scope, enforced by the Clot's system prompt and a scoped GitHub token;
 - commit authorship and the pull request attribution line;
 - the turn summary;
@@ -691,10 +693,11 @@ In scope:
 Out of scope for stage 1: event intake, triage, the rulebook, the gates other than
 the usage-limit pause, the sweep (so rollover re-grounding is added in stage 2), the
 browser, the `clots` CLI, running on the Pi, copying the user's Claude setup into
-the container, a separate GitHub account for the Clots, the lock (both arrive in
-stage 2a; until then brainstorm mode rests on Claude Code's plan mode and the Clot
-uses a token of the user's), pruning old channels. The container login is done by
-hand in stage 1.
+the container, a separate GitHub account for the Clots (stage 2a; until then the
+Clot uses a scoped token of the user's), the lock's list of approved read-only
+commands and the hook that asks it before every tool call (stage 2a, where the
+lock also starts to serve investigations), pruning old channels. The container
+login is done by hand in stage 1.
 
 Stage 1 is done when, in a development environment:
 
@@ -724,6 +727,9 @@ Stage 1 is done when, in a development environment:
 - Closing a turn's input while the turn is running lets the turn finish.
 - Resuming a session after its process was stopped preserves the ability to apply
   effort and mode changes.
+- A resumed turn in the default permission mode, with a callback that refuses
+  everything put to it, cannot write a file. (Plan mode is not an alternative: it
+  never consults the callback.)
 
 If any of these fails, stop and bring the finding to the user before continuing.
 

@@ -32,11 +32,11 @@ full:
   on each bound repository.
 - **The one built-in drop** (parent section 3): events the Clot caused itself
   (section 5 here).
-- **The lock** (parent section 7), enforced by the daemon and not only by
-  instruction (section 7 here).
-- **Brainstorm mode on the same lock** (parent section 6). Plan mode is not used
-  for it: plan mode never consults the daemon, so only the model's restraint would
-  hold.
+- **The lock in full** (parent section 7; section 7 here). Stage 1 locks
+  brainstorm turns by refusing everything that needs permission. 2a gives the
+  lock its list of approved read-only commands, the hook that asks it before
+  every tool call, and its second use: the investigation of an event. Brainstorm
+  mode and investigations run under the same lock (parent section 6).
 - **The steering question** (parent section 3): an event that bears on a running
   turn joins it only with the user's approval, whatever kind of turn it is
   (section 8 here). The brainstorm gate of stage 2d is built on it.
