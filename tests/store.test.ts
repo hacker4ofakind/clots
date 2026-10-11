@@ -130,6 +130,14 @@ describe("Store", () => {
       expect(store.getEvent("d-1")).toMatchObject({ body: "Steps...\n\nInline comments:\n- a.ts:3: rename", subject: "pr:14", automated: true, status: "held" });
     });
 
+    it("remembers that an event's body was added to, whatever the body says", () => {
+      store.insertEvent({ ...event, body: "See the Inline comments: they explain it." });
+      expect(store.isEnriched("d-1")).toBe(false);
+      store.setEventBody("d-1", "See the Inline comments: they explain it.");
+      expect(store.isEnriched("d-1")).toBe(true);
+      expect(store.isEnriched("missing")).toBe(false);
+    });
+
     it("records the release of a held group in one step", () => {
       for (const id of ["d-1", "d-2", "d-3"]) {
         store.insertEvent({ ...event, id });

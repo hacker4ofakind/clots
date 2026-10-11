@@ -201,10 +201,16 @@ they are inside the same untrusted block and the same length limit as the rest
 of the body. The lock is unchanged: a locked turn is not given `gh api`.
 
 GitHub lists a pull request's comments a hundred at a time. The daemon reads on,
-newest first, until a page is not full, up to ten pages. If there are more, the
-body says that some inline comments may be missing. The comments are added to an
-event once: an event that is taken up again after a failure is not read a second
-time.
+newest first, until a page is not full, up to ten pages. If there are more, or a
+later page cannot be read, the comments read so far are kept and the body says
+that some inline comments may be missing. Only when nothing could be read does
+the body say the comments could not be read.
+
+The comments are added to an event once: an event that is taken up again after a
+failure is not read a second time. Whether an event has been read is stored as a
+flag of its own. It is never judged from the body, whose text is the reviewer's
+to write: a review that happens to say "Inline comments:" is read like any
+other.
 
 ## 7. The lock
 
@@ -282,6 +288,8 @@ appear:
   a long option cut short, so `sort --o=FILE` is `--output` and
   `git grep --op=PROGRAM` is `--open-files-in-pager`; that is why they are
   matched by their first letters;
+- a writing short flag anywhere in a run of short options, after a digit as
+  well: `file -0C` is `-0 -C`, and `git grep -5O` is `-5 -O`;
 - `ping` without a count, or with a count above ten.
 
 Anything the checker cannot parse with confidence is refused. A refusal tells the

@@ -1573,6 +1573,8 @@ const REFUSED: [command: string, why: string][] = [
   ["tree -o out.txt", "tree -o"],
   ["file -C -m magic", "file -C"],
   ["file -bC -m magic", "file -bC"],
+  ["file -0C -m magic", "file -0C"],
+  ["git grep -5O./evil.sh login", "git grep -5O"],
   ["file --compile -m magic", "file --compile"],
   ["file --comp -m magic", "file --comp"],
   ["find /dev/null $'-exec' sh -c 'printf harmless' \\;", "$'...'"],
@@ -1665,7 +1667,7 @@ describe("lockHookAnswer", () => {
     expect(lockHookAnswer("Bash", { command: "git push" })).toEqual({
       hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("`git push` is not on the approved list") },
     });
-    for (const [tool, input] of [["Write", { file_path: "a.ts" }], ["mcp__x__send", {}], ["Bash", undefined], ["Bash", "git status"]] as const) {
+    for (const [tool, input] of [["Write", { file_path: "a.ts" }], ["mcp__x__send", {}], ["Bash", undefined], ["Bash", "git status"], ["Bash", { command: "file -0C -m magic" }]] as const) {
       expect(lockHookAnswer(tool, input).hookSpecificOutput?.permissionDecision).toBe("deny");
     }
   });
@@ -1779,8 +1781,9 @@ const WRITING_FLAG: Record<string, (arg: string) => boolean> = {
   rg: (a) => a.startsWith("--pre") || a.startsWith("--hostname-bin"),
   sort: (a) => a.startsWith("--o") || a.startsWith("--co") || /^-[a-zA-Z]*o/.test(a),
   tree: (a) => a.startsWith("-o") || a.startsWith("--output"),
-  // -C (--compile, which `--co` is enough to mean) writes a compiled magic file.
-  file: (a) => a.startsWith("--co") || /^-[a-zA-Z]*C/.test(a),
+  // -C (--compile, which `--co` is enough to mean) writes a compiled magic file. It can sit
+  // anywhere in a run of short options, after a digit too: `-0C` is `-0 -C`.
+  file: (a) => a.startsWith("--co") || /^-[^-]*C/.test(a),
 };
 
 const GIT_SUBCOMMANDS = new Set(["log", "diff", "show", "status", "blame", "ls-files", "grep", "branch"]);
@@ -1793,7 +1796,7 @@ function checkGit(args: string[]): Verdict {
   if (!GIT_SUBCOMMANDS.has(sub)) return no(`\`git ${sub}\` is not on the approved list`);
   const rest = args.slice(1);
   // `git grep` accepts a long option cut short, so `--op` is `--open-files-in-pager`, which runs a program.
-  const writing = rest.find((a) => a.startsWith("--output") || a === "--ext-diff" || (sub === "grep" && (a.startsWith("--op") || /^-[a-zA-Z]*O/.test(a))));
+  const writing = rest.find((a) => a.startsWith("--output") || a === "--ext-diff" || (sub === "grep" && (a.startsWith("--op") || /^-[^-]*O/.test(a))));
   if (writing !== undefined) return no(`\`git ${sub} ${writing}\` can write a file or run a program`);
   if (sub === "branch" && rest.some((a) => !GIT_BRANCH_LISTING.has(a))) return no("`git branch` may only list branches");
   return OK;
@@ -1900,7 +1903,7 @@ export function lockHookAnswer(toolName: string, input: unknown, testCommand?: s
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run tests/command-check.test.ts`
-Expected: PASS, 138 tests.
+Expected: PASS, 140 tests.
 
 
 ### Task 6: The lock in the runner
@@ -2192,7 +2195,7 @@ diff --git a/src/agent/runner.ts b/src/agent/runner.ts
 - [ ] **Step 6: Run the suite and typecheck**
 
 Run: `npm run typecheck && npm test`
-Expected: no type errors; PASS, 310 tests across 14 files (304 without the recordings test).
+Expected: no type errors; PASS, 312 tests across 14 files (306 without the recordings test).
 
 - [ ] **Step 7: Check the lock through the real runner**
 
@@ -5135,7 +5138,7 @@ index 0085224..d1a1ad2 100644
 - [ ] **Step 6: Typecheck and run the suite**
 
 Run: `npm run typecheck && npm test`
-Expected: no type errors; PASS, 387 tests across 18 files.
+Expected: no type errors; PASS, 389 tests across 18 files.
 
 
 ### Task 13: A lock nothing gets past, and records that survive a restart
@@ -5151,7 +5154,8 @@ Expected: no type errors; PASS, 387 tests across 18 files.
   - `SessionRow.interruptedKind: InboxKind`; `Store.setInterrupted(id, interrupted, kind?)`.
   - `Store.deleteAsk(eventId): boolean`: true only for the caller that closed the question.
   - `Store.recordRelease({ event, clot, isNew, absorbed })`: one transaction.
-  - `hasInline(event)`, `INLINE_HEADING`, `INLINE_PARTIAL` from `src/events/review-comments.ts`; the reader follows GitHub's pages.
+  - `INLINE_HEADING`, `INLINE_PARTIAL` from `src/events/review-comments.ts`; the reader follows GitHub's pages and keeps what it has read when a later page fails.
+  - `Store.isEnriched(id): boolean`, set by `Store.setEventBody`: whether the daemon has added to an event's body, kept as a flag of its own and never read off the body's text.
 
 Section 7 of the spec says how the lock is enforced and what keeps a turn's lock; sections 6 and 8 say what must hold across a restart and when two things happen at once.
 
@@ -5316,10 +5320,18 @@ index f7a02d7..6a8d667 100644
    it("marks inbox rows as messages unless told they are events", () => {
      store.enqueue({ id: "m1", clot: "graphite", channelId: "ch-1", text: "hi", receivedAt: 1 });
      store.enqueue({ id: "event:d-1", clot: "graphite", channelId: "ch-1", text: "<event>", receivedAt: 2, kind: "event" });
-@@ -120,6 +130,29 @@ describe("Store", () => {
+@@ -120,6 +130,37 @@ describe("Store", () => {
        expect(store.getEvent("d-1")).toMatchObject({ body: "Steps...\n\nInline comments:\n- a.ts:3: rename", subject: "pr:14", automated: true, status: "held" });
      });
  
++    it("remembers that an event's body was added to, whatever the body says", () => {
++      store.insertEvent({ ...event, body: "See the Inline comments: they explain it." });
++      expect(store.isEnriched("d-1")).toBe(false);
++      store.setEventBody("d-1", "See the Inline comments: they explain it.");
++      expect(store.isEnriched("d-1")).toBe(true);
++      expect(store.isEnriched("missing")).toBe(false);
++    });
++
 +    it("records the release of a held group in one step", () => {
 +      for (const id of ["d-1", "d-2", "d-3"]) {
 +        store.insertEvent({ ...event, id });
@@ -5372,11 +5384,12 @@ index 923fda6..810ef3f 100644
      active: r.active === 1,
    };
  }
-@@ -169,6 +172,7 @@ export class Store {
+@@ -169,6 +172,8 @@ export class Store {
      this.addColumn("sessions", "seed_reason", "TEXT NOT NULL DEFAULT 'context'");
      this.addColumn("clots", "next_effort", "TEXT");
      this.addColumn("inbox", "kind", "TEXT NOT NULL DEFAULT 'message'");
 +    this.addColumn("sessions", "interrupted_kind", "TEXT NOT NULL DEFAULT 'message'");
++    this.addColumn("events", "enriched", "INTEGER NOT NULL DEFAULT 0");
      this.addColumn("events", "subject", "TEXT NOT NULL DEFAULT ''");
      this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
    }
@@ -5391,10 +5404,16 @@ index 923fda6..810ef3f 100644
    }
  
    enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind }): boolean {
-@@ -285,6 +289,23 @@ export class Store {
-     this.db.prepare("UPDATE events SET body = ? WHERE id = ?").run(body, id);
+@@ -285,6 +289,28 @@ export class Store {
+-    this.db.prepare("UPDATE events SET body = ? WHERE id = ?").run(body, id);
++    this.db.prepare("UPDATE events SET body = ?, enriched = 1 WHERE id = ?").run(body, id);
    }
  
++  /** Whether the daemon has already added to this event's body. Kept apart from the body, whose text is the source's to write. */
++  isEnriched(id: string): boolean {
++    return this.db.prepare("SELECT enriched FROM events WHERE id = ?").pluck().get(id) === 1;
++  }
++
 +  /**
 +   * Records what releasing a group of held events produced, all or nothing: the event that goes
 +   * on (stored now when it is a new batch), and every event it stands in for as merged into it.
@@ -5591,7 +5610,7 @@ index 66ea4a5..fc43b5f 100644
  import type { ClotEvent } from "../src/events/types.js";
  
  function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
-@@ -135,7 +135,32 @@ describe("inline review comments", () => {
+@@ -135,7 +135,50 @@ describe("inline review comments", () => {
      const inline = "Inline comments:\n- src/cache.ts:12: Rename this.\n- src/b.ts:3: And this.";
      expect((await read(review)).body).toBe(inline);
      expect((await read({ ...review, body: "Two things." })).body).toBe(`Two things.\n\n${inline}`);
@@ -5622,6 +5641,24 @@ index 66ea4a5..fc43b5f 100644
 +
 +    expect((await read(review)).body).toBe(INLINE_PARTIAL);
 +    expect(asked).toBe(10);
++  });
++
++  it("keeps what it has read when a later page fails, and says some may be missing", async () => {
++    const first = [{ pull_request_review_id: 555, path: "src/cache.ts", line: 12, body: "Rename this." }, ...Array.from({ length: 99 }, () => ({ pull_request_review_id: 777, path: "src/other.ts", line: 1, body: "Another review." }))];
++    const kept = `Inline comments:\n- src/cache.ts:12: Rename this.\n${INLINE_PARTIAL}`;
++    const failures: (() => Promise<Response>)[] = [
++      async () => new Response("{}", { status: 503 }),
++      async () => new Response("not json"),
++      async () => {
++        throw new Error("offline");
++      },
++    ];
++    for (const fail of failures) {
++      let asked = 0;
++      const read = inlineCommentReader("t0ken", (async () => ((asked += 1) === 1 ? new Response(JSON.stringify(first)) : fail())) as unknown as typeof fetch);
++      expect((await read(review)).body).toBe(kept);
++      expect(asked).toBe(2);
++    }
    });
  
    it("leaves a review without inline comments, and anything that is not a review, as it came", async () => {
@@ -5643,12 +5680,12 @@ diff --git a/src/events/review-comments.ts b/src/events/review-comments.ts
 index 77d991a..c3e73ed 100644
 --- a/src/events/review-comments.ts
 +++ b/src/events/review-comments.ts
-@@ -4,6 +4,21 @@ import type { ClotEvent } from "./types.js";
+@@ -4,6 +4,16 @@ import type { ClotEvent } from "./types.js";
  /** Added to a review's body when its inline comments could not be fetched. */
  export const INLINE_UNREAD = "[This review's inline comments could not be read.]";
  
-+/** Added when a pull request has more comments than the daemon reads. */
-+export const INLINE_PARTIAL = "[This pull request has more comments than could be read; some of this review's inline comments may be missing.]";
++/** Added when not all of a pull request's comments were read: there are more pages than the daemon reads, or a later page failed. */
++export const INLINE_PARTIAL = "[Not all of this pull request's comments could be read; some of this review's inline comments may be missing.]";
 +
 +/** The first line of the block of inline comments. */
 +export const INLINE_HEADING = "Inline comments:";
@@ -5656,11 +5693,6 @@ index 77d991a..c3e73ed 100644
 +/** GitHub's largest page, and how many pages are read before giving up. */
 +const PER_PAGE = 100;
 +const MAX_PAGES = 10;
-+
-+/** Whether a review's body already holds what the reader adds, so that it is not added twice. */
-+export function hasInline(event: ClotEvent): boolean {
-+  return [INLINE_HEADING, INLINE_UNREAD, INLINE_PARTIAL].some((mark) => event.body.includes(mark));
-+}
 +
  /** The review's ID, which GitHub puts at the end of its link: ".../pull/9#pullrequestreview-123". */
  export function reviewIdOf(event: ClotEvent): string | undefined {
@@ -5674,10 +5706,10 @@ index 77d991a..c3e73ed 100644
  }
  
  /** The review with a block of text added to its body, inside the usual length limit. */
-@@ -71,13 +86,21 @@ export function inlineCommentReader(token: string, fetchFn: typeof fetch = fetch
+@@ -71,15 +81,24 @@ export function inlineCommentReader(token: string, fetchFn: typeof fetch = fetch
      if (event.kind !== "review" || id === undefined) return event;
-     try {
-       // The list of one review's comments leaves out their line numbers, so the pull request's
+-    try {
+-      // The list of one review's comments leaves out their line numbers, so the pull request's
 -      // comments are fetched, newest first, and this review's are picked out.
 -      const response = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=100`, {
 -        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
@@ -5685,24 +5717,32 @@ index 77d991a..c3e73ed 100644
 -      if (!response.ok) return withInline(event, INLINE_UNREAD);
 -      const comments: unknown = await response.json();
 -      return withInline(event, formatInlineComments(Array.isArray(comments) ? [...comments].reverse() : comments, id));
-+      // comments are fetched, newest first and page by page, and this review's are picked out.
-+      const comments: unknown[] = [];
-+      let complete = false;
-+      for (let page = 1; page <= MAX_PAGES && !complete; page += 1) {
-+        const response = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=${PER_PAGE}&page=${page}`, {
-+          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
-+        });
-+        if (!response.ok) return withInline(event, INLINE_UNREAD);
-+        const batch: unknown = await response.json();
-+        if (!Array.isArray(batch)) return withInline(event, INLINE_UNREAD);
-+        comments.push(...batch);
-+        complete = batch.length < PER_PAGE;
+-    } catch {
+-      return withInline(event, INLINE_UNREAD);
+-    }
++    // The list of one review's comments leaves out their line numbers, so the pull request's
++    // comments are fetched, newest first and page by page, and this review's are picked out.
++    const comments: unknown[] = [];
++    let complete = false;
++    for (let page = 1; page <= MAX_PAGES && !complete; page += 1) {
++      const batch: unknown = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=${PER_PAGE}&page=${page}`, {
++        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
++      })
++        .then((response) => (response.ok ? response.json() : undefined))
++        .catch(() => undefined);
++      if (!Array.isArray(batch)) {
++        // Nothing could be read at all. When it is a later page that fails, what the earlier
++        // pages gave is kept, and the body says that some comments may be missing.
++        if (page === 1) return withInline(event, INLINE_UNREAD);
++        break;
 +      }
-+      const block = formatInlineComments(comments.reverse(), id);
-+      return withInline(event, complete ? block : [block, INLINE_PARTIAL].filter((part) => part !== "").join("\n"));
-     } catch {
-       return withInline(event, INLINE_UNREAD);
-     }
++      comments.push(...batch);
++      complete = batch.length < PER_PAGE;
++    }
++    const block = formatInlineComments(comments.reverse(), id);
++    return withInline(event, complete ? block : [block, INLINE_PARTIAL].filter((part) => part !== "").join("\n"));
+   };
+ }
 ```
 
 Change `tests/pipeline.test.ts`:
@@ -5712,7 +5752,7 @@ diff --git a/tests/pipeline.test.ts b/tests/pipeline.test.ts
 index c735381..a47ae2b 100644
 --- a/tests/pipeline.test.ts
 +++ b/tests/pipeline.test.ts
-@@ -313,6 +313,33 @@ describe("Pipeline", () => {
+@@ -313,6 +313,59 @@ describe("Pipeline", () => {
      expect(triage.inputs[0].event.body).toBe("Please fix.");
      expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
    });
@@ -5743,6 +5783,32 @@ index c735381..a47ae2b 100644
 +    expect(triage.inputs.at(-1)!.event.body).toBe("Please fix.\n\nInline comments:\n- a.ts:3: rename");
 +    expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
 +  });
++
++  it("reads the inline comments of a review whose own text happens to use the daemon's wording", async () => {
++    let reads = 0;
++    inline = async (e) => {
++      reads += 1;
++      return { ...e, body: `${e.body}\n\nInline comments:\n- a.ts:3: rename` };
++    };
++    await pipeline.handle(event("d-1", { kind: "review", body: "See the Inline comments: they explain the required fix." }));
++
++    expect(reads).toBe(1);
++    expect(triage.inputs[0].event.body).toBe("See the Inline comments: they explain the required fix.\n\nInline comments:\n- a.ts:3: rename");
++  });
++
++  it("does not read a review again when it had no inline comments to add", async () => {
++    let reads = 0;
++    inline = async (e) => {
++      reads += 1;
++      return e;
++    };
++    triage.fail = true;
++    await pipeline.handle(event("d-1", { kind: "review", body: "Please fix." }));
++    triage.fail = false;
++    await pipeline.resume();
++
++    expect(reads).toBe(1);
++  });
  });
  
  describe("acceptGithub", () => {
@@ -5755,15 +5821,7 @@ diff --git a/src/pipeline.ts b/src/pipeline.ts
 index e0b43eb..4558e33 100644
 --- a/src/pipeline.ts
 +++ b/src/pipeline.ts
-@@ -1,6 +1,7 @@
- import type { ChatAdapter } from "./chat/adapter.js";
- import { combine } from "./events/batch.js";
- import { isSelfCaused } from "./events/github.js";
-+import { hasInline } from "./events/review-comments.js";
- import type { ClotEvent } from "./events/types.js";
- import { Hold } from "./hold.js";
- import type { ClotPort } from "./steering.js";
-@@ -97,7 +98,18 @@ export class Pipeline {
+@@ -97,7 +97,18 @@ export class Pipeline {
        return;
      }
  
@@ -5776,9 +5834,9 @@ index e0b43eb..4558e33 100644
 +   * added to its body here, once, and kept.
 +   */
 +  private async withInline(event: ClotEvent): Promise<ClotEvent> {
-+    if (event.kind !== "review" || hasInline(event)) return event;
++    if (event.kind !== "review" || this.d.store.isEnriched(event.id)) return event;
 +    const read = await this.d.readInline(event).catch(() => event);
-+    if (read.body !== event.body) this.d.store.setEventBody(event.id, read.body);
++    this.d.store.setEventBody(event.id, read.body);
 +    return read;
    }
  
@@ -5830,7 +5888,7 @@ One test logs an error on purpose (a triage that throws); the line starting `[pi
 - [ ] **Step 5: Typecheck and run the suite**
 
 Run: `npm run typecheck && npm test`
-Expected: no type errors; PASS, 398 tests across 18 files.
+Expected: no type errors; PASS, 404 tests across 18 files.
 
 
 ### Task 14: Wiring, acceptance and commit
@@ -6171,7 +6229,7 @@ console.log("[events] ready");
 - [ ] **Step 6: Typecheck and run the suite**
 
 Run: `npm run typecheck && npm test`
-Expected: no type errors; PASS, 402 tests across 18 files.
+Expected: no type errors; PASS, 408 tests across 18 files.
 
 - [ ] **Step 7: Update the user's configuration**
 

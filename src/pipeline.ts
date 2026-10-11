@@ -1,7 +1,6 @@
 import type { ChatAdapter } from "./chat/adapter.js";
 import { combine } from "./events/batch.js";
 import { isSelfCaused } from "./events/github.js";
-import { hasInline } from "./events/review-comments.js";
 import type { ClotEvent } from "./events/types.js";
 import { Hold } from "./hold.js";
 import type { ClotPort } from "./steering.js";
@@ -106,9 +105,9 @@ export class Pipeline {
    * added to its body here, once, and kept.
    */
   private async withInline(event: ClotEvent): Promise<ClotEvent> {
-    if (event.kind !== "review" || hasInline(event)) return event;
+    if (event.kind !== "review" || this.d.store.isEnriched(event.id)) return event;
     const read = await this.d.readInline(event).catch(() => event);
-    if (read.body !== event.body) this.d.store.setEventBody(event.id, read.body);
+    this.d.store.setEventBody(event.id, read.body);
     return read;
   }
 

@@ -340,6 +340,32 @@ describe("Pipeline", () => {
     expect(triage.inputs.at(-1)!.event.body).toBe("Please fix.\n\nInline comments:\n- a.ts:3: rename");
     expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
   });
+
+  it("reads the inline comments of a review whose own text happens to use the daemon's wording", async () => {
+    let reads = 0;
+    inline = async (e) => {
+      reads += 1;
+      return { ...e, body: `${e.body}\n\nInline comments:\n- a.ts:3: rename` };
+    };
+    await pipeline.handle(event("d-1", { kind: "review", body: "See the Inline comments: they explain the required fix." }));
+
+    expect(reads).toBe(1);
+    expect(triage.inputs[0].event.body).toBe("See the Inline comments: they explain the required fix.\n\nInline comments:\n- a.ts:3: rename");
+  });
+
+  it("does not read a review again when it had no inline comments to add", async () => {
+    let reads = 0;
+    inline = async (e) => {
+      reads += 1;
+      return e;
+    };
+    triage.fail = true;
+    await pipeline.handle(event("d-1", { kind: "review", body: "Please fix." }));
+    triage.fail = false;
+    await pipeline.resume();
+
+    expect(reads).toBe(1);
+  });
 });
 
 describe("acceptGithub", () => {

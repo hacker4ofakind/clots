@@ -163,6 +163,24 @@ describe("inline review comments", () => {
     expect(asked).toBe(10);
   });
 
+  it("keeps what it has read when a later page fails, and says some may be missing", async () => {
+    const first = [{ pull_request_review_id: 555, path: "src/cache.ts", line: 12, body: "Rename this." }, ...Array.from({ length: 99 }, () => ({ pull_request_review_id: 777, path: "src/other.ts", line: 1, body: "Another review." }))];
+    const kept = `Inline comments:\n- src/cache.ts:12: Rename this.\n${INLINE_PARTIAL}`;
+    const failures: (() => Promise<Response>)[] = [
+      async () => new Response("{}", { status: 503 }),
+      async () => new Response("not json"),
+      async () => {
+        throw new Error("offline");
+      },
+    ];
+    for (const fail of failures) {
+      let asked = 0;
+      const read = inlineCommentReader("t0ken", (async () => ((asked += 1) === 1 ? new Response(JSON.stringify(first)) : fail())) as unknown as typeof fetch);
+      expect((await read(review)).body).toBe(kept);
+      expect(asked).toBe(2);
+    }
+  });
+
   it("leaves a review without inline comments, and anything that is not a review, as it came", async () => {
     let asked = 0;
     const read = inlineCommentReader("t0ken", (async () => {

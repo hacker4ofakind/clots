@@ -95,8 +95,9 @@ const WRITING_FLAG: Record<string, (arg: string) => boolean> = {
   rg: (a) => a.startsWith("--pre") || a.startsWith("--hostname-bin"),
   sort: (a) => a.startsWith("--o") || a.startsWith("--co") || /^-[a-zA-Z]*o/.test(a),
   tree: (a) => a.startsWith("-o") || a.startsWith("--output"),
-  // -C (--compile, which `--co` is enough to mean) writes a compiled magic file.
-  file: (a) => a.startsWith("--co") || /^-[a-zA-Z]*C/.test(a),
+  // -C (--compile, which `--co` is enough to mean) writes a compiled magic file. It can sit
+  // anywhere in a run of short options, after a digit too: `-0C` is `-0 -C`.
+  file: (a) => a.startsWith("--co") || /^-[^-]*C/.test(a),
 };
 
 const GIT_SUBCOMMANDS = new Set(["log", "diff", "show", "status", "blame", "ls-files", "grep", "branch"]);
@@ -109,7 +110,7 @@ function checkGit(args: string[]): Verdict {
   if (!GIT_SUBCOMMANDS.has(sub)) return no(`\`git ${sub}\` is not on the approved list`);
   const rest = args.slice(1);
   // `git grep` accepts a long option cut short, so `--op` is `--open-files-in-pager`, which runs a program.
-  const writing = rest.find((a) => a.startsWith("--output") || a === "--ext-diff" || (sub === "grep" && (a.startsWith("--op") || /^-[a-zA-Z]*O/.test(a))));
+  const writing = rest.find((a) => a.startsWith("--output") || a === "--ext-diff" || (sub === "grep" && (a.startsWith("--op") || /^-[^-]*O/.test(a))));
   if (writing !== undefined) return no(`\`git ${sub} ${writing}\` can write a file or run a program`);
   if (sub === "branch" && rest.some((a) => !GIT_BRANCH_LISTING.has(a))) return no("`git branch` may only list branches");
   return OK;

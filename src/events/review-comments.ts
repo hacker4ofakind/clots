@@ -4,8 +4,8 @@ import type { ClotEvent } from "./types.js";
 /** Added to a review's body when its inline comments could not be fetched. */
 export const INLINE_UNREAD = "[This review's inline comments could not be read.]";
 
-/** Added when a pull request has more comments than the daemon reads. */
-export const INLINE_PARTIAL = "[This pull request has more comments than could be read; some of this review's inline comments may be missing.]";
+/** Added when not all of a pull request's comments were read: there are more pages than the daemon reads, or a later page failed. */
+export const INLINE_PARTIAL = "[Not all of this pull request's comments could be read; some of this review's inline comments may be missing.]";
 
 /** The first line of the block of inline comments. */
 export const INLINE_HEADING = "Inline comments:";
@@ -13,11 +13,6 @@ export const INLINE_HEADING = "Inline comments:";
 /** GitHub's largest page, and how many pages are read before giving up. */
 const PER_PAGE = 100;
 const MAX_PAGES = 10;
-
-/** Whether a review's body already holds what the reader adds, so that it is not added twice. */
-export function hasInline(event: ClotEvent): boolean {
-  return [INLINE_HEADING, INLINE_UNREAD, INLINE_PARTIAL].some((mark) => event.body.includes(mark));
-}
 
 /** The review's ID, which GitHub puts at the end of its link: ".../pull/9#pullrequestreview-123". */
 export function reviewIdOf(event: ClotEvent): string | undefined {
@@ -84,25 +79,26 @@ export function inlineCommentReader(token: string, fetchFn: typeof fetch = fetch
   return async (event) => {
     const id = reviewIdOf(event);
     if (event.kind !== "review" || id === undefined) return event;
-    try {
-      // The list of one review's comments leaves out their line numbers, so the pull request's
-      // comments are fetched, newest first and page by page, and this review's are picked out.
-      const comments: unknown[] = [];
-      let complete = false;
-      for (let page = 1; page <= MAX_PAGES && !complete; page += 1) {
-        const response = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=${PER_PAGE}&page=${page}`, {
-          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
-        });
-        if (!response.ok) return withInline(event, INLINE_UNREAD);
-        const batch: unknown = await response.json();
-        if (!Array.isArray(batch)) return withInline(event, INLINE_UNREAD);
-        comments.push(...batch);
-        complete = batch.length < PER_PAGE;
+    // The list of one review's comments leaves out their line numbers, so the pull request's
+    // comments are fetched, newest first and page by page, and this review's are picked out.
+    const comments: unknown[] = [];
+    let complete = false;
+    for (let page = 1; page <= MAX_PAGES && !complete; page += 1) {
+      const batch: unknown = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=${PER_PAGE}&page=${page}`, {
+        headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
+      })
+        .then((response) => (response.ok ? response.json() : undefined))
+        .catch(() => undefined);
+      if (!Array.isArray(batch)) {
+        // Nothing could be read at all. When it is a later page that fails, what the earlier
+        // pages gave is kept, and the body says that some comments may be missing.
+        if (page === 1) return withInline(event, INLINE_UNREAD);
+        break;
       }
-      const block = formatInlineComments(comments.reverse(), id);
-      return withInline(event, complete ? block : [block, INLINE_PARTIAL].filter((part) => part !== "").join("\n"));
-    } catch {
-      return withInline(event, INLINE_UNREAD);
+      comments.push(...batch);
+      complete = batch.length < PER_PAGE;
     }
+    const block = formatInlineComments(comments.reverse(), id);
+    return withInline(event, complete ? block : [block, INLINE_PARTIAL].filter((part) => part !== "").join("\n"));
   };
 }

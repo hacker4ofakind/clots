@@ -173,6 +173,7 @@ export class Store {
     this.addColumn("clots", "next_effort", "TEXT");
     this.addColumn("inbox", "kind", "TEXT NOT NULL DEFAULT 'message'");
     this.addColumn("sessions", "interrupted_kind", "TEXT NOT NULL DEFAULT 'message'");
+    this.addColumn("events", "enriched", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("events", "subject", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
   }
@@ -286,7 +287,12 @@ export class Store {
 
   /** Replaces an event's body, after the daemon has added to it. */
   setEventBody(id: string, body: string): void {
-    this.db.prepare("UPDATE events SET body = ? WHERE id = ?").run(body, id);
+    this.db.prepare("UPDATE events SET body = ?, enriched = 1 WHERE id = ?").run(body, id);
+  }
+
+  /** Whether the daemon has already added to this event's body. Kept apart from the body, whose text is the source's to write. */
+  isEnriched(id: string): boolean {
+    return this.db.prepare("SELECT enriched FROM events WHERE id = ?").pluck().get(id) === 1;
   }
 
   /**

@@ -104,6 +104,8 @@ const REFUSED: [command: string, why: string][] = [
   ["tree -o out.txt", "tree -o"],
   ["file -C -m magic", "file -C"],
   ["file -bC -m magic", "file -bC"],
+  ["file -0C -m magic", "file -0C"],
+  ["git grep -5O./evil.sh login", "git grep -5O"],
   ["file --compile -m magic", "file --compile"],
   ["file --comp -m magic", "file --comp"],
   ["find /dev/null $'-exec' sh -c 'printf harmless' \\;", "$'...'"],
@@ -196,7 +198,7 @@ describe("lockHookAnswer", () => {
     expect(lockHookAnswer("Bash", { command: "git push" })).toEqual({
       hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("`git push` is not on the approved list") },
     });
-    for (const [tool, input] of [["Write", { file_path: "a.ts" }], ["mcp__x__send", {}], ["Bash", undefined], ["Bash", "git status"]] as const) {
+    for (const [tool, input] of [["Write", { file_path: "a.ts" }], ["mcp__x__send", {}], ["Bash", undefined], ["Bash", "git status"], ["Bash", { command: "file -0C -m magic" }]] as const) {
       expect(lockHookAnswer(tool, input).hookSpecificOutput?.permissionDecision).toBe("deny");
     }
   });
