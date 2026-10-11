@@ -494,7 +494,16 @@ Every implementation plan must carry both sets of steps and begin with this chec
 Each stage gets its own specification and plan.
 
 1. **Runtime and Discord.**
-2. **Intake, triage and rulebook.**
+2. **Intake, triage and rulebook**, built in four parts, each with its own
+   specification and plan:
+   - **2a. Pipeline with one source**: the event format, intake, pre-filter,
+     routing, triage, delivery under an investigate lock, a read-only rulebook, and
+     GitHub as the only source
+     (`.superpowers/specs/2026-10-11-clots-stage-2a-pipeline-design.md`).
+   - **2b. Rulebook editing and standing rules**, and the home Clot.
+   - **2c. More sources**: Sentry, Stripe, Vercel, email, PostHog, Calendar, watch
+     recipes.
+   - **2d. Gates and sweep**, with the spend log and rollover re-grounding.
 3. **Pi deployment and onboarding.**
 4. **Browser and live view.**
 5. **Slack adapter.**
