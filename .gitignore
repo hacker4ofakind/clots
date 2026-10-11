@@ -1,0 +1,4 @@
+node_modules/
+.env
+clots.config.json
+data/

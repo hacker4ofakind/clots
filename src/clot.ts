@@ -1,0 +1,352 @@
+import type { AgentRunner, TurnHandle, TurnResult } from "./agent/runner.js";
+import { buildPrompt, CONTINUE_TEXT, MIDTURN_PREFIX, recapPrompt } from "./agent/prompts.js";
+import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
+import { sessionChannelName } from "./chat/names.js";
+import { COMMAND_USAGE, parseCommand, type Command } from "./commands.js";
+import { nextMode, type Router } from "./router.js";
+import type { InboxRow, SessionRow, Store } from "./store.js";
+import type { Mode, SeedReason } from "./types.js";
+
+export interface ClotDeps {
+  name: string;
+  store: Store;
+  chat: ChatAdapter;
+  router: Router;
+  runner: AgentRunner;
+  timeZone: string;
+  userId: string;
+  rolloverPercent: number;
+  now: () => Date;
+  newId: () => string;
+  schedule: (ms: number, fn: () => void) => void;
+}
+
+/** A command the daemon answers at once, without a turn and without the session. */
+type InstantCommand = Extract<Command, { kind: "invalid" | "effort" }>;
+
+/** Returns the command when it is one answered at once; an `&effort` that carries a message is not. */
+function instantCommand(command: Command): InstantCommand | undefined {
+  return command.kind === "invalid" || (command.kind === "effort" && command.rest === "") ? command : undefined;
+}
+
+const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: string; closed: string }> = {
+  context: {
+    notice: "This thread hit the context limit and will be closed. Waiting on handoff...",
+    failed: "The handoff could not be written. This thread stays open; I'll try again after the next message.",
+    intro: "New session. This is the recap of the previous one. Correct anything that is wrong before I continue.",
+    closed: "This session is closed.",
+  },
+  user: {
+    notice: "Closing this session at your request. Waiting on handoff...",
+    failed: "The handoff could not be written, so this session stays open. Send `&close` to try again, or `&close nosummary` to start without one.",
+    intro: "New session, started at your request. This is the recap of the previous one. Correct anything that is wrong before I continue.",
+    closed: "This session was closed at your request.",
+  },
+};
+
+export class Clot {
+  private live?: TurnHandle;
+  private draining = false;
+  private posts: Promise<void> = Promise.resolve();
+
+  constructor(private d: ClotDeps) {}
+
+  async init(): Promise<void> {
+    const { store, chat, name } = this.d;
+    if (!store.getClot(name)) store.upsertClot(name, await chat.ensureCategory(name));
+    const clot = store.getClot(name)!;
+
+    if (!store.activeSession(name)) {
+      const channelId = await this.newChannel(clot.categoryId);
+      store.createSession({ id: this.d.newId(), clot: name, channelId, seed: null });
+      await chat.post(channelId, `${chat.mention(this.d.userId)} ${name} is ready.`);
+    }
+
+    if (store.requeueRunning(name) > 0) store.setInterrupted(store.activeSession(name)!.id, true);
+
+    // A pause that expired while the daemon was down still goes through the resume path, so the cut-off work continues.
+    if (clot.pausedUntil !== null) this.scheduleResume(clot.pausedUntil);
+    else await this.drain();
+  }
+
+  async onMessage(m: InboundMessage): Promise<void> {
+    const { store, chat, name } = this.d;
+    if (m.authorId !== this.d.userId) return;
+
+    const session = store.activeSession(name)!;
+    if (m.channelId !== session.channelId) {
+      await chat.post(m.channelId, `This session is closed. Continue in ${chat.channelLink(session.channelId)}.`);
+      return;
+    }
+    if (!store.enqueue({ id: m.id, clot: name, channelId: m.channelId, text: m.text, receivedAt: m.at.getTime() })) return;
+
+    const command = parseCommand(m.text);
+    const instant = instantCommand(command);
+    if (instant) {
+      await this.runInstant(m.id, session.channelId, instant);
+      return;
+    }
+
+    if (this.live) {
+      if (command.kind === "close") {
+        // Stays pending; the drain loop closes the session once this turn is over.
+        await chat.post(session.channelId, "I'll close this session when the current turn finishes.");
+        return;
+      }
+      // An earlier message is waiting for this turn to end (a close, a mode change, a refused push).
+      // This one waits behind it, so it is not delivered ahead of what the user sent first.
+      const earlier = store.nextPending(name);
+      if (earlier && earlier.id !== m.id) return;
+      const live = this.live;
+      const text = command.kind === "effort" ? command.rest : m.text;
+      const mode = store.getClot(name)!.mode;
+      const decision = await this.d.router.decide({ text, mode, tail: store.tail(name, 4) });
+      if (this.live !== live) {
+        // The turn ended while routing. The message is still pending; handle it as a normal turn.
+        await this.drain();
+        return;
+      }
+      // A turn's permissions are fixed when it starts, so a message that changes the mode
+      // stays pending and gets a turn of its own, in the new mode, right after this one.
+      if (nextMode(mode, decision.modeChange) !== mode) return;
+      const oneOff = store.nextEffort(name);
+      const effort = (command.kind === "effort" ? command.effort : oneOff) ?? decision.effort;
+      // Refused once the turn's input has closed; the message then stays pending for the next turn,
+      // and a one-off effort is kept for it.
+      if (!live.push(`${MIDTURN_PREFIX}\n${text}`, effort)) return;
+      if (oneOff !== null) store.setNextEffort(name, null);
+      store.appendTail(name, "user", text);
+      store.setInboxStatus(m.id, "running");
+      return;
+    }
+    await this.drain();
+  }
+
+  /** Works through pending messages one at a time. Only one drain runs; a call made while one is active does nothing. */
+  private async drain(): Promise<void> {
+    const { store, name } = this.d;
+    if (this.draining) return;
+    this.draining = true;
+    try {
+      while (true) {
+        const paused = store.getClot(name)!.pausedUntil;
+        if (paused !== null && paused * 1000 > this.d.now().getTime()) return;
+        const row = store.nextPending(name);
+        if (!row) return;
+        const keepGoing = await this.process(row);
+        if (!keepGoing) return;
+      }
+    } finally {
+      this.draining = false;
+    }
+  }
+
+  private async runInstant(id: string, channelId: string, command: InstantCommand): Promise<void> {
+    const { store, chat, name } = this.d;
+    store.setInboxStatus(id, "done");
+    if (command.kind === "effort") {
+      store.setNextEffort(name, command.effort);
+      await chat.post(channelId, `Effort for your next message: ${command.effort}.`);
+    } else {
+      await chat.post(channelId, `I don't know \`&${command.name}\` used that way. ${COMMAND_USAGE}`);
+    }
+  }
+
+  /** Handles one pending message. Returns false when draining must stop (the Clot is now paused). */
+  private async process(row: InboxRow): Promise<boolean> {
+    const { store, chat, name } = this.d;
+    const session = store.activeSession(name)!;
+    const mode = store.getClot(name)!.mode;
+
+    const command = parseCommand(row.text);
+    const instant = instantCommand(command);
+    if (instant) {
+      await this.runInstant(row.id, session.channelId, instant);
+      return true;
+    }
+    if (command.kind === "close") {
+      if (session.started) {
+        const outcome = await this.handoff("user", command.summary);
+        // On a usage limit the command stays pending and is retried after the reset.
+        if (outcome === "paused") return false;
+        if (outcome === "resumed") return true;
+      } else if (!command.summary && session.seed !== null) {
+        // A new session that still carries an unused recap: drop the recap in place.
+        store.clearSeed(session.id);
+        store.setMode(name, "action");
+        store.clearTail(name);
+        await chat.post(session.channelId, "Recap discarded. This session now starts from scratch.");
+      } else {
+        await chat.post(session.channelId, "This session is already fresh; there is nothing to close.");
+      }
+      store.setInboxStatus(row.id, "done");
+      return true;
+    }
+
+    const stopTyping = chat.startTyping(session.channelId);
+    let result: TurnResult;
+    try {
+      result = await this.runTurn(row, session, mode, command);
+    } finally {
+      this.live = undefined;
+      stopTyping();
+    }
+    await this.posts;
+    if (result.activity && result.activity.files.length + result.activity.commands.length > 0) {
+      await chat.postActivity(session.channelId, result.activity).catch(() => undefined);
+    }
+
+    // The session exists on disk once any model response has come back.
+    if (result.ok || result.contextPercent > 0) store.markSessionStarted(session.id);
+    store.setInterrupted(session.id, false);
+    store.finishRunning(name);
+
+    if (!result.ok && !result.limit) {
+      await chat.post(session.channelId, "That turn ended with an error. Send your message again to retry.");
+      return true;
+    }
+
+    if (result.limit) {
+      store.setInterrupted(session.id, true);
+      return (await this.pause(session.channelId, result.limit.resetsAt)) === "resumed";
+    }
+
+    if (result.contextPercent >= this.d.rolloverPercent && (await this.handoff("context", true)) === "paused") return false;
+    return true;
+  }
+
+  /**
+   * Pauses until the usage limit resets and tells the user. Returns "resumed"
+   * when the reset came while the notice was being posted, in which case the
+   * caller carries on draining.
+   */
+  private async pause(channelId: string, resetsAt: number): Promise<"paused" | "resumed"> {
+    const { store, chat, name } = this.d;
+    store.setPausedUntil(name, resetsAt);
+    // Scheduled before the notice: a failed post must not leave the Clot paused with no wake-up.
+    this.scheduleResume(resetsAt);
+    const time = new Intl.DateTimeFormat("en-GB", { timeZone: this.d.timeZone, hour: "2-digit", minute: "2-digit" }).format(new Date(resetsAt * 1000));
+    await chat.post(channelId, `Paused: usage limit reached. I'll resume at ${time}.`).catch(() => undefined);
+    // The timer skips its wake-up while a drain is active, which this one is. If it fired during the post, take the wake-up here.
+    if (store.getClot(name)!.pausedUntil !== null) return "paused";
+    this.queueContinuation(resetsAt);
+    return "resumed";
+  }
+
+  /** After a reset: if a turn was cut off and nothing is waiting, queue a prompt that tells the session to carry on. */
+  private queueContinuation(resetsAt: number): void {
+    const { store, name } = this.d;
+    const session = store.activeSession(name)!;
+    if (!session.interrupted || store.nextPending(name)) return;
+    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime() });
+  }
+
+  /** Routes the message, applies any mode change and runs the turn to its end. */
+  private async runTurn(row: InboxRow, session: SessionRow, mode: Mode, command: Command): Promise<TurnResult> {
+    const { store, chat, name } = this.d;
+    const text = command.kind === "effort" ? command.rest : row.text;
+    const decision = await this.d.router.decide({ text, mode, tail: store.tail(name, 4) });
+    // The user's own choice of effort wins over the router's: given with this message, or set for it beforehand.
+    // A one-off effort is spent on this message either way.
+    const oneOff = store.takeNextEffort(name);
+    const effort = (command.kind === "effort" ? command.effort : oneOff) ?? decision.effort;
+    const newMode = nextMode(mode, decision.modeChange);
+    if (newMode !== mode) {
+      store.setMode(name, newMode);
+      await chat.post(session.channelId, newMode === "brainstorm" ? "Brainstorm mode on." : "Brainstorm mode off. Back to work.");
+    }
+
+    store.appendTail(name, "user", text);
+    store.setInboxStatus(row.id, "running");
+    const prompt = buildPrompt({
+      text,
+      mode: newMode,
+      modeChanged: newMode !== mode,
+      seed: session.seed,
+      seedReason: session.seedReason,
+      interrupted: session.interrupted,
+    });
+
+    this.live = this.d.runner.startTurn({
+      ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
+      prompt,
+      effort,
+      planMode: newMode === "brainstorm",
+      onText: (text) => {
+        store.appendTail(name, "clot", text);
+        this.posts = this.posts.then(() => chat.post(session.channelId, text)).catch(() => undefined);
+      },
+    });
+    return this.live.done;
+  }
+
+  private scheduleResume(resetsAt: number): void {
+    const { store, name } = this.d;
+    const delay = Math.max(0, resetsAt * 1000 - this.d.now().getTime());
+    this.d.schedule(delay, () => {
+      store.setPausedUntil(name, null);
+      // A drain is active: either a message that arrived after the reset has already resumed
+      // the session, or pause() is still posting its notice and will see the pause was lifted.
+      if (this.draining) return;
+      this.queueContinuation(resetsAt);
+      void this.drain();
+    });
+  }
+
+  /**
+   * Replaces the active session with a new one in a new channel: because the
+   * context filled up, or because the user asked. With a summary, the old
+   * session first writes a recap that seeds the new one; without, the new
+   * session starts from nothing.
+   *
+   * Returns "paused" or "resumed" when the recap turn hit the usage limit: the
+   * old session stays active and the handoff has not happened.
+   */
+  private async handoff(reason: SeedReason, summary: boolean): Promise<"done" | "failed" | "paused" | "resumed"> {
+    const { store, chat, name } = this.d;
+    const old = store.activeSession(name)!;
+    const words = HANDOFF_TEXT[reason];
+
+    let recap: string | null = null;
+    if (summary) {
+      const parts: string[] = [];
+      const recapTurn = this.d.runner.startTurn({
+        resume: old.id,
+        prompt: recapPrompt(reason),
+        effort: "medium",
+        planMode: true,
+        onText: (text) => void parts.push(text),
+      });
+      await chat.post(old.channelId, words.notice).catch(() => undefined);
+      const stopTyping = chat.startTyping(old.channelId);
+      const recapResult = await recapTurn.done.finally(stopTyping);
+      if (recapResult.limit) return this.pause(old.channelId, recapResult.limit.resetsAt);
+      if (!recapResult.ok || parts.length === 0) {
+        await chat.post(old.channelId, words.failed);
+        return "failed";
+      }
+      recap = parts.join("\n\n");
+    }
+
+    const channelId = await this.newChannel(store.getClot(name)!.categoryId);
+    // Saved before anything is announced: from here the new channel is the live one,
+    // and the recap is kept, even if a call below fails or the daemon stops.
+    store.createSession({ id: this.d.newId(), clot: name, channelId, seed: recap, seedReason: reason });
+    if (!summary) {
+      store.setMode(name, "action");
+      store.clearTail(name);
+    }
+
+    const intro = recap === null ? "New session, started from scratch at your request. Nothing was carried over." : `${words.intro}\n\n${recap}`;
+    const failed = (step: string) => (error: unknown) => console.error(`[${name}] handoff: ${step} failed:`, error);
+    await chat.post(channelId, `${chat.mention(this.d.userId)} ${intro}`).catch(failed("posting to the new channel"));
+    await chat.post(old.channelId, `${words.closed} Continued in ${chat.channelLink(channelId)}.`).catch(failed("posting the closing link"));
+    await chat.makeReadOnly(old.channelId).catch(failed("making the old channel read-only"));
+    return "done";
+  }
+
+  private async newChannel(categoryId: string): Promise<string> {
+    const names = await this.d.chat.listChannelNames(categoryId);
+    return this.d.chat.createChannel(categoryId, sessionChannelName(this.d.name, this.d.now(), this.d.timeZone, names));
+  }
+}
