@@ -1,7 +1,7 @@
 # Clots: design
 
 Date: 2026-10-10
-Status: approved in brainstorming; stage 1 is ready for an implementation plan.
+Status: approved in brainstorming. Stage 1 is implemented; stage 2 is next.
 
 ## 1. What Clots is
 
@@ -15,7 +15,7 @@ belong to no project. A Clot:
   go-ahead carries the work through to an open pull request;
 - has its own isolated computer (a container with a repo clone and a browser);
 - lives in one long session, rolled over into a fresh session with a written recap
-  when context reaches 65%;
+  when context reaches 65% or when the user closes it;
 - is text only. Voice is out of scope.
 
 It is not specific to SaaS businesses; the examples in this document are
@@ -48,7 +48,8 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Gates | Decide whether an event is delivered now or queued. | Usage events, schedule, mode |
 | Router | Haiku 5.5 (`claude-haiku-5-5`), medium effort, no tools. Picks the effort level for every prompt and detects brainstorm start and stop. | Recent messages |
 | Session manager | Start a Clot's process for a turn, resume its session, apply effort and mode, stop the process afterwards. Enforce one heavy job at a time per host. | Agent SDK, Docker |
-| Clot container | The Clot's computer: repo clone, Chromium with a persistent profile, live view, scoped credentials, a copy of the user's Claude setup. | Image for arm64 and x64 |
+| Clot container | The Clot's computer: repo clone, Chromium with a persistent profile, live view, scoped credentials, its own Claude login, a copy of the user's Claude setup. | Image for arm64 and x64 |
+| Commands | Messages that start with `&`. Handled by the daemon before routing; never passed to the model. | Session manager |
 | Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container. | Rulebook, chat adapter |
 | Chat adapter | One interface for all chat platforms. Discord is the default and the first built. | Platform bot credentials |
 | Sweep | A throwaway session every 90 minutes that reports only what changed. | Recap, rulebook |
@@ -76,12 +77,13 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
    one or two options and waits.
 10. After the user's go-ahead it works through to an open pull request
     (section 7).
-11. After the turn the daemon reads context usage and rolls the session over at
-    65% or more (section 6).
+11. After the turn the daemon posts a summary of what the turn changed and ran,
+    reads context usage, and rolls the session over at 65% or more (section 6).
 
 Entry points other than events:
 
-- **User messages** enter at step 7. Triage does not run on them.
+- **User messages** enter at step 7. Triage does not run on them. A message that
+  is a command (section 6) is handled by the daemon and goes no further.
 - **The 90-minute tick** starts a sweep (section 9). It is skipped while the Clot
   is working. Sweep findings enter at step 2 as ordinary events.
 
@@ -100,7 +102,9 @@ arrival time in the user's configured timezone.
 
 The effort level is re-evaluated on every prompt, whether it comes from the user or
 from an event. It is applied with `applyFlagSettings({ effortLevel })`, which takes
-effect on the next turn.
+effect on the next turn. The user can choose the level for one message with the
+`&effort` command (section 6); the router still runs on that message to detect a
+change of mode.
 
 Router criteria:
 
@@ -120,7 +124,14 @@ The router sees the new prompt and the last few messages, because a reply such a
 ### Subagents
 
 A message sent while the Clot is working is fed into the live turn through
-streaming input. The Clot handles a "meanwhile" request by starting a subagent:
+streaming input. Three kinds of message wait for a turn of their own instead, so
+that messages always take effect in the order the user sent them:
+
+- one that changes the mode, because a turn's permissions are fixed when it starts;
+- one sent after an earlier message that is itself still waiting;
+- one that arrives after the turn has stopped accepting input.
+
+The Clot handles a "meanwhile" request by starting a subagent:
 
 - a fresh subagent by default;
 - a fork carrying the conversation only when the request depends on it.
@@ -168,9 +179,18 @@ over the limit or outside the trigger.
   the session is resumed by ID when the next prompt arrives.
 - On each host, one heavy job (build, test run, browser) runs at a time. Light
   turns run alongside.
-- After every turn the daemon calls `getContextUsage()`. At 65% or more it asks
-  the session for a recap, starts a new session seeded with the recap, and runs a
-  sweep so the new session re-grounds itself before continuing.
+- A turn is over at the result that leaves nothing outstanding. The SDK's
+  `queued_turn_count` says whether another result will follow; the bookkeeping
+  messages the SDK sends after a result do not keep a turn open. A result marked as
+  an error counts as a failed turn even when its subtype is success.
+- After every turn the daemon calls `getContextUsage()`. At 65% or more it tells
+  the user at once that the session is being closed, asks the session for a recap,
+  starts a new session seeded with the recap, and runs a sweep so the new session
+  re-grounds itself before continuing. The new session is saved, with its recap,
+  before anything about it is announced, so a failed chat call or a restart
+  mid-handoff loses nothing.
+- The new session is told why it was started: the context limit, or the user's
+  request.
 
 The recap covers:
 
@@ -191,6 +211,11 @@ The recap covers:
 - On rollover the old channel gets a closing link to the new one and becomes
   read-only. The Clot mentions the user in the new channel and keeps it at the top
   of the category.
+- Read-only applies to the server's ordinary members. The bot keeps its own
+  permission to post there. Discord ignores channel permissions for the server owner
+  and administrators, so a message from them in a closed channel is answered with a
+  pointer to the live one.
+- While a turn runs, or a recap is being written, the Clot shows as typing.
 - When a category approaches Discord's channel limit, the oldest session channels
   are deleted. Full transcripts remain on disk.
 - No threads in the first version.
@@ -199,16 +224,50 @@ The recap covers:
 Slack has no categories, so the same structure becomes a channel-name prefix
 (`clot-graphite-1010`).
 
+### Turn summary
+
+After each turn that changed a file or ran a command, the daemon posts one embed:
+
+- each file changed, with the number of lines added and removed, colour-coded;
+- the commands run, first line only.
+
+It shows counts, not diff contents. File counts come from the Clot's edit and write
+tools, so a file changed only by a shell command appears as that command. The
+summary is posted by the daemon: it never enters the Clot's session or the router's
+context.
+
+### Commands
+
+A message that starts with `&` followed by a word is a command. The daemon handles
+it; it never reaches the model. A mistyped or unknown command gets a usage reply.
+
+| Command | Effect |
+|---|---|
+| `&close` | The same handoff as a context rollover: recap, new session, new channel, old channel closed. The user and the new session are both told it was at the user's request. |
+| `&close nosummary` | A new session and channel with nothing carried over: no recap, brainstorm mode off, the router's recent-message context cleared. On a new session that still holds an unused recap, it discards the recap in place. |
+| `&effort low\|medium\|high <message>` | Sends the message at that effort level. |
+| `&effort low\|medium\|high` | Sets the level for the next message only. It is spent on the next message delivered, and kept if that delivery is refused. |
+
+A `&close` sent during a turn waits for the turn to end. On a session with no turns
+yet and no recap, it does nothing.
+
 ### Brainstorm mode
 
 - The router detects the user asking to start or stop brainstorming.
-- While brainstorming, the daemon switches the session to plan mode. The Clot can
-  read code, browse and look things up; it cannot change anything.
-- A mode instruction tells the Clot to stay in ideation and not to close replies
-  with offers to act.
+- While brainstorming, the daemon runs the session in plan mode and refuses every
+  tool request that needs permission. The Clot can read code, browse and look
+  things up; it cannot change anything.
+- A mode instruction tells the Clot that brainstorm mode and plan mode are the same
+  thing here, to stay in ideation, and not to close replies with offers to act. The
+  user usually reads on a phone and cannot open files, so thinking and plans go in
+  the reply; a plan file is written only when the user asks for one.
+- The Clot asks questions as plain text. The interactive question tool cannot reach
+  the chat, so it is disabled in every mode.
 - The Clot posts a one-line marker when the mode changes.
-- The mode ends only when the user says to start working. It stays off until the
-  user asks to brainstorm again.
+- The mode ends when the user says to start working, or gives a direct instruction
+  to create, make, build, implement, write down or do something, even at the end of
+  a message that is otherwise discussion. A question or an idea about making
+  something does not end it. It stays off until the user asks to brainstorm again.
 
 ## 7. Permissions and safety
 
@@ -226,8 +285,20 @@ Slack has no categories, so the same structure becomes a channel-name prefix
 
 - **Identity**: each Clot has its own least-privilege credentials scoped to its
   project. On GitHub, a token that can push branches and open pull requests on the
-  bound repository, with branch protection preventing merges to the main branch.
-  Elsewhere, read-only keys unless a standing rule needs more.
+  bound repository. Elsewhere, read-only keys unless a standing rule needs more.
+- **Merges**: GitHub cannot tell a Clot from the user when the token belongs to the
+  user's own account, and the permission that pushes a branch also merges a pull
+  request. Blocking merges therefore needs the Clot to have its own GitHub account,
+  added as a collaborator, and a branch rule that requires an approving review.
+  GitHub enforces branch rules on private repositories only on paid plans. Without
+  these, the Clot's instructions are the only gate on merging.
+- **Authorship**: commits are authored as `<name>-clot`, with the no-reply address
+  of the GitHub account that owns the Clot's token. Hosts such as Vercel refuse to
+  build a commit whose email matches no GitHub account. Pull request descriptions
+  end with "Created with a Clot." linked to the Clots repository, in place of
+  Claude Code's own attribution line.
+- **Sign-in**: each container is logged in to Claude once (section 10). Without that
+  login the daemon falls back to a token from `claude setup-token`.
 - **Isolation**: the Claude Code process and all its built-in tools run inside the
   container. Inside the container, tool calls are auto-approved; the container and
   the scoped credentials are the boundary.
@@ -316,9 +387,17 @@ The browser is Chromium driven by Playwright. It starts on demand and stops when
 idle. A web-based live view lets the user watch, and take over for logins, captchas
 and two-factor prompts.
 
+Each container is logged in to Claude once, with `claude /login` run inside it.
+That login is what brings the account's connectors, such as Claude Docs, into the
+Clot's sessions. A token from `claude setup-token` is enough to run sessions, but
+it carries no connectors, and it overrides the container's login if both are
+supplied; the daemon passes the token only when the container has no login.
+
 The user's Claude setup is copied into the container. Skills and plugins are files
-and copy directly. MCP servers launched by Windows-specific commands will not run in
-the Linux container; remote MCP servers need a one-time login from the container.
+and copy directly: a skill folder placed in the container's `~/.claude/skills` is
+picked up by the next session. A skill that drives a command-line tool also needs
+that tool installed and signed in inside the container. MCP servers launched by
+Windows-specific commands will not run in the Linux container.
 
 Out of scope: driving native desktop applications.
 
@@ -343,6 +422,13 @@ onboarding can be resumed.
 - **Daemon crash or power loss**: systemd restarts the daemon. The queue and state
   are in SQLite with write-ahead logging. Sessions resume from disk.
 - **Turn interrupted**: the session is resumed and told its last turn was cut off.
+  A session interrupted during its very first turn already has a transcript, so it
+  is resumed, not created again.
+- **Paused at restart**: a usage-limit pause that expired while the daemon was down
+  is resumed at startup like one that expires while it is running.
+- **Limit during a handoff**: a usage limit hit while the recap is being written
+  pauses the Clot like any other. A `&close` is retried after the reset; a context
+  rollover is retried after the next turn.
 - **Failing watch**: back off, then report to the user after repeated failures.
 - **Chat platform unreachable**: outbound messages queue.
 - **Usage limit**: section 8, gate 1.
@@ -420,10 +506,15 @@ In scope:
 - the daemon process, running in a development environment;
 - one Clot in a container, with Claude Code driven through the Agent SDK;
 - stop-between-turns and resume by session ID;
-- the Discord adapter with the category and `project-DDMM` channel layout;
+- the Discord adapter with the category and `project-DDMM` channel layout, and a
+  typing indicator while a turn runs;
 - the router: effort level per prompt, and brainstorm detection;
 - brainstorm mode: plan mode, mode instruction, marker;
 - approval scope, enforced by the Clot's system prompt and a scoped GitHub token;
+- commit authorship and the pull request attribution line;
+- the turn summary;
+- the `&close` and `&effort` commands;
+- sign-in through the container's own Claude login, with the token as fallback;
 - side subagents for messages sent during a turn;
 - recap and rollover at 65%, including the new channel and read-only old channel;
 - the usage-limit pause, driven by rate-limit events;
@@ -431,7 +522,9 @@ In scope:
 
 Out of scope for stage 1: event intake, triage, the rulebook, the gates other than
 the usage-limit pause, the sweep (so rollover re-grounding is added in stage 2), the
-browser, the `clots` CLI, running on the Pi.
+browser, the `clots` CLI, running on the Pi, copying the user's Claude setup into
+the container, a separate GitHub account for the Clot, pruning old channels. The
+container login is done by hand in stage 1.
 
 Stage 1 is done when, in a development environment:
 
@@ -440,17 +533,25 @@ Stage 1 is done when, in a development environment:
 - a Bash call made by the Clot demonstrably runs inside the container;
 - the same session continues after the daemon is restarted;
 - the effort level changes between prompts according to the router;
-- brainstorm mode blocks changes and lifts on the user's go-ahead;
+- brainstorm mode blocks changes and lifts on the user's go-ahead or direct
+  instruction;
 - a session forced past 65% produces a recap, a new session, a new channel and a
   read-only old channel;
-- a message sent mid-turn results in a side subagent without derailing the turn.
+- a message sent mid-turn results in a side subagent without derailing the turn;
+- each turn that changed or ran something is followed by its summary;
+- `&close`, `&close nosummary` and `&effort` behave as section 6 describes;
+- with the container logged in, the Clot can create a Claude Doc.
 
 ### Assumptions to verify at the start of stage 1
 
 - `spawnClaudeCodeProcess` can run the Claude Code process inside a container while
   daemon tools stay in the daemon process.
-- The container can authenticate with the user's Claude subscription without an
-  interactive login.
+- A token from `claude setup-token` is enough to run a session in the container
+  without an interactive login. (Connectors need the one-time container login.)
+- A message pushed during a turn is accepted, and the turn can still be told apart
+  from the next one: by `queued_turn_count` on the result, and by ignoring the
+  bookkeeping messages that follow a result.
+- Closing a turn's input while the turn is running lets the turn finish.
 - Resuming a session after its process was stopped preserves the ability to apply
   effort and mode changes.
 
@@ -472,5 +573,8 @@ If any of these fails, stop and bring the finding to the user before continuing.
 - microSD speed and wear under container workloads. An NVMe or USB SSD is the
   planned upgrade.
 - Chromium's memory use on an 8 GB Pi.
+- Until a Clot has its own GitHub account, nothing on GitHub's side stops it from
+  merging; and on a free plan, branch rules on a private repository are not enforced
+  at all.
 - Agent SDK billing terms changed three times in 2026. As of 2026-10-07, SDK usage
   draws from subscription limits.
