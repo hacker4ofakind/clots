@@ -3,7 +3,8 @@ import type { Effort, LimitInfo, TurnActivity } from "../types.js";
 import { ActivityCollector } from "./activity.js";
 import { containerName, makeSpawn, sessionExists } from "./container.js";
 import { CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "./prompts.js";
-import { isTurnActivity, TurnTracker } from "./turn-tracker.js";
+import { InputQueue } from "./input-queue.js";
+import { isSuccessfulResult, isTurnActivity, TurnTracker } from "./turn-tracker.js";
 import { parseRateLimit } from "./usage.js";
 
 export interface TurnRequest {
@@ -26,7 +27,8 @@ export interface TurnResult {
 }
 
 export interface TurnHandle {
-  push(text: string, effort: Effort): void;
+  /** Feeds a message into the running turn. Returns false when the turn no longer accepts input; the message was then not delivered. */
+  push(text: string, effort: Effort): boolean;
   done: Promise<TurnResult>;
 }
 
@@ -48,20 +50,8 @@ export class SdkRunner implements AgentRunner {
   }
 
   startTurn(req: TurnRequest): TurnHandle {
-    const queue: SDKUserMessage[] = [userMessage(req.prompt)];
-    let wake: (() => void) | undefined;
-    let closed = false;
-    async function* input(): AsyncGenerator<SDKUserMessage, void> {
-      while (true) {
-        while (queue.length > 0) yield queue.shift()!;
-        if (closed) return;
-        await new Promise<void>((resolve) => (wake = resolve));
-      }
-    }
-    const finish = () => {
-      closed = true;
-      wake?.();
-    };
+    const input = new InputQueue<SDKUserMessage>([userMessage(req.prompt)]);
+    const finish = () => input.close();
 
     // A first turn cut off by a daemon restart leaves its transcript behind, and
     // Claude Code refuses to start a session under an ID that already has one.
@@ -69,7 +59,7 @@ export class SdkRunner implements AgentRunner {
     const resume = req.resume ?? (req.newSessionId && sessionExists(container, req.newSessionId) ? req.newSessionId : undefined);
 
     const session = query({
-      prompt: input(),
+      prompt: input,
       options: {
         model: "claude-opus-5-5",
         effort: req.effort,
@@ -112,14 +102,18 @@ export class SdkRunner implements AgentRunner {
           }
           if (message.type === "result") {
             result.sessionId = message.session_id;
-            result.ok = message.subtype === "success";
+            result.ok = isSuccessfulResult(message);
             try {
               result.contextPercent = (await session.getContextUsage()).percentage;
             } catch {
               // Leave the previous value; rollover is retried after the next turn.
             }
-            if (tracker.onResult() === "finish") finish();
-            else grace = setTimeout(finish, this.graceMs);
+            if (grace) clearTimeout(grace);
+            grace = undefined;
+            const next = tracker.onResult(message.queued_turn_count);
+            if (next === "finish") finish();
+            else if (next === "grace") grace = setTimeout(finish, this.graceMs);
+            // "wait": the SDK has queued turns, so another result is on its way.
           }
         }
       } catch {
@@ -134,10 +128,10 @@ export class SdkRunner implements AgentRunner {
 
     return {
       push: (text, effort) => {
+        if (!input.push(userMessage(text))) return false;
         tracker.onPush();
         void session.applyFlagSettings({ effortLevel: effort }).catch(() => undefined);
-        queue.push(userMessage(text));
-        wake?.();
+        return true;
       },
       done,
     };

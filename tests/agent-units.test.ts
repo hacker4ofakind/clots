@@ -9,11 +9,31 @@ describe("TurnTracker", () => {
     expect(new TurnTracker().onResult()).toBe("finish");
   });
 
-  it("waits once after a push, then finishes", () => {
+  it("allows a grace period once after a push, then finishes", () => {
     const t = new TurnTracker();
     t.onPush();
-    expect(t.onResult()).toBe("wait");
+    expect(t.onResult()).toBe("grace");
     expect(t.onResult()).toBe("finish");
+  });
+
+  it("waits for another result while the SDK reports queued turns", () => {
+    const t = new TurnTracker();
+    t.onPush();
+    t.onPush();
+    expect(t.onResult(2)).toBe("wait");
+    expect(t.onResult(1)).toBe("wait");
+    expect(t.onResult(0)).toBe("finish");
+  });
+
+  it("waits on queued turns even when it saw no push", () => {
+    expect(new TurnTracker().onResult(1)).toBe("wait");
+  });
+
+  it("falls back to push counting when the SDK reports no queue", () => {
+    const t = new TurnTracker();
+    t.onPush();
+    expect(t.onResult(undefined)).toBe("grace");
+    expect(t.onResult(0)).toBe("finish");
   });
 });
 
@@ -64,6 +84,11 @@ describe("buildPrompt", () => {
 
   it("adds the action note only when the mode just changed back", () => {
     expect(buildPrompt({ ...base, modeChanged: true })).toContain("Brainstorm mode is OFF");
+  });
+
+  it("tells a new session why it was started", () => {
+    expect(buildPrompt({ ...base, seed: "RECAP TEXT" })).toContain("reached its context limit");
+    expect(buildPrompt({ ...base, seed: "RECAP TEXT", seedReason: "user" })).toContain("the user asked for a fresh one");
   });
 
   it("puts the recap first and the interruption note second", () => {

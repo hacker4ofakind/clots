@@ -21,6 +21,7 @@ class FakeRunner implements AgentRunner {
   pushes: { text: string; effort: Effort }[] = [];
   script: Step[] = [];
   release?: () => void;
+  acceptPushes = true;
 
   startTurn(req: TurnRequest): TurnHandle {
     this.calls.push(req);
@@ -36,7 +37,13 @@ class FakeRunner implements AgentRunner {
         activity: step.activity,
       };
     })();
-    return { push: (text, effort) => void this.pushes.push({ text, effort }), done };
+    return {
+      push: (text, effort) => {
+        if (this.acceptPushes) this.pushes.push({ text, effort });
+        return this.acceptPushes;
+      },
+      done,
+    };
   }
 }
 
@@ -203,6 +210,76 @@ describe("Clot", () => {
     expect(store.nextPending("graphite")).toBeUndefined();
   });
 
+  it("holds back a mid-turn message that starts brainstorming and runs it next, in plan mode", async () => {
+    const channel = store.activeSession("graphite")!.channelId;
+    runner.script = [{ hold: true }, {}];
+    router.next = [
+      { effort: "medium", modeChange: "none" },
+      { effort: "medium", modeChange: "enter_brainstorm" },
+      { effort: "medium", modeChange: "enter_brainstorm" },
+    ];
+
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    await clot.onMessage(msg("wait, let's brainstorm first"));
+    expect(runner.pushes).toEqual([]);
+    runner.release!();
+    await first;
+
+    expect(runner.calls.map((c) => c.planMode)).toEqual([false, true]);
+    expect(chat.postsIn(channel)).toContain("Brainstorm mode on.");
+    expect(store.getClot("graphite")!.mode).toBe("brainstorm");
+  });
+
+  it("holds back a mid-turn message that ends brainstorming and runs it next, with writes allowed", async () => {
+    const channel = store.activeSession("graphite")!.channelId;
+    store.setMode("graphite", "brainstorm");
+    runner.script = [{ hold: true }, {}];
+    router.next = [
+      { effort: "medium", modeChange: "none" },
+      { effort: "medium", modeChange: "exit_brainstorm" },
+      { effort: "medium", modeChange: "exit_brainstorm" },
+    ];
+
+    const first = clot.onMessage(msg("what about mobile?"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    await clot.onMessage(msg("ok, create it"));
+    expect(runner.pushes).toEqual([]);
+    runner.release!();
+    await first;
+
+    expect(runner.calls.map((c) => c.planMode)).toEqual([true, false]);
+    expect(chat.postsIn(channel)).toContain("Brainstorm mode off. Back to work.");
+  });
+
+  it("keeps a message for the next turn when the live turn no longer accepts input", async () => {
+    runner.script = [{ hold: true }, {}];
+    runner.acceptPushes = false;
+
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    await clot.onMessage(msg("one more thing"));
+    runner.release!();
+    await first;
+
+    expect(runner.calls).toHaveLength(2);
+    expect(runner.calls[1].prompt).toBe("one more thing");
+    expect(store.nextPending("graphite")).toBeUndefined();
+  });
+
+  it("keeps the new session when closing the old channel fails", async () => {
+    runner.script = [{ contextPercent: 70 }, { say: ["RECAP"] }, {}];
+    chat.makeReadOnly = async () => {
+      throw new Error("Missing Permissions");
+    };
+
+    await clot.onMessage(msg("do the thing"));
+
+    expect(store.activeSession("graphite")).toMatchObject({ id: "sess-2", seed: "RECAP" });
+    await clot.onMessage(msg("carry on"));
+    expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2" });
+  });
+
   it("rolls over at the threshold: recap, new channel, old channel read-only, seeded next prompt", async () => {
     const oldChannel = store.activeSession("graphite")!.channelId;
     runner.script = [{ contextPercent: 70 }, { say: ["RECAP: built the footer."] }, {}];
@@ -299,6 +376,54 @@ describe("Clot", () => {
     expect(store.getClot("graphite")!.pausedUntil).toBeNull();
   });
 
+  it("does not start a second turn when the reset timer fires during a turn the user already started", async () => {
+    const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+    runner.script = [{ ok: false, limit: { resetsAt } }, { hold: true }];
+    await clot.onMessage(msg("big task"));
+
+    now = new Date(resetsAt * 1000 + 1000);
+    const turn = clot.onMessage(msg("are you back?"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    timers[0].fn();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(runner.calls).toHaveLength(2);
+    runner.release!();
+    await turn;
+
+    expect(runner.calls).toHaveLength(2);
+    expect(store.nextPending("graphite")).toBeUndefined();
+  });
+
+  it("resumes on startup when the pause expired while the daemon was down", async () => {
+    const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+    runner.script = [{ ok: false, limit: { resetsAt } }, {}];
+    await clot.onMessage(msg("big task"));
+
+    now = new Date(resetsAt * 1000 + 5000);
+    timers = [];
+    await build().init();
+    expect(timers.map((t) => t.ms)).toEqual([0]);
+    timers[0].fn();
+
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
+    expect(runner.calls[1].prompt).toContain("The usage limit has reset");
+  });
+
+  it("still schedules the resume when the pause notice cannot be posted", async () => {
+    const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+    runner.script = [{ ok: false, limit: { resetsAt } }];
+    const post = chat.post.bind(chat);
+    chat.post = async (channelId, text) => {
+      if (text.startsWith("Paused")) throw new Error("Discord is down");
+      return post(channelId, text);
+    };
+
+    await clot.onMessage(msg("big task"));
+
+    expect(timers).toHaveLength(1);
+    expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt);
+  });
+
   it("asks the session to continue after a pause when nothing is queued", async () => {
     const resetsAt = Math.floor(now.getTime() / 1000) + 60;
     runner.script = [{ ok: false, limit: { resetsAt } }, {}];
@@ -308,6 +433,115 @@ describe("Clot", () => {
     timers[0].fn();
     await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
     expect(runner.calls[1].prompt).toContain("The usage limit has reset");
+  });
+
+  describe("commands", () => {
+    it("&effort with a message sets that message's effort and is stripped from the prompt", async () => {
+      router.next = [{ effort: "low", modeChange: "none" }];
+      await clot.onMessage(msg("&effort high refactor the auth module"));
+      expect(runner.calls[0]).toMatchObject({ effort: "high", prompt: "refactor the auth module" });
+      expect(router.inputs[0].text).toBe("refactor the auth module");
+    });
+
+    it("&effort alone applies to the next message only", async () => {
+      const channel = store.activeSession("graphite")!.channelId;
+      router.next = [{ effort: "low", modeChange: "none" }, { effort: "low", modeChange: "none" }];
+
+      await clot.onMessage(msg("&effort high"));
+      expect(runner.calls).toHaveLength(0);
+      expect(chat.postsIn(channel).at(-1)).toBe("Effort for your next message: high.");
+
+      await clot.onMessage(msg("plan the migration"));
+      await clot.onMessage(msg("and the rollback"));
+      expect(runner.calls.map((c) => c.effort)).toEqual(["high", "low"]);
+    });
+
+    it("&effort still lets the router change the mode", async () => {
+      router.next = [{ effort: "low", modeChange: "enter_brainstorm" }];
+      await clot.onMessage(msg("&effort high let's brainstorm the pricing"));
+      expect(runner.calls[0]).toMatchObject({ effort: "high", planMode: true });
+    });
+
+    it("answers a wrong or unknown command without involving the model", async () => {
+      const channel = store.activeSession("graphite")!.channelId;
+      await clot.onMessage(msg("&effort max do it"));
+      await clot.onMessage(msg("&clsoe"));
+      expect(runner.calls).toHaveLength(0);
+      expect(router.inputs).toHaveLength(0);
+      expect(chat.postsIn(channel).slice(-2).every((p) => p.includes("&close nosummary"))).toBe(true);
+    });
+
+    it("&close hands off like a rollover and says the user asked for it", async () => {
+      const oldChannel = store.activeSession("graphite")!.channelId;
+      runner.script = [{}, { say: ["RECAP: built the footer."] }, {}];
+      await clot.onMessage(msg("do the thing"));
+
+      await clot.onMessage(msg("&close"));
+
+      expect(runner.calls[1]).toMatchObject({ resume: "sess-1", planMode: true });
+      expect(runner.calls[1].prompt).toContain("The user has asked to close this session");
+      expect(chat.postsIn(oldChannel)).toContain("Closing this session at your request. Waiting on handoff...");
+      const fresh = store.activeSession("graphite")!;
+      expect(fresh).toMatchObject({ id: "sess-2", seed: "RECAP: built the footer.", seedReason: "user" });
+      expect(chat.postsIn(fresh.channelId)[0]).toContain("started at your request");
+      expect(chat.postsIn(fresh.channelId)[0]).toContain("RECAP: built the footer.");
+      expect(chat.postsIn(oldChannel).at(-1)).toBe(`This session was closed at your request. Continued in <#${fresh.channelId}>.`);
+      expect(chat.readOnly.has(oldChannel)).toBe(true);
+
+      await clot.onMessage(msg("carry on"));
+      expect(runner.calls[2].prompt).toContain("the user asked for a fresh one");
+    });
+
+    it("&close nosummary starts from scratch: no recap turn, no seed, action mode, empty router context", async () => {
+      const oldChannel = store.activeSession("graphite")!.channelId;
+      await clot.onMessage(msg("do the thing"));
+      store.setMode("graphite", "brainstorm");
+
+      await clot.onMessage(msg("&close nosummary"));
+
+      expect(runner.calls).toHaveLength(1);
+      const fresh = store.activeSession("graphite")!;
+      expect(fresh).toMatchObject({ id: "sess-2", seed: null, started: false });
+      expect(chat.postsIn(fresh.channelId)[0]).toContain("from scratch at your request");
+      expect(chat.readOnly.has(oldChannel)).toBe(true);
+      expect(store.getClot("graphite")!.mode).toBe("action");
+
+      await clot.onMessage(msg("hello"));
+      expect(runner.calls[1]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", planMode: false });
+      expect(router.inputs.at(-1)!.tail).toEqual([]);
+    });
+
+    it("&close on a session that has not been used does nothing", async () => {
+      const channel = store.activeSession("graphite")!.channelId;
+      await clot.onMessage(msg("&close"));
+      expect(runner.calls).toHaveLength(0);
+      expect(store.activeSession("graphite")!.channelId).toBe(channel);
+      expect(chat.postsIn(channel).at(-1)).toBe("This session is already fresh; there is nothing to close.");
+    });
+
+    it("&close sent during a turn waits for the turn, and is never passed to the model", async () => {
+      const channel = store.activeSession("graphite")!.channelId;
+      runner.script = [{ hold: true }, { say: ["RECAP"] }];
+
+      const first = clot.onMessage(msg("build the page"));
+      await vi.waitFor(() => expect(runner.release).toBeDefined());
+      await clot.onMessage(msg("&close"));
+      expect(runner.pushes).toEqual([]);
+      expect(chat.postsIn(channel).at(-1)).toBe("I'll close this session when the current turn finishes.");
+      runner.release!();
+      await first;
+
+      expect(store.activeSession("graphite")!.id).toBe("sess-2");
+    });
+
+    it("tells the user how to retry when the handoff for &close cannot be written", async () => {
+      const channel = store.activeSession("graphite")!.channelId;
+      runner.script = [{}, { ok: false, say: [] }];
+      await clot.onMessage(msg("do the thing"));
+      await clot.onMessage(msg("&close"));
+      expect(store.activeSession("graphite")!.channelId).toBe(channel);
+      expect(chat.postsIn(channel).at(-1)).toContain("&close nosummary");
+    });
   });
 
   it("re-runs a message that was in flight when the daemon stopped", async () => {

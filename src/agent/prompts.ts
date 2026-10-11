@@ -1,4 +1,4 @@
-import type { Mode } from "../types.js";
+import type { Mode, SeedReason } from "../types.js";
 
 export const CLOT_SYSTEM_PROMPT = `You are a Clot: an always-on agent for this project. You talk to one person, your user, through a chat channel. Your text replies are posted to that channel, so write them as chat messages.
 
@@ -25,7 +25,16 @@ export const MIDTURN_PREFIX = "[sent while you were working]";
 
 export const CONTINUE_TEXT = "(The usage limit has reset. Continue where you left off.)";
 
-export const RECAP_PROMPT = `This session is about to be replaced by a fresh one that will know only what you write now. Write a recap for it, as plain text under these headings:
+const RECAP_OPENING: Record<SeedReason, string> = {
+  context: "This session is about to be replaced by a fresh one that will know only what you write now.",
+  user: "The user has asked to close this session and start a fresh one, which will know only what you write now.",
+};
+
+export function recapPrompt(reason: SeedReason): string {
+  return `${RECAP_OPENING[reason]} ${RECAP_BODY}`;
+}
+
+const RECAP_BODY = `Write a recap for it, as plain text under these headings:
 
 What happened
 What was done
@@ -35,13 +44,25 @@ Work in progress (include branch names and pull request links)
 
 Be specific and complete. Do not use any tools. Reply with the recap only.`;
 
-function seedBlock(seed: string): string {
-  return `[You are starting a new session. This is the recap written by your previous session. The user may correct it.]\n\n${seed}`;
+const SEED_OPENING: Record<SeedReason, string> = {
+  context: "You are starting a new session because the previous one reached its context limit.",
+  user: "You are starting a new session because the user asked for a fresh one.",
+};
+
+function seedBlock(seed: string, reason: SeedReason): string {
+  return `[${SEED_OPENING[reason]} This is the recap written by your previous session. The user may correct it.]\n\n${seed}`;
 }
 
-export function buildPrompt(p: { text: string; mode: Mode; modeChanged: boolean; seed: string | null; interrupted: boolean }): string {
+export function buildPrompt(p: {
+  text: string;
+  mode: Mode;
+  modeChanged: boolean;
+  seed: string | null;
+  seedReason?: SeedReason;
+  interrupted: boolean;
+}): string {
   const parts: string[] = [];
-  if (p.seed) parts.push(seedBlock(p.seed));
+  if (p.seed) parts.push(seedBlock(p.seed, p.seedReason ?? "context"));
   if (p.interrupted) parts.push(INTERRUPTED_NOTE);
   if (p.mode === "brainstorm") parts.push(BRAINSTORM_NOTE);
   else if (p.modeChanged) parts.push(ACTION_NOTE);

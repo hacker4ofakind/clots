@@ -1,0 +1,68 @@
+import { describe, expect, it } from "vitest";
+import { parseCommand } from "../src/commands.js";
+import { InputQueue } from "../src/agent/input-queue.js";
+import { isSuccessfulResult } from "../src/agent/turn-tracker.js";
+
+describe("parseCommand", () => {
+  it("treats ordinary messages as no command", () => {
+    expect(parseCommand("fix the footer")).toEqual({ kind: "none" });
+    expect(parseCommand("a && b in bash")).toEqual({ kind: "none" });
+    expect(parseCommand("&& is the and operator")).toEqual({ kind: "none" });
+    expect(parseCommand("& that's all")).toEqual({ kind: "none" });
+  });
+
+  it("reads &close with and without a summary", () => {
+    expect(parseCommand("&close")).toEqual({ kind: "close", summary: true });
+    expect(parseCommand("  &close nosummary ")).toEqual({ kind: "close", summary: false });
+    expect(parseCommand("&CLOSE NoSummary")).toEqual({ kind: "close", summary: false });
+  });
+
+  it("rejects anything else after &close", () => {
+    expect(parseCommand("&close now please")).toEqual({ kind: "invalid", name: "close" });
+  });
+
+  it("reads &effort alone and with a message", () => {
+    expect(parseCommand("&effort high")).toEqual({ kind: "effort", effort: "high", rest: "" });
+    expect(parseCommand("&effort low check the link\nand the footer")).toEqual({ kind: "effort", effort: "low", rest: "check the link\nand the footer" });
+  });
+
+  it("rejects an effort level that is not low, medium or high", () => {
+    expect(parseCommand("&effort max do it")).toEqual({ kind: "invalid", name: "effort" });
+    expect(parseCommand("&effort")).toEqual({ kind: "invalid", name: "effort" });
+  });
+
+  it("reports an unknown command instead of passing it on", () => {
+    expect(parseCommand("&clsoe")).toEqual({ kind: "invalid", name: "clsoe" });
+  });
+});
+
+describe("InputQueue", () => {
+  async function drain<T>(q: InputQueue<T>): Promise<T[]> {
+    const seen: T[] = [];
+    for await (const item of q) seen.push(item);
+    return seen;
+  }
+
+  it("yields what was pushed, in order, and ends when closed", async () => {
+    const q = new InputQueue<string>(["a"]);
+    const all = drain(q);
+    expect(q.push("b")).toBe(true);
+    q.close();
+    expect(await all).toEqual(["a", "b"]);
+  });
+
+  it("refuses a push after it has been closed", async () => {
+    const q = new InputQueue<string>(["a"]);
+    q.close();
+    expect(q.push("late")).toBe(false);
+    expect(await drain(q)).toEqual(["a"]);
+  });
+});
+
+describe("isSuccessfulResult", () => {
+  it("requires the success subtype without an error flag", () => {
+    expect(isSuccessfulResult({ subtype: "success", is_error: false })).toBe(true);
+    expect(isSuccessfulResult({ subtype: "success", is_error: true })).toBe(false);
+    expect(isSuccessfulResult({ subtype: "error_during_execution", is_error: true })).toBe(false);
+  });
+});

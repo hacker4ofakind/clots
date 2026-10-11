@@ -40,6 +40,26 @@ describe("Store", () => {
     expect(store.nextPending("graphite")?.id).toBe("m1");
   });
 
+  it("records why a session was started", () => {
+    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: null });
+    expect(store.activeSession("graphite")!.seedReason).toBe("context");
+    store.createSession({ id: "s2", clot: "graphite", channelId: "ch-2", seed: "recap", seedReason: "user" });
+    expect(store.activeSession("graphite")!.seedReason).toBe("user");
+  });
+
+  it("hands out a one-off effort override exactly once", () => {
+    expect(store.takeNextEffort("graphite")).toBeNull();
+    store.setNextEffort("graphite", "high");
+    expect(store.takeNextEffort("graphite")).toBe("high");
+    expect(store.takeNextEffort("graphite")).toBeNull();
+  });
+
+  it("clears the tail", () => {
+    store.appendTail("graphite", "user", "old");
+    store.clearTail("graphite");
+    expect(store.tail("graphite", 4)).toEqual([]);
+  });
+
   it("returns the last n tail messages, oldest first", () => {
     for (const n of [1, 2, 3, 4, 5]) store.appendTail("graphite", n % 2 ? "user" : "clot", `t${n}`);
     expect(store.tail("graphite", 4).map((m) => m.text)).toEqual(["t2", "t3", "t4", "t5"]);

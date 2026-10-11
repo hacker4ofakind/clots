@@ -28,6 +28,17 @@ cp clots.config.example.json clots.config.json  # then fill in the IDs, time zon
 npm run daemon
 ```
 
+## Commands
+
+A message that starts with `&` is handled by the daemon and never reaches the model.
+
+| Command | What it does |
+|---|---|
+| `&close` | Closes the session and starts a new one in a new channel, seeded with a recap, as a context rollover does. |
+| `&close nosummary` | Starts a new session from scratch: no recap, action mode. |
+| `&effort low\|medium\|high` | Sets the effort for your next message only. |
+| `&effort low\|medium\|high <message>` | Sends the message at that effort. |
+
 ## Test
 
 ```bash

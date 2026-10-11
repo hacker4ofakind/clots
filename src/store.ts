@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import type { Mode, TailMessage } from "./types.js";
+import type { Effort, Mode, SeedReason, TailMessage } from "./types.js";
 
 export interface ClotRow {
   name: string;
@@ -14,6 +14,7 @@ export interface SessionRow {
   clot: string;
   channelId: string;
   seed: string | null;
+  seedReason: SeedReason;
   started: boolean;
   interrupted: boolean;
   active: boolean;
@@ -68,6 +69,7 @@ function toSession(r: any): SessionRow {
     clot: r.clot,
     channelId: r.channel_id,
     seed: r.seed,
+    seedReason: r.seed_reason,
     started: r.started === 1,
     interrupted: r.interrupted === 1,
     active: r.active === 1,
@@ -85,6 +87,31 @@ export class Store {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    this.addColumn("sessions", "seed_reason", "TEXT NOT NULL DEFAULT 'context'");
+    this.addColumn("clots", "next_effort", "TEXT");
+  }
+
+  /** Columns added after the first release, so a database created by an earlier version keeps working. */
+  private addColumn(table: string, column: string, definition: string): void {
+    const columns = this.db.pragma(`table_info(${table})`) as { name: string }[];
+    if (!columns.some((c) => c.name === column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+
+  /** Sets the effort for the next message only. */
+  setNextEffort(name: string, effort: Effort | null): void {
+    this.db.prepare("UPDATE clots SET next_effort = ? WHERE name = ?").run(effort, name);
+  }
+
+  /** Returns the one-off effort, if any, and clears it. */
+  takeNextEffort(name: string): Effort | null {
+    const r: any = this.db.prepare("SELECT next_effort FROM clots WHERE name = ?").get(name);
+    const effort: Effort | null = r?.next_effort ?? null;
+    if (effort !== null) this.setNextEffort(name, null);
+    return effort;
+  }
+
+  clearTail(clot: string): void {
+    this.db.prepare("DELETE FROM tail WHERE clot = ?").run(clot);
   }
 
   upsertClot(name: string, categoryId: string): void {
@@ -106,10 +133,12 @@ export class Store {
     this.db.prepare("UPDATE clots SET paused_until = ? WHERE name = ?").run(pausedUntil, name);
   }
 
-  createSession(s: { id: string; clot: string; channelId: string; seed: string | null }): void {
+  createSession(s: { id: string; clot: string; channelId: string; seed: string | null; seedReason?: SeedReason }): void {
     this.db.transaction(() => {
       this.db.prepare("UPDATE sessions SET active = 0 WHERE clot = ?").run(s.clot);
-      this.db.prepare("INSERT INTO sessions (id, clot, channel_id, seed) VALUES (?, ?, ?, ?)").run(s.id, s.clot, s.channelId, s.seed);
+      this.db
+        .prepare("INSERT INTO sessions (id, clot, channel_id, seed, seed_reason) VALUES (?, ?, ?, ?, ?)")
+        .run(s.id, s.clot, s.channelId, s.seed, s.seedReason ?? "context");
     })();
   }
 
