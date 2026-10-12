@@ -123,6 +123,40 @@ describe("RuleWriter", () => {
     expect(parseRuleFile(read("graphite")).prefilters).toEqual([]);
   });
 
+  it("does not put back an older standing rule over one another Clot has set since", () => {
+    const rule = (template: string) => ({ op: "set_standing" as const, rule: { name: "ack", trigger: { kind: "issue_opened" as const }, via: "github_comment" as const, template } });
+    writer.apply("graphite", "global", rule("First."));
+    writer.apply("graphite", "global", rule("Graphite's."));
+    writer.apply("other", "global", rule("The other Clot's, approved later."));
+
+    const failed = writer.undo("graphite");
+    expect(failed.ok ? "" : failed.reason).toContain("has been changed since");
+    expect(parseRuleFile(read("global")).standing[0].template).toBe("The other Clot's, approved later.");
+    // That edit is skipped from now on; the one before it no longer fits either.
+    expect(writer.undo("graphite")).toMatchObject({ ok: false });
+    expect(parseRuleFile(read("global")).standing[0].template).toBe("The other Clot's, approved later.");
+  });
+
+  it("keeps an edit the next one to undo when the disk fails, and writes nothing", () => {
+    writer.apply("graphite", "own", { op: "add_prefilter", rule: { actor: "dependabot[bot]" } });
+    writer.apply("graphite", "own", { op: "add_guidance", line: "Billing is urgent." });
+    const before = read("graphite");
+
+    // A folder where the writer puts its temporary file: nothing can be written.
+    const inTheWay = path.join(dir, "graphite.yaml.tmp");
+    fs.mkdirSync(inTheWay);
+    const failed = writer.undo("graphite");
+    expect(failed).toMatchObject({ ok: false, retry: true });
+    expect(failed.ok ? "" : failed.reason).toContain("could not be undone just now");
+    expect(writer.apply("graphite", "own", { op: "add_guidance", line: "x" })).toMatchObject({ ok: false, retry: true });
+    expect(store.notes("graphite")).toEqual([]);
+    expect(read("graphite")).toBe(before);
+
+    fs.rmdirSync(inTheWay);
+    expect(writer.undo("graphite")).toMatchObject({ ok: true, summary: 'Undid: Add triage guidance: "Billing is urgent."' });
+    expect(parseRuleFile(read("graphite"))).toMatchObject({ prefilters: [{ actor: "dependabot[bot]" }], triage: [] });
+  });
+
   it("commits in the rulebook's own repository", () => {
     writer = new RuleWriter({ rulebook, store });
     writer.apply("graphite", "own", { op: "add_guidance", line: "Billing is urgent." });

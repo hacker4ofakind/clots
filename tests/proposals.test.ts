@@ -11,12 +11,17 @@ const USER = "user-1";
 class FakeWriter {
   refusePreview?: string;
   refuseApply?: string;
+  /** The disk fails: nothing is changed, and the same edit may go through later. */
+  diskFails = false;
+  throws = false;
   applied: { clot: string; scope: RuleScope; edit: RuleEdit }[] = [];
   preview(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult {
     if (this.refusePreview) return { ok: false, reason: this.refusePreview };
     return { ok: true, file: scope === "global" ? "global" : clot, summary: describeEdit(edit) };
   }
   apply(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult {
+    if (this.throws) throw new Error("boom");
+    if (this.diskFails) return { ok: false, reason: "the file could not be written (EACCES)", retry: true };
     if (this.refuseApply) return { ok: false, reason: this.refuseApply };
     this.applied.push({ clot, scope, edit });
     return { ok: true, file: scope === "global" ? "global" : clot, summary: describeEdit(edit) };
@@ -181,6 +186,88 @@ describe("Proposals", () => {
 
     await proposals.closeForSession("graphite");
     expect(store.notes("graphite")).toHaveLength(1);
+  });
+
+  it("keeps the question open when an approved edit could not be written, and applies it on the next yes", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    const channel = store.openProposals("graphite")[0].channelId;
+    writer.diskFails = true;
+
+    await proposals.onReply(reply(channel, "yes"));
+    expect(chat.postsIn(channel).at(-1)).toContain("could not be applied just now");
+    expect(store.openProposals("graphite")).toMatchObject([{ channelId: channel, sessionId: "s1", scope: "own" }]);
+    expect(chat.deleted).toEqual([]);
+    expect(said).toEqual([]);
+    expect(store.notes("graphite")).toEqual([]);
+
+    writer.diskFails = false;
+    await proposals.onReply(reply(channel, "yes"));
+    expect(writer.applied).toHaveLength(1);
+    expect(store.openProposals("graphite")).toEqual([]);
+    expect(chat.deleted).toEqual([channel]);
+  });
+
+  it("tells the user and the Clot, and does not try again, when applying fails in a way it cannot account for", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    const channel = store.openProposals("graphite")[0].channelId;
+    writer.throws = true;
+
+    await proposals.onReply(reply(channel, "yes"));
+    expect(said[0].text).toContain("Approved, but it could not be applied (it failed in an unexpected way (boom); check the file)");
+    expect(store.notes("graphite")[0].text).toContain("could not be applied");
+    expect(store.openProposals("graphite")).toEqual([]);
+    expect(chat.deleted).toEqual([channel]);
+  });
+
+  it("withdraws, at startup, the proposals of a session that has been replaced", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    await proposals.open("graphite", "own", guidance("Billing is urgent."));
+    const channels = store.openProposals("graphite").map((p) => p.channelId);
+    // The daemon stopped after the new session was saved and before the old one's proposals were closed.
+    store.createSession({ id: "s2", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1310"), seed: null });
+
+    await build().closeOrphans();
+    expect(store.openProposals("graphite")).toEqual([]);
+    expect(chat.deleted).toEqual(channels);
+    expect(store.notes("graphite")).toHaveLength(1);
+    expect(store.notes("graphite")[0].text).toContain("when the previous session closed");
+    expect(await proposals.onReply(reply(channels[0], "yes"))).toBe(false);
+    expect(writer.applied).toEqual([]);
+  });
+
+  it("closes every proposal of the session before it touches a channel", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    await proposals.open("graphite", "own", guidance("Billing is urgent."));
+    let openWhenFirstChannelGoes = -1;
+    const remove = chat.deleteChannel.bind(chat);
+    chat.deleteChannel = async (channelId) => {
+      if (openWhenFirstChannelGoes < 0) openWhenFirstChannelGoes = store.openProposals("graphite").length;
+      return remove(channelId);
+    };
+    await proposals.closeForSession("graphite");
+    expect(openWhenFirstChannelGoes).toBe(0);
+  });
+
+  it("tells a proposal's channel by what it is, not by its name, at startup", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    await proposals.open("graphite", "own", guidance("Billing is urgent."));
+    const [renamed, replaced] = store.openProposals("graphite");
+    chat.channels.find((channel) => channel.id === renamed.channelId)!.name = "ask-me-here";
+    chat.channels = chat.channels.filter((channel) => channel.id !== replaced.channelId);
+    await chat.createChannel(category, replaced.channelName);
+
+    await build().closeOrphans();
+    expect(store.openProposals("graphite").map((p) => p.id)).toEqual([renamed.id]);
+    expect(chat.deleted).toEqual([replaced.channelId]);
+  });
+
+  it("closes nothing at startup when it cannot find out which channels exist", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    chat.channelExists = async () => {
+      throw new Error("Discord is down");
+    };
+    await build().closeOrphans();
+    expect(store.openProposals("graphite")).toHaveLength(1);
   });
 
   it("closes a proposal whose channel has disappeared, at startup", async () => {

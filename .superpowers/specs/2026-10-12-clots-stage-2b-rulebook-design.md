@@ -114,7 +114,10 @@ choose.
 
 "Any other turn" is an investigation, a brainstorm turn, and a working turn from
 the moment a steered event has joined it. These are the turns that are locked, or
-that hold untrusted text the user did not write.
+that hold untrusted text the user did not write. A turn that picks up a working
+turn which was cut off, by the usage limit or by a restart, after a steered event
+had joined it, is still such a turn: the daemon keeps that fact with the session
+until the work has ended.
 
 ### Applying an edit
 
@@ -188,8 +191,11 @@ Rules:
   no turn.
 - **A proposal lasts as long as its session.** When the session is closed or
   rolls over, its open proposals are closed as unanswered: channel deleted, and
-  one note that lists them for the new session. A session started with nothing
-  carried over gets no note.
+  one note that lists them for the new session. All of them are closed in one
+  step, before any channel is deleted, and a proposal records the session it was
+  opened in: one that a stopped daemon left behind from a replaced session is
+  closed at startup. A session started with nothing carried over gets no note,
+  also when the user discards the recap of a session that has not started.
 - **A limit on open proposals per Clot.** It is three unless
   `CLOTS_MAX_PROPOSALS` in `.env` sets another number. One more is refused, and
   the Clot puts the suggestion in its reply instead.
@@ -197,13 +203,17 @@ Rules:
   the tool says it is already with the user.
 - **Stored.** Open proposals survive a restart of the daemon and can still be
   answered. One whose channel no longer exists is closed as unanswered at
-  startup.
+  startup. The channel is told by its ID, not its name; when the daemon cannot
+  find out whether it exists, the proposal stays open.
 - **An answer stands.** Each proposal is closed exactly once, by whoever gets to
   it first.
 - **Checked again when applied.** A yes applies the edit to the file as it is
   then. If it no longer fits (the rule was removed by hand, the file became
   invalid), nothing is changed, the user is told in the live channel, and the
   Clot gets a note.
+- **When the file cannot be written.** A yes whose edit fails on the disk, with
+  the file untouched, leaves the proposal open: the daemon says so in its
+  channel and the user can answer again.
 
 ## 7. Standing rules
 
@@ -295,7 +305,12 @@ the model. They work while a turn is running.
 - **No further yes.** The command is the user's own, so it applies at once, also
   when it restores a standing rule or changes the global file.
 - **When the file has changed since:** if the inverse no longer fits, the command
-  says so, changes nothing, and that edit is skipped by the next undo.
+  says so, changes nothing, and that edit is skipped by the next undo. The
+  inverse of a standing rule's edit names the rule it expects to find, so it does
+  not fit once the rule has been replaced, removed or added again by anyone
+  else, another Clot included.
+- **When the file cannot be written:** the command says so, changes nothing, and
+  the same edit is still the next one to undo.
 - An undo is written, committed and posted like any other edit.
 - **The Clot is told.** The command does not reach the model, so an undo leaves a
   note for the Clot (section 6): the rule is no longer in force, and what the user
@@ -347,6 +362,9 @@ the model. They work while a turn is running.
 - **An approved proposal no longer fits the file:** section 6.
 - **The rule file is invalid when an edit arrives:** the edit is refused with the
   problem; nothing is written.
+- **The rule file cannot be read or written:** nothing is changed. The tool says
+  so; an approved proposal stays open and an undo stays the next one (sections 6
+  and 8).
 - **The commit fails:** the edit stands, and the failure is logged.
 - **GitHub refuses the comment, or cannot be reached:** the tool returns the
   failure and the Clot says what it could not send. The record of the send is

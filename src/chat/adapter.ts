@@ -21,6 +21,8 @@ export interface ChatAdapter {
   startTyping(channelId: string): () => void;
   makeReadOnly(channelId: string): Promise<void>;
   deleteChannel(channelId: string): Promise<void>;
+  /** Whether the channel is still there. Throws when that cannot be found out. */
+  channelExists(channelId: string): Promise<boolean>;
   mention(userId: string): string;
   channelLink(channelId: string): string;
 }

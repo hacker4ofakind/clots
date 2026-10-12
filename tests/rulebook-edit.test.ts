@@ -73,18 +73,48 @@ describe("applyEdit", () => {
   it("adds a standing rule, replaces one of the same name, and removes one", () => {
     const added = applyEdit(HAND_WRITTEN, { op: "set_standing", rule: ack });
     expect(parseRuleFile(added.text).standing).toEqual([ack]);
-    expect(added.inverse).toEqual({ op: "remove_standing", name: "ack-issue" });
+    expect(added.inverse).toEqual({ op: "remove_standing", name: "ack-issue", was: ack });
 
     const changed: StandingRule = { ...ack, template: "Thank you, @{actor}." };
     const replaced = applyEdit(added.text, { op: "set_standing", rule: changed });
     expect(parseRuleFile(replaced.text).standing).toEqual([changed]);
-    expect(replaced.inverse).toEqual({ op: "set_standing", rule: ack });
+    expect(replaced.inverse).toEqual({ op: "set_standing", rule: ack, was: changed });
     expect(replaced.summary).toContain("It replaces the rule as it is now");
     expect(replaced.summary).toContain("Thanks, @{actor}.");
 
     const removed = applyEdit(replaced.text, { op: "remove_standing", name: "ack-issue" });
     expect(parseRuleFile(removed.text).standing).toEqual([]);
-    expect(removed.inverse).toEqual({ op: "set_standing", rule: changed });
+    expect(removed.inverse).toEqual({ op: "set_standing", rule: changed, was: null });
+  });
+
+  it("refuses an inverse when the standing rule it would undo has been changed since", () => {
+    const refused = (text: string, edit: RuleEdit) => {
+      try {
+        applyEdit(text, edit);
+      } catch (error) {
+        return error instanceof EditRefused ? error.message : String(error);
+      }
+      return "not refused";
+    };
+    const newer: StandingRule = { ...ack, template: "Someone else's newer text." };
+
+    // Added, then replaced by someone else: the removal no longer fits.
+    const added = applyEdit(HAND_WRITTEN, { op: "set_standing", rule: ack });
+    const replaced = applyEdit(added.text, { op: "set_standing", rule: newer });
+    expect(refused(replaced.text, added.inverse)).toContain("has been changed since");
+
+    // Replaced, then replaced again: putting the first one back would overwrite the newest.
+    const mine = applyEdit(added.text, { op: "set_standing", rule: { ...ack, template: "Mine." } });
+    const theirs = applyEdit(mine.text, { op: "set_standing", rule: newer });
+    expect(refused(theirs.text, mine.inverse)).toContain("has been changed since");
+
+    // Removed, then added again by someone else: restoring would overwrite it.
+    const removed = applyEdit(added.text, { op: "remove_standing", name: "ack-issue" });
+    const again = applyEdit(removed.text, { op: "set_standing", rule: newer });
+    expect(refused(again.text, removed.inverse)).toContain("has been changed since");
+
+    // An edit with no expectation of its own is made as before.
+    expect(parseRuleFile(applyEdit(replaced.text, { op: "remove_standing", name: "ack-issue" }).text).standing).toEqual([]);
   });
 
   it("is undone exactly by its inverse", () => {

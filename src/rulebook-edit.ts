@@ -4,14 +4,18 @@ import { parsePrefilter, parseRuleFile, parseStanding, problemText, type Prefilt
 /** Which file an edit is for: the Clot's own, or the one that applies to every Clot. */
 export type RuleScope = "own" | "global";
 
-/** One change to a rule file. `set_standing` adds a rule, or replaces the rule of the same name. */
+/**
+ * One change to a rule file. `set_standing` adds a rule, or replaces the rule of the same name.
+ * `was`, which an inverse carries, is the rule the file must hold under that name for the edit
+ * to be made (null: none). It keeps an undo from overwriting a rule that was changed since.
+ */
 export type RuleEdit =
   | { op: "add_prefilter"; rule: Prefilter }
   | { op: "remove_prefilter"; rule: Prefilter }
   | { op: "add_guidance"; line: string }
   | { op: "remove_guidance"; line: string }
-  | { op: "set_standing"; rule: StandingRule }
-  | { op: "remove_standing"; name: string };
+  | { op: "set_standing"; rule: StandingRule; was?: StandingRule | null }
+  | { op: "remove_standing"; name: string; was?: StandingRule };
 
 /** The edit cannot be made. The message says why, in words for the Clot and the user. */
 export class EditRefused extends Error {}
@@ -70,6 +74,12 @@ function tidy<T extends Prefilter>(rule: T): T {
 function samePrefilter(a: Prefilter, b: Prefilter): boolean {
   const fold = (text: string | undefined) => text?.toLowerCase();
   return a.kind === b.kind && fold(a.actor) === fold(b.actor) && fold(a.repo) === fold(b.repo) && fold(a.titleContains) === fold(b.titleContains);
+}
+
+function sameStanding(a: StandingRule | null, b: StandingRule | null): boolean {
+  if (a === null || b === null) return a === b;
+  const flat = (rule: StandingRule) => JSON.stringify([rule.name, tidy(rule.trigger), rule.via, rule.template]);
+  return flat(a) === flat(b);
 }
 
 /** Runs a schema check and turns its complaint into a refusal. */
@@ -154,14 +164,15 @@ export function applyEdit(text: string, edit: RuleEdit): EditResult {
       const parsed = checked(() => parseStanding(edit.rule));
       const rule: StandingRule = { name: parsed.name, trigger: tidy(parsed.trigger), via: parsed.via, template: parsed.template };
       const at = file.standing.findIndex((other) => other.name === rule.name);
+      if (edit.was !== undefined && !sameStanding(at < 0 ? null : file.standing[at], edit.was)) throw new EditRefused(`the standing rule "${rule.name}" has been changed since`);
       summary = describeEdit({ op: "set_standing", rule });
       if (at < 0) {
         list(doc, "standing").add(doc.createNode(rule));
-        inverse = { op: "remove_standing", name: rule.name };
+        inverse = { op: "remove_standing", name: rule.name, was: rule };
       } else {
         const old = file.standing[at];
         list(doc, "standing").set(at, doc.createNode(rule));
-        inverse = { op: "set_standing", rule: old };
+        inverse = { op: "set_standing", rule: old, was: rule };
         summary += `\nIt replaces the rule as it is now:\n${describeStanding(old)}`;
       }
       break;
@@ -169,9 +180,10 @@ export function applyEdit(text: string, edit: RuleEdit): EditResult {
     case "remove_standing": {
       const at = file.standing.findIndex((other) => other.name === edit.name);
       if (at < 0) throw new EditRefused(`there is no standing rule named "${edit.name}" in the file. It holds: ${file.standing.map((other) => other.name).join(", ") || "none"}`);
+      if (edit.was !== undefined && !sameStanding(file.standing[at], edit.was)) throw new EditRefused(`the standing rule "${edit.name}" has been changed since`);
       list(doc, "standing").delete(at);
-      inverse = { op: "set_standing", rule: file.standing[at] };
-      summary = describeEdit(edit);
+      inverse = { op: "set_standing", rule: file.standing[at], was: null };
+      summary = describeEdit({ op: "remove_standing", name: edit.name });
       break;
     }
   }

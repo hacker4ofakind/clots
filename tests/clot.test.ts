@@ -953,6 +953,40 @@ describe("Clot, stage 2b", () => {
     expect(contexts[1].steered()).toBe(false);
   });
 
+  it("still treats a turn as joined by a steered event when it picks up one the usage limit cut off", async () => {
+    await rebuild();
+    const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+    runner.script = [{ hold: true, ok: false, limit: { resetsAt } }, {}, {}];
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    clot.steerEvent("[event] CI failed");
+    runner.release!();
+    await first;
+    expect(store.activeSession("graphite")).toMatchObject({ interrupted: true, steered: true });
+
+    now = new Date(resetsAt * 1000 + 5000);
+    timers[0].fn();
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
+    expect(contexts[1]).toMatchObject({ kind: "work" });
+    expect(contexts[1].steered()).toBe(true);
+    await vi.waitFor(() => expect(store.activeSession("graphite")).toMatchObject({ interrupted: false, steered: false }));
+
+    await clot.onMessage(msg("and the footer"));
+    expect(contexts[2].steered()).toBe(false);
+  });
+
+  it("still treats the turn as joined by a steered event when a restart cut it off", async () => {
+    await rebuild();
+    const m = msg("build the page");
+    store.enqueue({ id: m.id, clot: "graphite", channelId: m.channelId, text: m.text, receivedAt: 1 });
+    store.setInboxStatus(m.id, "running");
+    store.setSteered(store.activeSession("graphite")!.id, true);
+
+    await rebuild();
+    expect(runner.calls).toHaveLength(1);
+    expect(contexts[0].steered()).toBe(true);
+  });
+
   it("tells the tools when the turn is a brainstorm turn", async () => {
     await rebuild();
     router.next = [{ effort: "low", modeChange: "enter_brainstorm" }];
@@ -1076,5 +1110,20 @@ describe("Clot, stage 2b", () => {
     await clot.onMessage(msg("&close nosummary"));
     expect(closed).toHaveLength(1);
     expect(store.notes("graphite")).toEqual([]);
+  });
+
+  it("carries no notes into a session whose unused recap the user discards", async () => {
+    await rebuild();
+    runner.script = [{}, { say: ["RECAP: built the footer."] }, {}];
+    await clot.onMessage(msg("do the thing"));
+    await clot.onMessage(msg("&close"));
+    store.addNote("graphite", "These rule changes you proposed were withdrawn: X");
+    const channel = store.activeSession("graphite")!.channelId;
+
+    await clot.onMessage(msg("&close nosummary"));
+    expect(chat.postsIn(channel).at(-1)).toBe("Recap discarded. This session now starts from scratch.");
+    expect(store.notes("graphite")).toEqual([]);
+    await clot.onMessage(msg("something unrelated"));
+    expect(runner.calls[2].prompt).toBe("something unrelated");
   });
 });

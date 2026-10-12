@@ -22,6 +22,8 @@ export interface SessionRow {
   interruptedKind: InboxKind;
   /** The event the cut-off turn was looking into, when it was an investigation. */
   interruptedEvent: string | null;
+  /** Whether a steered event joined the turn that is running, or that was cut off and is still to be picked up. */
+  steered: boolean;
   active: boolean;
 }
 
@@ -48,6 +50,8 @@ export interface ProposalRow {
   clot: string;
   channelId: string;
   channelName: string;
+  /** The session it was opened in: a proposal lasts as long as that session. Null in a row older than this column. */
+  sessionId: string | null;
   scope: "own" | "global";
   /** The edit, as JSON. */
   edit: string;
@@ -190,6 +194,7 @@ function toSession(r: any): SessionRow {
     interrupted: r.interrupted === 1,
     interruptedKind: r.interrupted_kind,
     interruptedEvent: r.interrupted_event ?? null,
+    steered: r.steered === 1,
     active: r.active === 1,
   };
 }
@@ -199,7 +204,7 @@ function toInbox(r: any): InboxRow {
 }
 
 function toProposal(r: any): ProposalRow {
-  return { id: r.id, clot: r.clot, channelId: r.channel_id, channelName: r.channel_name, scope: r.scope, edit: r.edit, summary: r.summary };
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, channelName: r.channel_name, sessionId: r.session_id ?? null, scope: r.scope, edit: r.edit, summary: r.summary };
 }
 
 function toEvent(r: any): EventRow {
@@ -244,6 +249,8 @@ export class Store {
     this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("inbox", "event_id", "TEXT");
     this.addColumn("sessions", "interrupted_event", "TEXT");
+    this.addColumn("sessions", "steered", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("proposals", "session_id", "TEXT");
   }
 
   /** Columns added after the first release, so a database created by an earlier version keeps working. */
@@ -324,6 +331,11 @@ export class Store {
     this.db
       .prepare("UPDATE sessions SET interrupted = ?, interrupted_kind = ?, interrupted_event = ? WHERE id = ?")
       .run(interrupted ? 1 : 0, interrupted ? kind : "message", interrupted ? eventId : null, id);
+  }
+
+  /** Records whether a steered event has joined the session's turn. It outlasts a cut-off turn and a restart, so the turn that picks the work up is still treated as one. */
+  setSteered(id: string, steered: boolean): void {
+    this.db.prepare("UPDATE sessions SET steered = ? WHERE id = ?").run(steered ? 1 : 0, id);
   }
 
   enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind; eventId?: string | null }): boolean {
@@ -441,11 +453,24 @@ export class Store {
   }
 
   /** Stores an open proposal and returns its ID. */
-  createProposal(p: Omit<ProposalRow, "id">): number {
+  createProposal(p: Omit<ProposalRow, "id" | "sessionId"> & { sessionId?: string | null }): number {
     const info = this.db
-      .prepare("INSERT INTO proposals (clot, channel_id, channel_name, scope, edit, summary) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(p.clot, p.channelId, p.channelName, p.scope, p.edit, p.summary);
+      .prepare("INSERT INTO proposals (clot, channel_id, channel_name, session_id, scope, edit, summary) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(p.clot, p.channelId, p.channelName, p.sessionId ?? null, p.scope, p.edit, p.summary);
     return Number(info.lastInsertRowid);
+  }
+
+  /**
+   * Closes several of a Clot's proposals as unanswered and leaves the Clot one note about them,
+   * all or nothing. Returns the ones this call closed: one that was answered a moment ago is not
+   * among them, and its answer stands.
+   */
+  withdrawProposals(clot: string, proposals: ProposalRow[], note: (closed: ProposalRow[]) => string): ProposalRow[] {
+    return this.db.transaction(() => {
+      const closed = proposals.filter((proposal) => this.deleteProposal(proposal.id));
+      if (closed.length > 0) this.addNote(clot, note(closed));
+      return closed;
+    })();
   }
 
   proposalByChannel(channelId: string): ProposalRow | undefined {

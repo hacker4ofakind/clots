@@ -68,7 +68,7 @@ export class Proposals {
     } catch {
       return PROPOSAL_NOT_ASKED;
     }
-    const id = store.createProposal({ clot, channelId, channelName, scope, edit: json, summary: preview.summary });
+    const id = store.createProposal({ clot, channelId, channelName, sessionId: store.activeSession(clot)?.id ?? null, scope, edit: json, summary: preview.summary });
     try {
       await chat.post(channelId, `${chat.mention(this.d.userId)} ${clot} proposes a change to \`${preview.file}.yaml\`:\n\n${preview.summary}\n\n${RULE_REPLIES}`);
     } catch {
@@ -97,29 +97,38 @@ export class Proposals {
     await this.withdraw(clot, this.d.store.openProposals(clot), "when the previous session closed");
   }
 
-  /** Closes the proposals whose channel no longer exists. Called once at startup. */
+  /**
+   * Closes the proposals that can no longer be answered. Called once at startup: those of a
+   * session that was replaced while the daemon was stopping, and those whose channel is gone.
+   */
   async closeOrphans(): Promise<void> {
     const byClot = new Map<string, ProposalRow[]>();
     for (const proposal of this.d.store.openProposals()) byClot.set(proposal.clot, [...(byClot.get(proposal.clot) ?? []), proposal]);
     for (const [clot, open] of byClot) {
-      const row = this.d.store.getClot(clot);
-      if (!row) continue;
-      const names = await this.d.chat.listChannelNames(row.categoryId).catch(() => undefined);
-      // Not knowing which channels exist is no reason to close anything.
-      if (names === undefined) continue;
-      await this.withdraw(clot, open.filter((proposal) => !names.includes(proposal.channelName)), "when their channel was removed");
+      const session = this.d.store.activeSession(clot)?.id;
+      const stale = open.filter((proposal) => session !== undefined && proposal.sessionId !== null && proposal.sessionId !== session);
+      await this.withdraw(clot, stale, "when the previous session closed");
+
+      const gone: ProposalRow[] = [];
+      for (const proposal of open.filter((other) => !stale.includes(other))) {
+        // The channel itself, not its name: a renamed channel is still the place to answer, and a new one of the same name is not.
+        // Not knowing whether it exists is no reason to close anything.
+        const exists = await this.d.chat.channelExists(proposal.channelId).catch(() => undefined);
+        if (exists === false) gone.push(proposal);
+      }
+      await this.withdraw(clot, gone, "when their channel was removed");
     }
   }
 
   private async withdraw(clot: string, open: ProposalRow[], when: string): Promise<void> {
-    const closed: string[] = [];
-    for (const proposal of open) {
-      // Closed first, and only whoever closed it goes on: an answer given a moment ago stands.
-      if (!this.d.store.deleteProposal(proposal.id)) continue;
-      closed.push(headline(proposal.summary));
-      await this.d.chat.deleteChannel(proposal.channelId).catch(() => undefined);
-    }
-    if (closed.length > 0) this.d.store.addNote(clot, `These rule changes you proposed were still unanswered ${when}, and were withdrawn: ${closed.join("; ")}`);
+    // Closed in one step before any channel is touched, so stopping part-way leaves none of them
+    // answerable. Only those this call closed go on: an answer given a moment ago stands.
+    const closed = this.d.store.withdrawProposals(
+      clot,
+      open,
+      (rows) => `These rule changes you proposed were still unanswered ${when}, and were withdrawn: ${rows.map((row) => headline(row.summary)).join("; ")}`,
+    );
+    for (const proposal of closed) await this.d.chat.deleteChannel(proposal.channelId).catch(() => undefined);
   }
 
   private async resolve(proposal: ProposalRow, answer: "yes" | "no"): Promise<void> {
@@ -131,7 +140,21 @@ export class Proposals {
       await this.d.say(proposal.clot, `Declined: ${what}`);
     } else {
       // Applied to the file as it is now, which may not be as it was when the question was asked.
-      const done = this.d.writer.apply(proposal.clot, proposal.scope, JSON.parse(proposal.edit) as RuleEdit);
+      let done: WriteResult;
+      try {
+        done = this.d.writer.apply(proposal.clot, proposal.scope, JSON.parse(proposal.edit) as RuleEdit);
+      } catch (error) {
+        // Whether the file was changed is not known, so the edit is not tried again.
+        console.error(`[${proposal.clot}] applying an approved rule change failed:`, error);
+        done = { ok: false, reason: `it failed in an unexpected way (${error instanceof Error ? error.message : String(error)}); check the file` };
+      }
+      if (!done.ok && done.retry) {
+        // Nothing was changed and the cause was not the edit: the question is open again, in the same channel.
+        const { id: _id, ...again } = proposal;
+        store.createProposal(again);
+        await this.d.chat.post(proposal.channelId, `That could not be applied just now (${done.reason}), and nothing was changed. Reply \`yes\` to try again, or \`no\` to decline it.`).catch(() => undefined);
+        return;
+      }
       if (done.ok) {
         store.addNote(proposal.clot, `The user approved the rule change you proposed, and it is in force: ${what}`);
         await this.d.say(proposal.clot, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}`);
