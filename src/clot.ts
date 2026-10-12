@@ -7,6 +7,8 @@ import { formatEvent } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
 import { nextMode, type Router } from "./router.js";
 import type { InboxRow, SessionRow, Store } from "./store.js";
+import type { StandingMatch } from "./standing.js";
+import type { DaemonTools, TurnContext } from "./tools.js";
 import type { Mode, SeedReason } from "./types.js";
 
 export interface ClotDeps {
@@ -23,14 +25,22 @@ export interface ClotDeps {
   schedule: (ms: number, fn: () => void) => void;
   /** Called when no turn is running any more: after each turn, and once at startup. */
   onTurnEnd?: (clot: string) => Promise<void>;
+  /** Makes the daemon's tools for one turn. */
+  makeTools?: (ctx: TurnContext) => DaemonTools;
+  /** The standing rules that apply to an event, with their text filled in. */
+  standingFor?: (clot: string, event: ClotEvent) => StandingMatch[];
+  /** Answers `&rules` and `&rules undo`. */
+  rules?: { list(clot: string): string; undo(clot: string): string };
+  /** Called when a session has been replaced by a new one. */
+  onSessionClosed?: (clot: string) => Promise<void>;
 }
 
 /** A command the daemon answers at once, without a turn and without the session. */
-type InstantCommand = Extract<Command, { kind: "invalid" | "effort" }>;
+type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" }>;
 
 /** Returns the command when it is one answered at once; an `&effort` that carries a message is not. */
 function instantCommand(command: Command): InstantCommand | undefined {
-  return command.kind === "invalid" || (command.kind === "effort" && command.rest === "") ? command : undefined;
+  return command.kind === "invalid" || command.kind === "rules" || (command.kind === "effort" && command.rest === "") ? command : undefined;
 }
 
 const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: string; closed: string }> = {
@@ -52,6 +62,12 @@ export class Clot {
   private live?: TurnHandle;
   /** Whether the running turn is under the lock. An investigation is, whatever the mode. */
   private liveLocked = false;
+  /** Whether a steered event has joined the running turn. From then on the turn holds text the user did not write. */
+  private liveSteered = false;
+  /** Whether the running turn is the investigation of an event. */
+  private liveIsEvent = false;
+  /** The last of the daemon's notes that the running turn was given, or 0 when it was given none. */
+  private liveNotes = 0;
   private draining = false;
   private posts: Promise<void> = Promise.resolve();
 
@@ -146,7 +162,12 @@ export class Clot {
    */
   steerEvent(text: string): boolean {
     if (!this.live || this.d.store.nextPending(this.d.name)) return false;
-    return this.live.push(text);
+    if (!this.live.push(text)) return false;
+    this.liveSteered = true;
+    // Kept with the session while the user's own work is what it joined: if that turn is cut off,
+    // the turn that picks the work up holds the event too. An investigation proposes anyway.
+    if (!this.liveIsEvent) this.d.store.setSteered(this.d.store.activeSession(this.d.name)!.id, true);
+    return true;
   }
 
   /**
@@ -157,7 +178,7 @@ export class Clot {
   async queueEvent(event: ClotEvent, notice: string, kick = true): Promise<void> {
     const { store, chat, name } = this.d;
     const session = store.activeSession(name)!;
-    store.enqueue({ id: `event:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event" });
+    store.enqueue({ id: `event:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event", eventId: event.id });
     store.setEventStatus(event.id, "queued");
     await chat.post(session.channelId, `${notice} <${event.url}>`).catch(() => undefined);
     if (kick) void this.drain().catch((error) => console.error(`[${name}]`, error));
@@ -192,6 +213,9 @@ export class Clot {
     if (command.kind === "effort") {
       store.setNextEffort(name, command.effort);
       await chat.post(channelId, `Effort for your next message: ${command.effort}.`);
+    } else if (command.kind === "rules") {
+      const rules = this.d.rules;
+      await chat.post(channelId, rules === undefined ? "The rulebook is not available." : command.undo ? rules.undo(name) : rules.list(name));
     } else {
       await chat.post(channelId, `I don't know \`&${command.name}\` used that way. ${COMMAND_USAGE}`);
     }
@@ -222,6 +246,7 @@ export class Clot {
         store.clearSeed(session.id);
         store.setMode(name, "action");
         store.clearTail(name);
+        store.clearNotes(name);
         await chat.post(session.channelId, "Recap discarded. This session now starts from scratch.");
       } else {
         await chat.post(session.channelId, "This session is already fresh; there is nothing to close.");
@@ -243,10 +268,16 @@ export class Clot {
       await chat.postActivity(session.channelId, result.activity).catch(() => undefined);
     }
     await this.turnEnded();
+    // The notes this turn was given have been read, unless it failed. One that arrived meanwhile waits for the next turn.
+    if (result.ok && this.liveNotes > 0) store.clearNotes(name, this.liveNotes);
+    this.liveNotes = 0;
 
     // The session exists on disk once any model response has come back.
     if (result.ok || result.contextPercent > 0) store.markSessionStarted(session.id);
     store.setInterrupted(session.id, false);
+    // The user's work that a steered event joined is over when a turn of the user's own ends: one
+    // the usage limit cut off is picked up again, and an investigation in between is not that work.
+    if (!isEvent && !result.limit) store.setSteered(session.id, false);
     store.finishRunning(name);
 
     if (!result.ok && !result.limit) {
@@ -258,7 +289,7 @@ export class Clot {
     }
 
     if (result.limit) {
-      store.setInterrupted(session.id, true, row.kind);
+      store.setInterrupted(session.id, true, row.kind, row.eventId);
       return (await this.pause(session.channelId, result.limit.resetsAt)) === "resumed";
     }
 
@@ -292,7 +323,7 @@ export class Clot {
     const { store, name } = this.d;
     const session = store.activeSession(name)!;
     if (!session.interrupted || store.nextPending(name)) return;
-    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime(), kind: session.interruptedKind });
+    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime(), kind: session.interruptedKind, eventId: session.interruptedEvent });
   }
 
   /**
@@ -303,16 +334,39 @@ export class Clot {
   private async runEventTurn(row: InboxRow, session: SessionRow, mode: Mode): Promise<TurnResult> {
     const { store, name } = this.d;
     const decision = await this.d.router.decide({ text: row.text, mode, tail: store.tail(name, 4) });
+    // The event this turn is for. A turn that picks up a cut-off investigation is for the same one.
+    const event = row.eventId === null ? undefined : store.getEvent(row.eventId);
+    const standing = event === undefined ? [] : (this.d.standingFor?.(name, event) ?? []);
     store.setInboxStatus(row.id, "running");
     this.liveLocked = true;
+    this.liveIsEvent = true;
+    this.liveSteered = false;
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
-      prompt: buildPrompt({ text: row.text, mode, modeChanged: false, seed: session.seed, seedReason: session.seedReason, interrupted: session.interrupted, event: true }),
+      prompt: buildPrompt({
+        text: row.text,
+        mode,
+        modeChanged: false,
+        seed: session.seed,
+        seedReason: session.seedReason,
+        interrupted: session.interrupted,
+        event: true,
+        notes: this.takeNotes(),
+        standing: standing.map((match) => ({ name: match.rule.name, text: match.filled })),
+      }),
       effort: decision.effort,
       locked: true,
+      tools: this.d.makeTools?.({ clot: name, kind: "investigation", steered: () => this.liveSteered, event }),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
+  }
+
+  /** The daemon's notes for the turn that is about to start, remembered so that they are cleared when it has read them. */
+  private takeNotes(): string[] {
+    const notes = this.d.store.notes(this.d.name);
+    this.liveNotes = notes.at(-1)?.seq ?? 0;
+    return notes.map((note) => note.text);
   }
 
   /** What to do with each piece of text the Clot writes during a turn: remember it and post it, in order. */
@@ -347,14 +401,20 @@ export class Clot {
       seed: session.seed,
       seedReason: session.seedReason,
       interrupted: session.interrupted,
+      notes: this.takeNotes(),
     });
 
     this.liveLocked = newMode === "brainstorm";
+    this.liveIsEvent = false;
+    // Still set when the work a steered event had joined was cut off, by the usage limit or a
+    // restart, and has not ended since: this turn picks that work up, whatever ran in between.
+    this.liveSteered = session.steered;
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt,
       effort,
       locked: newMode === "brainstorm",
+      tools: this.d.makeTools?.({ clot: name, kind: newMode === "brainstorm" ? "brainstorm" : "work", steered: () => this.liveSteered }),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -416,6 +476,10 @@ export class Clot {
       store.setMode(name, "action");
       store.clearTail(name);
     }
+    // A proposal lasts as long as its session. The new session is told which were withdrawn,
+    // unless it starts with nothing carried over.
+    await this.d.onSessionClosed?.(name).catch((error) => console.error(`[${name}] closing the session's proposals failed:`, error));
+    if (!summary) store.clearNotes(name);
 
     const intro = recap === null ? "New session, started from scratch at your request. Nothing was carried over." : `${words.intro}\n\n${recap}`;
     const failed = (step: string) => (error: unknown) => console.error(`[${name}] handoff: ${step} failed:`, error);

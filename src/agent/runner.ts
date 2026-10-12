@@ -1,7 +1,9 @@
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Effort, LimitInfo, TurnActivity } from "../types.js";
 import { ActivityCollector } from "./activity.js";
-import { LOCK_REMOVED_TOOLS, lockDecision, lockHookAnswer } from "./command-check.js";
+import type { DaemonTools } from "../tools.js";
+import { DAEMON_TOOL_SERVER, LOCK_REMOVED_TOOLS, lockDecision, lockHookAnswer } from "./command-check.js";
+import { toolServer } from "./tool-server.js";
 import { containerName, makeSpawn, sessionExists } from "./container.js";
 import { CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "./prompts.js";
 import { InputQueue } from "./input-queue.js";
@@ -17,6 +19,8 @@ export interface TurnRequest {
   effort: Effort;
   /** Runs the turn under the lock: it can read and look things up, and can change nothing. */
   locked: boolean;
+  /** The daemon's tools for this turn. They run in the daemon, and are made for the turn so that they know what kind it is. */
+  tools?: DaemonTools;
   onText: (text: string) => void;
 }
 
@@ -50,7 +54,19 @@ function userMessage(text: string): SDKUserMessage {
 export class SdkRunner implements AgentRunner {
   private graceMs: number;
 
-  constructor(private o: { clot: string; env: Record<string, string>; graceMs?: number; /** The project's test command, which a locked turn may run. */ testCommand?: string }) {
+  constructor(
+    private o: {
+      clot: string;
+      env: Record<string, string>;
+      graceMs?: number;
+      /** The project's test command, which a locked turn may run. */
+      testCommand?: string;
+      /** Where turns start in the container. A Clot with a repository starts in its clone. */
+      cwd?: string;
+      /** What is added to Claude Code's own system prompt. */
+      systemPrompt?: string;
+    },
+  ) {
     this.graceMs = o.graceMs ?? 15_000;
   }
 
@@ -61,6 +77,7 @@ export class SdkRunner implements AgentRunner {
     // A first turn cut off by a daemon restart leaves its transcript behind, and
     // Claude Code refuses to start a session under an ID that already has one.
     const container = containerName(this.o.clot);
+    const cwd = this.o.cwd ?? CWD;
     const resume = req.resume ?? (req.newSessionId && sessionExists(container, req.newSessionId) ? req.newSessionId : undefined);
 
     const session = query({
@@ -69,7 +86,8 @@ export class SdkRunner implements AgentRunner {
         model: "claude-opus-5-5",
         effort: req.effort,
         ...(resume ? { resume } : { sessionId: req.newSessionId }),
-        cwd: CWD,
+        cwd,
+        ...(req.tools ? { mcpServers: { [DAEMON_TOOL_SERVER]: toolServer(req.tools) } } : {}),
         // The lock has two parts. The hook below is asked before every tool call, ahead of any
         // permission rule, and refuses what the lock does not approve: an allow rule in a settings
         // file cannot get past it. What it lets through goes on to the usual check, where in the
@@ -95,13 +113,13 @@ export class SdkRunner implements AgentRunner {
               },
             }
           : {}),
-        systemPrompt: { type: "preset", preset: "claude_code", append: CLOT_SYSTEM_PROMPT },
-        spawnClaudeCodeProcess: makeSpawn({ container, cwd: CWD, env: this.o.env }),
+        systemPrompt: { type: "preset", preset: "claude_code", append: this.o.systemPrompt ?? CLOT_SYSTEM_PROMPT },
+        spawnClaudeCodeProcess: makeSpawn({ container, cwd, env: this.o.env }),
       },
     });
 
     const tracker = new TurnTracker();
-    const collector = new ActivityCollector(CWD);
+    const collector = new ActivityCollector(cwd);
     const done = (async (): Promise<TurnResult> => {
       const result: TurnResult = { sessionId: req.resume ?? req.newSessionId ?? "", contextPercent: 0, ok: false };
       let grace: NodeJS.Timeout | undefined;

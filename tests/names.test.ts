@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { askChannelName, sessionChannelName, splitMessage } from "../src/chat/names.js";
+import { askChannelName, ruleChannelName, sessionChannelName, splitMessage } from "../src/chat/names.js";
 
 describe("sessionChannelName", () => {
   const noon = new Date("2026-10-10T12:00:00Z");
@@ -47,4 +47,10 @@ describe("splitMessage", () => {
     const text = "x".repeat(1500) + "\n" + "y".repeat(1000);
     expect(splitMessage(text)).toEqual(["x".repeat(1500), "y".repeat(1000)]);
   });
+});
+
+it("names a proposal's channel after the Clot, with the lowest free number", () => {
+  expect(ruleChannelName("Graphite", [])).toBe("graphite-rule");
+  expect(ruleChannelName("graphite", ["graphite-rule", "graphite-ask"])).toBe("graphite-rule-2");
+  expect(ruleChannelName("graphite", ["graphite-rule", "graphite-rule-3"])).toBe("graphite-rule-2");
 });

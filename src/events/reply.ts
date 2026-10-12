@@ -32,3 +32,18 @@ export const ASK_REPLIES = [
 ].join("\n");
 
 export const ASK_RETRY = `I couldn't match that reply.\n\n${ASK_REPLIES}`;
+
+/**
+ * A reply to a proposed rule change: yes, no, or nothing when it is neither. The words are
+ * those a steering question accepts; "after" means nothing here, so it is not an answer.
+ */
+export function matchYesNo(text: string): "yes" | "no" | undefined {
+  const outcome = matchReply(text);
+  if (outcome === "steer") return "yes";
+  if (outcome === "drop") return "no";
+  return undefined;
+}
+
+export const RULE_REPLIES = ["Reply with one of:", "- `yes`, `sure`, `do that` or `yeah` to put it in force", "- `no`, `dont` or `not at all` to decline it"].join("\n");
+
+export const RULE_RETRY = `I couldn't match that reply.\n\n${RULE_REPLIES}`;

@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { formatEvent } from "../src/events/format.js";
 import { isSelfCaused, MAX_BODY, normalizeGithub, repoSlug, verifySignature } from "../src/events/github.js";
-import { matchReply, normalizeReply } from "../src/events/reply.js";
+import { matchReply, matchYesNo, normalizeReply } from "../src/events/reply.js";
 import type { ClotEvent } from "../src/events/types.js";
 
 const repository = { full_name: "Octo/Widgets" };
@@ -182,5 +182,13 @@ describe("matchReply", () => {
 
   it("matches nothing else, however close", () => {
     for (const reply of ["yes please", "ok", "nope", "later", "", "y"]) expect(matchReply(reply)).toBeUndefined();
+  });
+});
+
+describe("matchYesNo", () => {
+  it("reads the steering words for yes and no, and nothing else", () => {
+    for (const yes of ["yes", "Sure.", "do that", "YEAH!"]) expect(matchYesNo(yes)).toBe("yes");
+    for (const no of ["no", "Don't", "not at all"]) expect(matchYesNo(no)).toBe("no");
+    for (const neither of ["after", "not rn", "maybe", "yes but only for PRs", ""]) expect(matchYesNo(neither)).toBeUndefined();
   });
 });

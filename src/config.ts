@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { repoSlug } from "./events/github.js";
 
+/** The name of the Clot for what belongs to no project. */
+export const HOME_CLOT = "home";
+
+/** Names a project Clot cannot have: the home Clot's, and the one the rulebook uses for the file every Clot shares. */
+const RESERVED_NAMES = [HOME_CLOT, "global"];
+
 const FileSchema = z.object({
   timeZone: z.string().min(1),
   image: z.string().min(1),
@@ -11,13 +17,18 @@ const FileSchema = z.object({
   clots: z
     .array(
       z.object({
-        name: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
+        name: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9-]*$/)
+          .refine((name) => !RESERVED_NAMES.includes(name), "the names home and global are the daemon's own"),
         // Events are routed by repository, so the URL must be one a repository can be read from.
         repoUrl: z.string().refine((url) => repoSlug(url) !== undefined, "repoUrl must look like https://github.com/owner/name.git"),
         testCommand: z.string().min(1).optional(),
       }),
     )
     .min(1),
+  // A Clot with no repository of its own, for events from repositories no Clot is bound to.
+  home: z.boolean().default(false),
 });
 
 export interface Config {
@@ -37,6 +48,10 @@ export interface Config {
   githubToken: string;
   webhookSecret: string;
   rolloverPercent: number;
+  /** Whether the home Clot runs. */
+  home: boolean;
+  /** How many rule proposals a Clot may have waiting for the user at once. */
+  maxProposals: number;
 }
 
 function secret(env: Record<string, string | undefined>, key: string): string {
@@ -47,6 +62,8 @@ function secret(env: Record<string, string | undefined>, key: string): string {
 
 export function loadConfig(json: unknown, env: Record<string, string | undefined>): Config {
   const file = FileSchema.parse(json);
+  const maxProposals = Number(env.CLOTS_MAX_PROPOSALS || "3");
+  if (!Number.isInteger(maxProposals) || maxProposals < 1) throw new Error("CLOTS_MAX_PROPOSALS must be a whole number of at least 1");
   return {
     timeZone: file.timeZone,
     image: file.image,
@@ -61,5 +78,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     githubToken: secret(env, "CLOT_GITHUB_TOKEN"),
     webhookSecret: secret(env, "GITHUB_WEBHOOK_SECRET"),
     rolloverPercent: Number(env.CLOTS_ROLLOVER_PERCENT ?? "65"),
+    home: file.home,
+    maxProposals,
   };
 }

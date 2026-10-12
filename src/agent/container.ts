@@ -88,8 +88,12 @@ export function sessionExists(container: string, sessionId: string): boolean {
   }
 }
 
-/** Starts the Clot's container if needed, sets up git in it and clones the repository. Returns the login of the account that owns the token, when it can be read. */
-export async function ensureContainer(o: { clot: string; image: string; repoUrl: string; githubToken: string }): Promise<string | undefined> {
+/**
+ * Starts the Clot's container if needed, sets up git in it and clones the repository, when the
+ * Clot has one: the home Clot does not. Returns the login of the account that owns the token,
+ * when it can be read.
+ */
+export async function ensureContainer(o: { clot: string; image: string; repoUrl?: string; githubToken: string }): Promise<string | undefined> {
   const name = containerName(o.clot);
   const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", name]).then(
     (r) => r.stdout.trim(),
@@ -108,7 +112,7 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl:
     `git config --global credential.helper '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'`,
     `git config --global user.name "$CLOT_GIT_NAME"`,
     `git config --global user.email "$CLOT_GIT_EMAIL"`,
-    `[ -d /workspace/repo/.git ] || git clone "$REPO_URL" /workspace/repo`,
+    ...(o.repoUrl === undefined ? [] : [`[ -d /workspace/repo/.git ] || git clone "$REPO_URL" /workspace/repo`]),
   ].join(" && ");
   const account = await run("docker", ["exec", "-e", "GH_TOKEN", name, "gh", "api", "user"], { env: { ...process.env, GH_TOKEN: o.githubToken } }).then(
     (r) => JSON.parse(r.stdout) as { id?: unknown; login?: unknown },
@@ -118,7 +122,7 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl:
   if (!email) console.warn(`[${o.clot}] could not read the token's GitHub account; commits will use an unmatched address`);
   const identity = gitIdentity(o.clot, email);
   await run("docker", ["exec", "-e", "GH_TOKEN", "-e", "REPO_URL", "-e", "CLOT_GIT_NAME", "-e", "CLOT_GIT_EMAIL", name, "sh", "-c", script], {
-    env: { ...process.env, GH_TOKEN: o.githubToken, REPO_URL: o.repoUrl, CLOT_GIT_NAME: identity.name, CLOT_GIT_EMAIL: identity.email },
+    env: { ...process.env, GH_TOKEN: o.githubToken, REPO_URL: o.repoUrl ?? "", CLOT_GIT_NAME: identity.name, CLOT_GIT_EMAIL: identity.email },
   });
   return typeof account?.login === "string" ? account.login : undefined;
 }

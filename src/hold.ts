@@ -20,7 +20,8 @@ interface Group {
 /**
  * Holds automated events for a short while, so that the several reports one
  * push sets off (a failed CI run, a failed deploy preview) reach the Clot
- * together. Events are grouped by Clot and subject.
+ * together. Events are grouped by Clot, repository and subject: the home Clot hears from
+ * several repositories, and pull request #14 of one is not that of another.
  */
 export class Hold {
   private groups = new Map<string, Group>();
@@ -28,7 +29,7 @@ export class Hold {
   constructor(private o: HoldOptions) {}
 
   add(clot: string, event: ClotEvent): void {
-    const key = `${clot}\n${event.subject}`;
+    const key = `${clot}\n${event.repo}\n${event.subject}`;
     const now = this.o.now();
     const group = this.groups.get(key) ?? { events: [], firstAt: now, cancel: () => undefined };
     group.cancel();

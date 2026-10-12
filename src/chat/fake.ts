@@ -62,6 +62,10 @@ export class FakeChat implements ChatAdapter {
     this.deleted.push(channelId);
   }
 
+  async channelExists(channelId: string): Promise<boolean> {
+    return this.channels.some((c) => c.id === channelId);
+  }
+
   mention(userId: string): string {
     return `<@${userId}>`;
   }

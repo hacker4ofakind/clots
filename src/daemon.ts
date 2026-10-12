@@ -1,20 +1,26 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { containerName, ensureContainer, hasOwnLogin, sessionEnv } from "./agent/container.js";
+import { HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
 import { SdkRunner } from "./agent/runner.js";
 import { DiscordChat } from "./chat/discord.js";
 import { Clot } from "./clot.js";
-import { loadConfig } from "./config.js";
+import { HOME_CLOT, loadConfig } from "./config.js";
+import { githubCommentSender } from "./events/github-comment.js";
 import { repoSlug } from "./events/github.js";
 import type { ClotEvent } from "./events/types.js";
 import { inlineCommentReader } from "./events/review-comments.js";
 import { SdkExplainer } from "./explainer.js";
 import { startIntake } from "./intake.js";
-import { Pipeline } from "./pipeline.js";
+import { Pipeline, routeByRepo } from "./pipeline.js";
+import { Proposals } from "./proposals.js";
 import { SdkRouter } from "./router.js";
+import { RuleWriter } from "./rule-writer.js";
 import { Rulebook } from "./rulebook.js";
+import { matchStanding } from "./standing.js";
 import { Steering } from "./steering.js";
 import { Store } from "./store.js";
+import { makeTools, showRules, type ToolDeps } from "./tools.js";
 import { SdkTriage } from "./triage.js";
 
 const config = loadConfig(JSON.parse(fs.readFileSync("clots.config.json", "utf8")), process.env);
@@ -42,32 +48,40 @@ await new Promise<void>((resolve) => {
 });
 console.log(`[events] listening for GitHub webhooks on http://127.0.0.1:${config.intakePort}/webhooks/github`);
 
+/** Every Clot the daemon runs: one per project, and the home Clot when the configuration asks for it. */
+const definitions: { name: string; repoUrl?: string; testCommand?: string }[] = [...config.clots, ...(config.home ? [{ name: HOME_CLOT }] : [])];
+const names = definitions.map((c) => c.name);
+
 const chat = new DiscordChat(config.discordToken, config.guildId);
 const router = new SdkRouter();
 const clots = new Map<string, Clot>();
 const steering = new Steering({ store, chat, explainer: new SdkExplainer(), userId: config.userId, timeZone: config.timeZone, clots });
 
-const rulebook = new Rulebook(
-  config.rulebookDir,
-  config.clots.map((c) => c.name),
-  (file, problem) => {
-    console.error(`[rulebook] ${file} is not usable: ${problem}`);
-    // A Clot's own file is reported in its channel; the global file in every Clot's.
-    const affected = file === "global.yaml" ? config.clots.map((c) => c.name) : [file.replace(/\.yaml$/, "")];
-    for (const name of affected) {
-      const session = store.activeSession(name);
-      if (session) void chat.post(session.channelId, `\`${file}\` in the rulebook could not be used, so its last good version stays in force.\n${problem}`).catch(() => undefined);
-    }
-  },
-);
+/** Posts in a Clot's live channel. What the daemon says there never enters the Clot's session. */
+const say = async (clot: string, text: string): Promise<void> => {
+  const session = store.activeSession(clot);
+  if (session) await chat.post(session.channelId, text).catch(() => undefined);
+};
+
+const rulebook = new Rulebook(config.rulebookDir, names, (file, problem) => {
+  console.error(`[rulebook] ${file} is not usable: ${problem}`);
+  // A Clot's own file is reported in its channel; the global file in every Clot's.
+  const affected = file === "global.yaml" ? names : [file.replace(/\.yaml$/, "")];
+  for (const name of affected) void say(name, `\`${file}\` in the rulebook could not be used, so its last good version stays in force.\n${problem}`);
+});
 rulebook.ensure();
 rulebook.load();
 rulebook.watch();
 
+const writer = new RuleWriter({ rulebook, store });
+const proposals = new Proposals({ store, chat, writer, userId: config.userId, max: config.maxProposals, say });
+const toolDeps: ToolDeps = { rulebook, writer, proposals, store, senders: { github_comment: githubCommentSender(config.githubToken) }, say };
+
 await chat.start((m) => {
   void (async () => {
-    // A reply in a steering question's channel is an answer to it, not a message for the Clot.
+    // A reply in a temporary channel is an answer to the daemon's question there, not a message for the Clot.
     if (await steering.onReply(m)) return;
+    if (await proposals.onReply(m)) return;
     const session = store.sessionByChannel(m.channelId);
     const clot = session && clots.get(session.clot);
     if (clot) await clot.onMessage(m);
@@ -78,11 +92,11 @@ await chat.start((m) => {
 let clotLogin = "";
 const repoToClot = new Map<string, string>();
 
-for (const c of config.clots) {
+for (const c of definitions) {
   console.log(`[${c.name}] preparing container`);
   const login = await ensureContainer({ clot: c.name, image: config.image, repoUrl: c.repoUrl, githubToken: config.githubToken });
   if (login) clotLogin = login;
-  repoToClot.set(repoSlug(c.repoUrl)!, c.name);
+  if (c.repoUrl !== undefined) repoToClot.set(repoSlug(c.repoUrl)!, c.name);
   const ownLogin = hasOwnLogin(containerName(c.name));
   console.log(`[${c.name}] signing in with ${ownLogin ? "the container's own login" : "the token from .env"}`);
   const clot = new Clot({
@@ -94,6 +108,8 @@ for (const c of config.clots) {
       clot: c.name,
       env: sessionEnv({ claudeToken: config.claudeToken, githubToken: config.githubToken, ownLogin }),
       testCommand: c.testCommand,
+      // The home Clot has no clone to start in, and a system prompt that names no project.
+      ...(c.repoUrl === undefined ? { cwd: "/workspace", systemPrompt: HOME_SYSTEM_PROMPT } : {}),
     }),
     timeZone: config.timeZone,
     userId: config.userId,
@@ -103,11 +119,24 @@ for (const c of config.clots) {
     schedule: (ms, fn) => void setTimeout(fn, ms),
     // When no turn is running, a question about "the running turn" has lapsed.
     onTurnEnd: (name) => steering.lapse(name),
+    makeTools: (ctx) => makeTools(toolDeps, ctx),
+    standingFor: (name, event) => matchStanding(rulebook.standingFor(name), event, event.kind === "batch" ? store.eventsMergedInto(event.id) : []),
+    rules: {
+      list: (name) => showRules(toolDeps, name),
+      undo: (name) => {
+        const done = writer.undo(name);
+        return done.ok ? `${done.summary} (\`${done.file}.yaml\`)` : done.reason;
+      },
+    },
+    onSessionClosed: (name) => proposals.closeForSession(name),
   });
   clots.set(c.name, clot);
   await clot.init();
   console.log(`[${c.name}] ready`);
 }
+
+// A proposal whose channel was removed while the daemon was down can no longer be answered.
+await proposals.closeOrphans();
 
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
@@ -119,7 +148,7 @@ const pipeline = new Pipeline({
   triage: new SdkTriage(),
   steering,
   clots,
-  clotForRepo: (repo) => repoToClot.get(repo),
+  clotForRepo: routeByRepo(repoToClot, config.home ? HOME_CLOT : undefined),
   clotLogin,
   readInline: inlineCommentReader(config.githubToken),
   hold: config.hold,

@@ -72,6 +72,11 @@ export class DiscordChat implements ChatAdapter {
     await channel.delete();
   }
 
+  async channelExists(channelId: string): Promise<boolean> {
+    // The whole list, not the one channel: asking for a channel that is gone fails the same way a broken connection does.
+    return (await this.guild.channels.fetch()).has(channelId);
+  }
+
   mention(userId: string): string {
     return `<@${userId}>`;
   }

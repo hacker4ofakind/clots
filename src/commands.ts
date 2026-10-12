@@ -8,9 +8,10 @@ export type Command =
   | { kind: "none" }
   | { kind: "close"; summary: boolean }
   | { kind: "effort"; effort: Effort; rest: string }
+  | { kind: "rules"; undo: boolean }
   | { kind: "invalid"; name: string };
 
-export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium|high [message]`.";
+export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium|high [message]`, `&rules`, `&rules undo`.";
 
 const EFFORTS: Effort[] = ["low", "medium", "high"];
 
@@ -31,6 +32,12 @@ export function parseCommand(text: string): Command {
     const effort = EFFORTS.find((e) => e === level?.toLowerCase());
     if (!effort) return { kind: "invalid", name };
     return { kind: "effort", effort, rest: args.slice(level.length).trim() };
+  }
+
+  if (name === "rules") {
+    if (args === "") return { kind: "rules", undo: false };
+    if (args.toLowerCase() === "undo") return { kind: "rules", undo: true };
+    return { kind: "invalid", name };
   }
 
   return { kind: "invalid", name };
