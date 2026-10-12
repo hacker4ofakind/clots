@@ -619,7 +619,7 @@ A pure function: the text of a rule file and one edit go in; the new text, the e
 - Consumes: `parsePrefilter`, `parseRuleFile`, `parseStanding`, `problemText`, `type Prefilter`, `type StandingRule` from `src/rulebook.ts`.
 - Produces, from `src/rulebook-edit.ts`:
   - `type RuleScope = "own" | "global"`
-  - `type RuleEdit = { op: "add_prefilter"; rule: Prefilter } | { op: "remove_prefilter"; rule: Prefilter } | { op: "add_guidance"; line: string } | { op: "remove_guidance"; line: string } | { op: "set_standing"; rule: StandingRule } | { op: "remove_standing"; name: string }`
+  - `type RuleEdit = { op: "add_prefilter"; rule: Prefilter } | { op: "remove_prefilter"; rule: Prefilter } | { op: "add_guidance"; line: string } | { op: "remove_guidance"; line: string } | { op: "set_standing"; rule: StandingRule; was?: StandingRule | null } | { op: "remove_standing"; name: string; was?: StandingRule }` (`was` is what an inverse expects the file to hold under that name)
   - `class EditRefused extends Error`
   - `interface EditResult { text: string; inverse: RuleEdit; summary: string }`
   - `applyEdit(text: string, edit: RuleEdit): EditResult` (throws `EditRefused`)
@@ -705,18 +705,48 @@ describe("applyEdit", () => {
   it("adds a standing rule, replaces one of the same name, and removes one", () => {
     const added = applyEdit(HAND_WRITTEN, { op: "set_standing", rule: ack });
     expect(parseRuleFile(added.text).standing).toEqual([ack]);
-    expect(added.inverse).toEqual({ op: "remove_standing", name: "ack-issue" });
+    expect(added.inverse).toEqual({ op: "remove_standing", name: "ack-issue", was: ack });
 
     const changed: StandingRule = { ...ack, template: "Thank you, @{actor}." };
     const replaced = applyEdit(added.text, { op: "set_standing", rule: changed });
     expect(parseRuleFile(replaced.text).standing).toEqual([changed]);
-    expect(replaced.inverse).toEqual({ op: "set_standing", rule: ack });
+    expect(replaced.inverse).toEqual({ op: "set_standing", rule: ack, was: changed });
     expect(replaced.summary).toContain("It replaces the rule as it is now");
     expect(replaced.summary).toContain("Thanks, @{actor}.");
 
     const removed = applyEdit(replaced.text, { op: "remove_standing", name: "ack-issue" });
     expect(parseRuleFile(removed.text).standing).toEqual([]);
-    expect(removed.inverse).toEqual({ op: "set_standing", rule: changed });
+    expect(removed.inverse).toEqual({ op: "set_standing", rule: changed, was: null });
+  });
+
+  it("refuses an inverse when the standing rule it would undo has been changed since", () => {
+    const refused = (text: string, edit: RuleEdit) => {
+      try {
+        applyEdit(text, edit);
+      } catch (error) {
+        return error instanceof EditRefused ? error.message : String(error);
+      }
+      return "not refused";
+    };
+    const newer: StandingRule = { ...ack, template: "Someone else's newer text." };
+
+    // Added, then replaced by someone else: the removal no longer fits.
+    const added = applyEdit(HAND_WRITTEN, { op: "set_standing", rule: ack });
+    const replaced = applyEdit(added.text, { op: "set_standing", rule: newer });
+    expect(refused(replaced.text, added.inverse)).toContain("has been changed since");
+
+    // Replaced, then replaced again: putting the first one back would overwrite the newest.
+    const mine = applyEdit(added.text, { op: "set_standing", rule: { ...ack, template: "Mine." } });
+    const theirs = applyEdit(mine.text, { op: "set_standing", rule: newer });
+    expect(refused(theirs.text, mine.inverse)).toContain("has been changed since");
+
+    // Removed, then added again by someone else: restoring would overwrite it.
+    const removed = applyEdit(added.text, { op: "remove_standing", name: "ack-issue" });
+    const again = applyEdit(removed.text, { op: "set_standing", rule: newer });
+    expect(refused(again.text, removed.inverse)).toContain("has been changed since");
+
+    // An edit with no expectation of its own is made as before.
+    expect(parseRuleFile(applyEdit(replaced.text, { op: "remove_standing", name: "ack-issue" }).text).standing).toEqual([]);
   });
 
   it("is undone exactly by its inverse", () => {
@@ -779,14 +809,18 @@ import { parsePrefilter, parseRuleFile, parseStanding, problemText, type Prefilt
 /** Which file an edit is for: the Clot's own, or the one that applies to every Clot. */
 export type RuleScope = "own" | "global";
 
-/** One change to a rule file. `set_standing` adds a rule, or replaces the rule of the same name. */
+/**
+ * One change to a rule file. `set_standing` adds a rule, or replaces the rule of the same name.
+ * `was`, which an inverse carries, is the rule the file must hold under that name for the edit
+ * to be made (null: none). It keeps an undo from overwriting a rule that was changed since.
+ */
 export type RuleEdit =
   | { op: "add_prefilter"; rule: Prefilter }
   | { op: "remove_prefilter"; rule: Prefilter }
   | { op: "add_guidance"; line: string }
   | { op: "remove_guidance"; line: string }
-  | { op: "set_standing"; rule: StandingRule }
-  | { op: "remove_standing"; name: string };
+  | { op: "set_standing"; rule: StandingRule; was?: StandingRule | null }
+  | { op: "remove_standing"; name: string; was?: StandingRule };
 
 /** The edit cannot be made. The message says why, in words for the Clot and the user. */
 export class EditRefused extends Error {}
@@ -845,6 +879,12 @@ function tidy<T extends Prefilter>(rule: T): T {
 function samePrefilter(a: Prefilter, b: Prefilter): boolean {
   const fold = (text: string | undefined) => text?.toLowerCase();
   return a.kind === b.kind && fold(a.actor) === fold(b.actor) && fold(a.repo) === fold(b.repo) && fold(a.titleContains) === fold(b.titleContains);
+}
+
+function sameStanding(a: StandingRule | null, b: StandingRule | null): boolean {
+  if (a === null || b === null) return a === b;
+  const flat = (rule: StandingRule) => JSON.stringify([rule.name, tidy(rule.trigger), rule.via, rule.template]);
+  return flat(a) === flat(b);
 }
 
 /** Runs a schema check and turns its complaint into a refusal. */
@@ -929,14 +969,15 @@ export function applyEdit(text: string, edit: RuleEdit): EditResult {
       const parsed = checked(() => parseStanding(edit.rule));
       const rule: StandingRule = { name: parsed.name, trigger: tidy(parsed.trigger), via: parsed.via, template: parsed.template };
       const at = file.standing.findIndex((other) => other.name === rule.name);
+      if (edit.was !== undefined && !sameStanding(at < 0 ? null : file.standing[at], edit.was)) throw new EditRefused(`the standing rule "${rule.name}" has been changed since`);
       summary = describeEdit({ op: "set_standing", rule });
       if (at < 0) {
         list(doc, "standing").add(doc.createNode(rule));
-        inverse = { op: "remove_standing", name: rule.name };
+        inverse = { op: "remove_standing", name: rule.name, was: rule };
       } else {
         const old = file.standing[at];
         list(doc, "standing").set(at, doc.createNode(rule));
-        inverse = { op: "set_standing", rule: old };
+        inverse = { op: "set_standing", rule: old, was: rule };
         summary += `\nIt replaces the rule as it is now:\n${describeStanding(old)}`;
       }
       break;
@@ -944,9 +985,10 @@ export function applyEdit(text: string, edit: RuleEdit): EditResult {
     case "remove_standing": {
       const at = file.standing.findIndex((other) => other.name === edit.name);
       if (at < 0) throw new EditRefused(`there is no standing rule named "${edit.name}" in the file. It holds: ${file.standing.map((other) => other.name).join(", ") || "none"}`);
+      if (edit.was !== undefined && !sameStanding(file.standing[at], edit.was)) throw new EditRefused(`the standing rule "${edit.name}" has been changed since`);
       list(doc, "standing").delete(at);
-      inverse = { op: "set_standing", rule: file.standing[at] };
-      summary = describeEdit(edit);
+      inverse = { op: "set_standing", rule: file.standing[at], was: null };
+      summary = describeEdit({ op: "remove_standing", name: edit.name });
       break;
     }
   }
@@ -1253,8 +1295,10 @@ Expected: PASS.
 **Interfaces:**
 - Consumes: nothing new.
 - Produces, on `Store`:
-  - `interface ProposalRow { id: number; clot: string; channelId: string; channelName: string; scope: "own" | "global"; edit: string; summary: string }` (`edit` is JSON)
-  - `createProposal(p: Omit<ProposalRow, "id">): number`, `proposalByChannel(channelId: string): ProposalRow | undefined`, `openProposals(clot?: string): ProposalRow[]`, `deleteProposal(id: number): boolean`
+  - `interface ProposalRow { id: number; clot: string; channelId: string; channelName: string; sessionId: string | null; scope: "own" | "global"; edit: string; summary: string }` (`edit` is JSON; `sessionId` is the session it was opened in)
+  - `withdrawProposals(clot: string, proposals: ProposalRow[], note: (closed: ProposalRow[]) => string): ProposalRow[]` (closes them and adds one note, all or nothing)
+  - `SessionRow.steered: boolean`; `setSteered(id: string, steered: boolean): void`
+  - `createProposal(p: Omit<ProposalRow, "id" | "sessionId"> & { sessionId?: string | null }): number`, `proposalByChannel(channelId: string): ProposalRow | undefined`, `openProposals(clot?: string): ProposalRow[]`, `deleteProposal(id: number): boolean`
   - `interface NoteRow { seq: number; text: string }`; `addNote(clot: string, text: string): void`, `notes(clot: string): NoteRow[]`, `clearNotes(clot: string, upTo?: number): void`
   - `interface RuleEditRow { id: number; clot: string; file: string; inverse: string; summary: string }`; `logRuleEdit(e: Omit<RuleEditRow, "id">): void`, `lastRuleEdit(clot: string): RuleEditRow | undefined`, `markRuleEditUndone(id: number): void`
   - `hasSend(eventId: string, rule: string): boolean`, `claimSend(eventId: string, rule: string): boolean`, `setSendUrl(eventId: string, rule: string, url: string): void`, `releaseSend(eventId: string, rule: string): void`
@@ -1378,6 +1422,8 @@ In `src/store.ts`:
   interruptedKind: InboxKind;
   /** The event the cut-off turn was looking into, when it was an investigation. */
   interruptedEvent: string | null;
+  /** Whether a steered event joined the turn that is running, or that was cut off and is still to be picked up. */
+  steered: boolean;
   active: boolean;
 }
 ```
@@ -1405,6 +1451,8 @@ export interface ProposalRow {
   clot: string;
   channelId: string;
   channelName: string;
+  /** The session it was opened in: a proposal lasts as long as that session. Null in a row older than this column. */
+  sessionId: string | null;
   scope: "own" | "global";
   /** The edit, as JSON. */
   edit: string;
@@ -1496,6 +1544,8 @@ CREATE TABLE IF NOT EXISTS sends (
     this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("inbox", "event_id", "TEXT");
     this.addColumn("sessions", "interrupted_event", "TEXT");
+    this.addColumn("sessions", "steered", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("proposals", "session_id", "TEXT");
   }
 ```
 
@@ -1513,6 +1563,7 @@ CREATE TABLE IF NOT EXISTS sends (
 ```ts
     interruptedKind: r.interrupted_kind,
     interruptedEvent: r.interrupted_event ?? null,
+    steered: r.steered === 1,
     active: r.active === 1,
 ```
 
@@ -1530,7 +1581,7 @@ CREATE TABLE IF NOT EXISTS sends (
 }
 
 function toProposal(r: any): ProposalRow {
-  return { id: r.id, clot: r.clot, channelId: r.channel_id, channelName: r.channel_name, scope: r.scope, edit: r.edit, summary: r.summary };
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, channelName: r.channel_name, sessionId: r.session_id ?? null, scope: r.scope, edit: r.edit, summary: r.summary };
 }
 ```
 
@@ -1558,6 +1609,11 @@ function toProposal(r: any): ProposalRow {
     this.db
       .prepare("UPDATE sessions SET interrupted = ?, interrupted_kind = ?, interrupted_event = ? WHERE id = ?")
       .run(interrupted ? 1 : 0, interrupted ? kind : "message", interrupted ? eventId : null, id);
+  }
+
+  /** Records whether a steered event has joined the session's turn. It outlasts a cut-off turn and a restart, so the turn that picks the work up is still treated as one. */
+  setSteered(id: string, steered: boolean): void {
+    this.db.prepare("UPDATE sessions SET steered = ? WHERE id = ?").run(steered ? 1 : 0, id);
   }
 
   enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind; eventId?: string | null }): boolean {
@@ -1594,11 +1650,24 @@ function toProposal(r: any): ProposalRow {
   }
 
   /** Stores an open proposal and returns its ID. */
-  createProposal(p: Omit<ProposalRow, "id">): number {
+  createProposal(p: Omit<ProposalRow, "id" | "sessionId"> & { sessionId?: string | null }): number {
     const info = this.db
-      .prepare("INSERT INTO proposals (clot, channel_id, channel_name, scope, edit, summary) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(p.clot, p.channelId, p.channelName, p.scope, p.edit, p.summary);
+      .prepare("INSERT INTO proposals (clot, channel_id, channel_name, session_id, scope, edit, summary) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(p.clot, p.channelId, p.channelName, p.sessionId ?? null, p.scope, p.edit, p.summary);
     return Number(info.lastInsertRowid);
+  }
+
+  /**
+   * Closes several of a Clot's proposals as unanswered and leaves the Clot one note about them,
+   * all or nothing. Returns the ones this call closed: one that was answered a moment ago is not
+   * among them, and its answer stands.
+   */
+  withdrawProposals(clot: string, proposals: ProposalRow[], note: (closed: ProposalRow[]) => string): ProposalRow[] {
+    return this.db.transaction(() => {
+      const closed = proposals.filter((proposal) => this.deleteProposal(proposal.id));
+      if (closed.length > 0) this.addNote(clot, note(closed));
+      return closed;
+    })();
   }
 
   proposalByChannel(channelId: string): ProposalRow | undefined {
@@ -1688,7 +1757,8 @@ Takes an edit from the editor to the disk: validate, write, reload, commit, log.
 **Interfaces:**
 - Consumes: `applyEdit`, `EditRefused`, `type RuleEdit`, `type RuleScope` from `src/rulebook-edit.ts`; `Store.logRuleEdit`, `Store.lastRuleEdit`, `Store.markRuleEditUndone` from Task 5; `Rulebook.pathOf`, `Rulebook.load` from Task 2.
 - Produces, from `src/rule-writer.ts`:
-  - `type WriteResult = { ok: true; file: string; summary: string } | { ok: false; reason: string }` (`file` is `"global"` or a Clot's name)
+  - `type WriteResult = { ok: true; file: string; summary: string; unlogged?: true } | { ok: false; reason: string; retry?: true }` (`file` is `"global"` or a Clot's name; a failure left the file untouched, and `retry` means the disk failed, not the edit; `unlogged` means the edit stands but its undo record is not saved yet)
+  - `UNLOGGED_NOTE`, the sentence added to what the user and the Clot are told about an unlogged edit
   - `gitCommit(file: string, message: string): void`
   - `class RuleWriter` with `constructor(d: { rulebook: { pathOf(name: string): string; load(): void }; store: Store; commit?: (file: string, message: string) => void })`, `preview(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult`, `apply(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult`, `undo(clot: string): WriteResult`
 
@@ -1822,6 +1892,61 @@ describe("RuleWriter", () => {
     expect(parseRuleFile(read("graphite")).prefilters).toEqual([]);
   });
 
+  it("does not put back an older standing rule over one another Clot has set since", () => {
+    const rule = (template: string) => ({ op: "set_standing" as const, rule: { name: "ack", trigger: { kind: "issue_opened" as const }, via: "github_comment" as const, template } });
+    writer.apply("graphite", "global", rule("First."));
+    writer.apply("graphite", "global", rule("Graphite's."));
+    writer.apply("other", "global", rule("The other Clot's, approved later."));
+
+    const failed = writer.undo("graphite");
+    expect(failed.ok ? "" : failed.reason).toContain("has been changed since");
+    expect(parseRuleFile(read("global")).standing[0].template).toBe("The other Clot's, approved later.");
+    // That edit is skipped from now on; the one before it no longer fits either.
+    expect(writer.undo("graphite")).toMatchObject({ ok: false });
+    expect(parseRuleFile(read("global")).standing[0].template).toBe("The other Clot's, approved later.");
+  });
+
+  it("keeps an edit the next one to undo when the disk fails, and writes nothing", () => {
+    writer.apply("graphite", "own", { op: "add_prefilter", rule: { actor: "dependabot[bot]" } });
+    writer.apply("graphite", "own", { op: "add_guidance", line: "Billing is urgent." });
+    const before = read("graphite");
+
+    // A folder where the writer puts its temporary file: nothing can be written.
+    const inTheWay = path.join(dir, "graphite.yaml.tmp");
+    fs.mkdirSync(inTheWay);
+    const failed = writer.undo("graphite");
+    expect(failed).toMatchObject({ ok: false, retry: true });
+    expect(failed.ok ? "" : failed.reason).toContain("could not be undone just now");
+    expect(writer.apply("graphite", "own", { op: "add_guidance", line: "x" })).toMatchObject({ ok: false, retry: true });
+    expect(store.notes("graphite")).toEqual([]);
+    expect(read("graphite")).toBe(before);
+
+    fs.rmdirSync(inTheWay);
+    expect(writer.undo("graphite")).toMatchObject({ ok: true, summary: 'Undid: Add triage guidance: "Billing is urgent."' });
+    expect(parseRuleFile(read("graphite"))).toMatchObject({ prefilters: [{ actor: "dependabot[bot]" }], triage: [] });
+  });
+
+  it("says so when an edit's undo record cannot be saved, and does not undo an older edit in its place", () => {
+    let failing = false;
+    const flaky: Store = Object.create(store);
+    flaky.logRuleEdit = (edit) => {
+      if (failing) throw new Error("database is locked");
+      store.logRuleEdit(edit);
+    };
+    writer = new RuleWriter({ rulebook, store: flaky, commit: () => undefined });
+    writer.apply("graphite", "own", { op: "add_guidance", line: "Earlier." });
+
+    failing = true;
+    expect(writer.apply("graphite", "own", { op: "add_guidance", line: "Latest." })).toEqual({ ok: true, file: "graphite", summary: 'Add triage guidance: "Latest."', unlogged: true });
+    expect(writer.undo("graphite")).toMatchObject({ ok: false, retry: true });
+    expect(parseRuleFile(read("graphite")).triage).toEqual(["Earlier.", "Latest."]);
+
+    failing = false;
+    expect(writer.undo("graphite")).toMatchObject({ ok: true, summary: 'Undid: Add triage guidance: "Latest."' });
+    expect(writer.undo("graphite")).toMatchObject({ ok: true, summary: 'Undid: Add triage guidance: "Earlier."' });
+    expect(parseRuleFile(read("graphite")).triage).toEqual([]);
+  });
+
   it("commits in the rulebook's own repository", () => {
     writer = new RuleWriter({ rulebook, store });
     writer.apply("graphite", "own", { op: "add_guidance", line: "Billing is urgent." });
@@ -1845,10 +1970,19 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { applyEdit, EditRefused, type EditResult, type RuleEdit, type RuleScope } from "./rulebook-edit.js";
-import type { Store } from "./store.js";
+import type { RuleEditRow, Store } from "./store.js";
 
-/** What became of an edit. `file` is "global" or the name of a Clot. */
-export type WriteResult = { ok: true; file: string; summary: string } | { ok: false; reason: string };
+/**
+ * What became of an edit. `file` is "global" or the name of a Clot. An edit that was not made
+ * left the file as it was; `retry` says the cause was the disk and not the edit, so the same
+ * edit may go through later.
+ */
+export type WriteResult = { ok: true; file: string; summary: string; unlogged?: true } | { ok: false; reason: string; retry?: true };
+
+/** Added to what the user and the Clot are told about an edit that was made but whose undo record could not be saved. */
+export const UNLOGGED_NOTE = "Its undo record could not be saved yet, so `&rules undo` is not available until it can be.";
+
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** Commits one rule file in the rulebook's own repository, under a name of the daemon's. */
 export function gitCommit(file: string, message: string): void {
@@ -1871,13 +2005,30 @@ export interface RuleWriterDeps {
  * time whichever Clots they come from.
  */
 export class RuleWriter {
+  /** Undo records of edits that were made but could not be saved to the log, oldest first. */
+  private unlogged: Omit<RuleEditRow, "id">[] = [];
+
   constructor(private d: RuleWriterDeps) {}
+
+  /** Saves the undo records that are waiting, in order. Returns false while one still cannot be saved. */
+  private saveLog(): boolean {
+    while (this.unlogged.length > 0) {
+      try {
+        this.d.store.logRuleEdit(this.unlogged[0]);
+      } catch (error) {
+        console.error("[rulebook] an edit's undo record could not be saved:", error);
+        return false;
+      }
+      this.unlogged.shift();
+    }
+    return true;
+  }
 
   /** What an edit would do, without doing it. */
   preview(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult {
     const target = scope === "global" ? "global" : clot;
     const result = this.compute(target, edit);
-    return "reason" in result ? { ok: false, reason: result.reason } : { ok: true, file: target, summary: result.summary };
+    return "reason" in result ? result : { ok: true, file: target, summary: result.summary };
   }
 
   /** Makes an edit: checked, written, put in force, committed, and logged with the edit that undoes it. */
@@ -1887,44 +2038,60 @@ export class RuleWriter {
 
   /** Reverts the most recent edit made from chat through this Clot that has not been undone. */
   undo(clot: string): WriteResult {
+    // With a newer edit missing from the log, the latest one in it is not the latest edit.
+    if (!this.saveLog()) return { ok: false, reason: "The record of a recent edit could not be saved, so undo is not available right now. Nothing was changed; send the command again later.", retry: true };
     const last = this.d.store.lastRuleEdit(clot);
     if (!last) return { ok: false, reason: "There is no edit made from chat left to undo." };
-    // Marked first: an edit that can no longer be undone is skipped by the next undo instead of standing in its way.
-    this.d.store.markRuleEditUndone(last.id);
     const done = this.write(clot, last.file, JSON.parse(last.inverse) as RuleEdit, false);
     const what = last.summary.split("\n")[0];
+    // The disk failed, not the edit: it stays the next one to undo.
+    if (!done.ok && done.retry) return { ok: false, reason: `"${what}" could not be undone just now: ${done.reason}. Nothing was changed; send the command again.`, retry: true };
+    // Marked when it was undone, and also when it no longer can be: that edit is then skipped by the next undo instead of standing in its way.
+    this.d.store.markRuleEditUndone(last.id);
     if (!done.ok) return { ok: false, reason: `"${what}" could not be undone: ${done.reason}. Nothing was changed.` };
     // The command never reaches the Clot, which may still be acting on what it was told when the rule was made.
     this.d.store.addNote(clot, `The user undid this rule change, and it is no longer in force: ${what}. Whatever the user said when asking for it no longer applies either.`);
     return { ok: true, file: done.file, summary: `Undid: ${what}` };
   }
 
-  private compute(target: string, edit: RuleEdit): EditResult | { reason: string } {
+  private compute(target: string, edit: RuleEdit): EditResult | (WriteResult & { ok: false }) {
     const file = this.d.rulebook.pathOf(target);
     try {
       return applyEdit(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "", edit);
     } catch (error) {
-      if (error instanceof EditRefused) return { reason: error.message };
-      throw error;
+      if (error instanceof EditRefused) return { ok: false, reason: error.message };
+      return { ok: false, reason: `the file could not be read (${message(error)})`, retry: true };
     }
   }
 
+  /** Never throws. Up to the move that replaces the file, a failure leaves it untouched; after it, the edit stands whatever else fails. */
   private write(clot: string, target: string, edit: RuleEdit, log: boolean): WriteResult {
     const result = this.compute(target, edit);
-    if ("reason" in result) return { ok: false, reason: result.reason };
+    if ("reason" in result) return result;
     const file = this.d.rulebook.pathOf(target);
     // Written beside the file and moved over it, so the file is never seen half written.
     const temp = `${file}.tmp`;
-    fs.writeFileSync(temp, result.text);
-    fs.renameSync(temp, file);
-    this.d.rulebook.load();
     try {
+      fs.writeFileSync(temp, result.text);
+      fs.renameSync(temp, file);
+    } catch (error) {
+      try {
+        fs.rmSync(temp, { force: true });
+      } catch {
+        // Whatever is in the way stays; the next write reports it again.
+      }
+      return { ok: false, reason: `the file could not be written (${message(error)})`, retry: true };
+    }
+    try {
+      this.d.rulebook.load();
       (this.d.commit ?? gitCommit)(file, `${clot}: ${result.summary.split("\n")[0]}`);
     } catch (error) {
       console.error(`[rulebook] ${target}.yaml was changed but could not be committed:`, error);
     }
-    if (log) this.d.store.logRuleEdit({ clot, file: target, inverse: JSON.stringify(result.inverse), summary: result.summary });
-    return { ok: true, file: target, summary: result.summary };
+    if (!log) return { ok: true, file: target, summary: result.summary };
+    // Kept here until it is in the log, behind any that are still waiting, so the order of edits holds.
+    this.unlogged.push({ clot, file: target, inverse: JSON.stringify(result.inverse), summary: result.summary });
+    return this.saveLog() ? { ok: true, file: target, summary: result.summary } : { ok: true, file: target, summary: result.summary, unlogged: true };
   }
 }
 ```
@@ -1940,7 +2107,7 @@ Expected: PASS.
 
 **Files:**
 - Create: `src/proposals.ts`
-- Modify: `src/events/reply.ts`, `src/chat/names.ts`
+- Modify: `src/events/reply.ts`, `src/chat/names.ts`, `src/chat/adapter.ts`, `src/chat/discord.ts`, `src/chat/fake.ts`
 - Test: `tests/proposals.test.ts`, `tests/events.test.ts`, `tests/names.test.ts`
 
 **Interfaces:**
@@ -1994,12 +2161,17 @@ const USER = "user-1";
 class FakeWriter {
   refusePreview?: string;
   refuseApply?: string;
+  /** The disk fails: nothing is changed, and the same edit may go through later. */
+  diskFails = false;
+  throws = false;
   applied: { clot: string; scope: RuleScope; edit: RuleEdit }[] = [];
   preview(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult {
     if (this.refusePreview) return { ok: false, reason: this.refusePreview };
     return { ok: true, file: scope === "global" ? "global" : clot, summary: describeEdit(edit) };
   }
   apply(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult {
+    if (this.throws) throw new Error("boom");
+    if (this.diskFails) return { ok: false, reason: "the file could not be written (EACCES)", retry: true };
     if (this.refuseApply) return { ok: false, reason: this.refuseApply };
     this.applied.push({ clot, scope, edit });
     return { ok: true, file: scope === "global" ? "global" : clot, summary: describeEdit(edit) };
@@ -2166,6 +2338,109 @@ describe("Proposals", () => {
     expect(store.notes("graphite")).toHaveLength(1);
   });
 
+  it("keeps the question open when an approved edit could not be written, and applies it on the next yes", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    const channel = store.openProposals("graphite")[0].channelId;
+    writer.diskFails = true;
+
+    await proposals.onReply(reply(channel, "yes"));
+    expect(chat.postsIn(channel).at(-1)).toContain("could not be applied just now");
+    expect(store.openProposals("graphite")).toMatchObject([{ channelId: channel, sessionId: "s1", scope: "own" }]);
+    expect(chat.deleted).toEqual([]);
+    expect(said).toEqual([]);
+    expect(store.notes("graphite")).toEqual([]);
+
+    writer.diskFails = false;
+    await proposals.onReply(reply(channel, "yes"));
+    expect(writer.applied).toHaveLength(1);
+    expect(store.openProposals("graphite")).toEqual([]);
+    expect(chat.deleted).toEqual([channel]);
+  });
+
+  it("tells the user and the Clot, and does not try again, when applying fails in a way it cannot account for", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    const channel = store.openProposals("graphite")[0].channelId;
+    writer.throws = true;
+
+    await proposals.onReply(reply(channel, "yes"));
+    expect(said[0].text).toContain("Approved, but it could not be applied (it failed in an unexpected way (boom); check the file)");
+    expect(store.notes("graphite")[0].text).toContain("could not be applied");
+    expect(store.openProposals("graphite")).toEqual([]);
+    expect(chat.deleted).toEqual([channel]);
+  });
+
+  it("withdraws, at startup, the proposals of a session that has been replaced", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    await proposals.open("graphite", "own", guidance("Billing is urgent."));
+    const channels = store.openProposals("graphite").map((p) => p.channelId);
+    // The daemon stopped after the new session was saved and before the old one's proposals were closed.
+    store.createSession({ id: "s2", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1310"), seed: null });
+
+    await build().closeOrphans();
+    expect(store.openProposals("graphite")).toEqual([]);
+    expect(chat.deleted).toEqual(channels);
+    expect(store.notes("graphite")).toHaveLength(1);
+    expect(store.notes("graphite")[0].text).toContain("when the previous session closed");
+    expect(await proposals.onReply(reply(channels[0], "yes"))).toBe(false);
+    expect(writer.applied).toEqual([]);
+  });
+
+  it("withdraws a replaced session's proposal instead of applying a yes that arrives before the startup cleanup", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    const channel = store.openProposals("graphite")[0].channelId;
+    store.createSession({ id: "s2", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1310"), seed: null });
+
+    expect(await proposals.onReply(reply(channel, "yes"))).toBe(true);
+    expect(writer.applied).toEqual([]);
+    expect(said).toEqual([]);
+    expect(store.openProposals("graphite")).toEqual([]);
+    expect(chat.deleted).toEqual([channel]);
+    expect(store.notes("graphite")[0].text).toContain("when the previous session closed");
+  });
+
+  it("still answers a proposal from before sessions were recorded", async () => {
+    const channelId = await chat.createChannel(category, "graphite-rule");
+    store.createProposal({ clot: "graphite", channelId, channelName: "graphite-rule", scope: "own", edit: JSON.stringify(dropDependabot), summary: "Drop events" });
+    store.createSession({ id: "s2", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1310"), seed: null });
+    await proposals.onReply(reply(channelId, "yes"));
+    expect(writer.applied).toHaveLength(1);
+  });
+
+  it("closes every proposal of the session before it touches a channel", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    await proposals.open("graphite", "own", guidance("Billing is urgent."));
+    let openWhenFirstChannelGoes = -1;
+    const remove = chat.deleteChannel.bind(chat);
+    chat.deleteChannel = async (channelId) => {
+      if (openWhenFirstChannelGoes < 0) openWhenFirstChannelGoes = store.openProposals("graphite").length;
+      return remove(channelId);
+    };
+    await proposals.closeForSession("graphite");
+    expect(openWhenFirstChannelGoes).toBe(0);
+  });
+
+  it("tells a proposal's channel by what it is, not by its name, at startup", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    await proposals.open("graphite", "own", guidance("Billing is urgent."));
+    const [renamed, replaced] = store.openProposals("graphite");
+    chat.channels.find((channel) => channel.id === renamed.channelId)!.name = "ask-me-here";
+    chat.channels = chat.channels.filter((channel) => channel.id !== replaced.channelId);
+    await chat.createChannel(category, replaced.channelName);
+
+    await build().closeOrphans();
+    expect(store.openProposals("graphite").map((p) => p.id)).toEqual([renamed.id]);
+    expect(chat.deleted).toEqual([replaced.channelId]);
+  });
+
+  it("closes nothing at startup when it cannot find out which channels exist", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    chat.channelExists = async () => {
+      throw new Error("Discord is down");
+    };
+    await build().closeOrphans();
+    expect(store.openProposals("graphite")).toHaveLength(1);
+  });
+
   it("closes a proposal whose channel has disappeared, at startup", async () => {
     await proposals.open("graphite", "own", dropDependabot);
     await proposals.open("graphite", "own", guidance("Billing is urgent."));
@@ -2234,13 +2509,66 @@ export function ruleChannelName(project: string, existing: string[]): string {
 export function splitMessage(text: string, max = 2000): string[] {
 ```
 
+The chat adapter learns to say whether a channel is still there. In `src/chat/adapter.ts`:
+
+**Replace**
+
+```ts
+  deleteChannel(channelId: string): Promise<void>;
+```
+
+**With**
+
+```ts
+  deleteChannel(channelId: string): Promise<void>;
+  /** Whether the channel is still there. Throws when that cannot be found out. */
+  channelExists(channelId: string): Promise<boolean>;
+```
+
+In `src/chat/discord.ts`:
+
+**Replace**
+
+```ts
+  mention(userId: string): string {
+```
+
+**With**
+
+```ts
+  async channelExists(channelId: string): Promise<boolean> {
+    // The whole list, not the one channel: asking for a channel that is gone fails the same way a broken connection does.
+    return (await this.guild.channels.fetch()).has(channelId);
+  }
+
+  mention(userId: string): string {
+```
+
+In `src/chat/fake.ts`:
+
+**Replace**
+
+```ts
+  mention(userId: string): string {
+```
+
+**With**
+
+```ts
+  async channelExists(channelId: string): Promise<boolean> {
+    return this.channels.some((c) => c.id === channelId);
+  }
+
+  mention(userId: string): string {
+```
+
 - [ ] **Step 5: Write `src/proposals.ts`**
 
 ```ts
 import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
 import { ruleChannelName } from "./chat/names.js";
 import { matchYesNo, RULE_REPLIES, RULE_RETRY } from "./events/reply.js";
-import type { WriteResult } from "./rule-writer.js";
+import { UNLOGGED_NOTE, type WriteResult } from "./rule-writer.js";
 import type { RuleEdit, RuleScope } from "./rulebook-edit.js";
 import type { ProposalRow, Store } from "./store.js";
 
@@ -2307,7 +2635,7 @@ export class Proposals {
     } catch {
       return PROPOSAL_NOT_ASKED;
     }
-    const id = store.createProposal({ clot, channelId, channelName, scope, edit: json, summary: preview.summary });
+    const id = store.createProposal({ clot, channelId, channelName, sessionId: store.activeSession(clot)?.id ?? null, scope, edit: json, summary: preview.summary });
     try {
       await chat.post(channelId, `${chat.mention(this.d.userId)} ${clot} proposes a change to \`${preview.file}.yaml\`:\n\n${preview.summary}\n\n${RULE_REPLIES}`);
     } catch {
@@ -2322,6 +2650,13 @@ export class Proposals {
     const proposal = this.d.store.proposalByChannel(m.channelId);
     if (!proposal) return false;
     if (m.authorId !== this.d.userId) return true;
+    // A proposal lasts as long as its session. One left over from a session that has been
+    // replaced is withdrawn here, whatever the reply: startup may not have got to it yet.
+    const session = this.d.store.activeSession(proposal.clot)?.id;
+    if (proposal.sessionId !== null && session !== undefined && proposal.sessionId !== session) {
+      await this.withdraw(proposal.clot, [proposal], "when the previous session closed");
+      return true;
+    }
     const answer = matchYesNo(m.text);
     if (answer === undefined) {
       await this.d.chat.post(m.channelId, RULE_RETRY).catch(() => undefined);
@@ -2336,29 +2671,38 @@ export class Proposals {
     await this.withdraw(clot, this.d.store.openProposals(clot), "when the previous session closed");
   }
 
-  /** Closes the proposals whose channel no longer exists. Called once at startup. */
+  /**
+   * Closes the proposals that can no longer be answered. Called once at startup: those of a
+   * session that was replaced while the daemon was stopping, and those whose channel is gone.
+   */
   async closeOrphans(): Promise<void> {
     const byClot = new Map<string, ProposalRow[]>();
     for (const proposal of this.d.store.openProposals()) byClot.set(proposal.clot, [...(byClot.get(proposal.clot) ?? []), proposal]);
     for (const [clot, open] of byClot) {
-      const row = this.d.store.getClot(clot);
-      if (!row) continue;
-      const names = await this.d.chat.listChannelNames(row.categoryId).catch(() => undefined);
-      // Not knowing which channels exist is no reason to close anything.
-      if (names === undefined) continue;
-      await this.withdraw(clot, open.filter((proposal) => !names.includes(proposal.channelName)), "when their channel was removed");
+      const session = this.d.store.activeSession(clot)?.id;
+      const stale = open.filter((proposal) => session !== undefined && proposal.sessionId !== null && proposal.sessionId !== session);
+      await this.withdraw(clot, stale, "when the previous session closed");
+
+      const gone: ProposalRow[] = [];
+      for (const proposal of open.filter((other) => !stale.includes(other))) {
+        // The channel itself, not its name: a renamed channel is still the place to answer, and a new one of the same name is not.
+        // Not knowing whether it exists is no reason to close anything.
+        const exists = await this.d.chat.channelExists(proposal.channelId).catch(() => undefined);
+        if (exists === false) gone.push(proposal);
+      }
+      await this.withdraw(clot, gone, "when their channel was removed");
     }
   }
 
   private async withdraw(clot: string, open: ProposalRow[], when: string): Promise<void> {
-    const closed: string[] = [];
-    for (const proposal of open) {
-      // Closed first, and only whoever closed it goes on: an answer given a moment ago stands.
-      if (!this.d.store.deleteProposal(proposal.id)) continue;
-      closed.push(headline(proposal.summary));
-      await this.d.chat.deleteChannel(proposal.channelId).catch(() => undefined);
-    }
-    if (closed.length > 0) this.d.store.addNote(clot, `These rule changes you proposed were still unanswered ${when}, and were withdrawn: ${closed.join("; ")}`);
+    // Closed in one step before any channel is touched, so stopping part-way leaves none of them
+    // answerable. Only those this call closed go on: an answer given a moment ago stands.
+    const closed = this.d.store.withdrawProposals(
+      clot,
+      open,
+      (rows) => `These rule changes you proposed were still unanswered ${when}, and were withdrawn: ${rows.map((row) => headline(row.summary)).join("; ")}`,
+    );
+    for (const proposal of closed) await this.d.chat.deleteChannel(proposal.channelId).catch(() => undefined);
   }
 
   private async resolve(proposal: ProposalRow, answer: "yes" | "no"): Promise<void> {
@@ -2370,10 +2714,24 @@ export class Proposals {
       await this.d.say(proposal.clot, `Declined: ${what}`);
     } else {
       // Applied to the file as it is now, which may not be as it was when the question was asked.
-      const done = this.d.writer.apply(proposal.clot, proposal.scope, JSON.parse(proposal.edit) as RuleEdit);
+      let done: WriteResult;
+      try {
+        done = this.d.writer.apply(proposal.clot, proposal.scope, JSON.parse(proposal.edit) as RuleEdit);
+      } catch (error) {
+        // Whether the file was changed is not known, so the edit is not tried again.
+        console.error(`[${proposal.clot}] applying an approved rule change failed:`, error);
+        done = { ok: false, reason: `it failed in an unexpected way (${error instanceof Error ? error.message : String(error)}); check the file` };
+      }
+      if (!done.ok && done.retry) {
+        // Nothing was changed and the cause was not the edit: the question is open again, in the same channel.
+        const { id: _id, ...again } = proposal;
+        store.createProposal(again);
+        await this.d.chat.post(proposal.channelId, `That could not be applied just now (${done.reason}), and nothing was changed. Reply \`yes\` to try again, or \`no\` to decline it.`).catch(() => undefined);
+        return;
+      }
       if (done.ok) {
         store.addNote(proposal.clot, `The user approved the rule change you proposed, and it is in force: ${what}`);
-        await this.d.say(proposal.clot, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}`);
+        await this.d.say(proposal.clot, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}${done.unlogged ? `\n${UNLOGGED_NOTE}` : ""}`);
       } else {
         store.addNote(proposal.clot, `The user approved the rule change you proposed, but it could not be applied (${done.reason}): ${what}`);
         await this.d.say(proposal.clot, `Approved, but it could not be applied (${done.reason}), so nothing was changed: ${what}`);
@@ -2791,7 +3149,7 @@ Expected: FAIL: `src/tools.ts` does not exist.
 ```ts
 import { threadNumber, type Sender } from "./events/github-comment.js";
 import type { ClotEvent } from "./events/types.js";
-import type { WriteResult } from "./rule-writer.js";
+import { UNLOGGED_NOTE, type WriteResult } from "./rule-writer.js";
 import { describeMatch, describeStanding, type RuleEdit, type RuleScope } from "./rulebook-edit.js";
 import type { Prefilter, RuleFile, StandingRule } from "./rulebook.js";
 import { checkSend, matchStanding, MAX_CHANGED_WORDS } from "./standing.js";
@@ -2867,8 +3225,9 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
     if (mustPropose(ctx, file, edit)) return d.proposals.open(ctx.clot, file, edit);
     const done = d.writer.apply(ctx.clot, file, edit);
     if (!done.ok) return `Not applied: ${done.reason}.`;
-    await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}`);
-    return `Applied, and in force now. The user has been shown it: ${done.summary}`;
+    const caveat = done.unlogged ? `\n${UNLOGGED_NOTE}` : "";
+    await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}${caveat}`);
+    return `Applied, and in force now. The user has been shown it: ${done.summary}${caveat}`;
   };
 
   return {
@@ -3607,6 +3966,81 @@ describe("Clot, stage 2b", () => {
     expect(contexts[1].steered()).toBe(false);
   });
 
+  it("still treats a turn as joined by a steered event when it picks up one the usage limit cut off", async () => {
+    await rebuild();
+    const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+    runner.script = [{ hold: true, ok: false, limit: { resetsAt } }, {}, {}];
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    clot.steerEvent("[event] CI failed");
+    runner.release!();
+    await first;
+    expect(store.activeSession("graphite")).toMatchObject({ interrupted: true, steered: true });
+
+    now = new Date(resetsAt * 1000 + 5000);
+    timers[0].fn();
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
+    expect(contexts[1]).toMatchObject({ kind: "work" });
+    expect(contexts[1].steered()).toBe(true);
+    await vi.waitFor(() => expect(store.activeSession("graphite")).toMatchObject({ interrupted: false, steered: false }));
+
+    await clot.onMessage(msg("and the footer"));
+    expect(contexts[2].steered()).toBe(false);
+  });
+
+  it("keeps that state through an investigation that runs before the cut-off work is picked up", async () => {
+    await rebuild();
+    const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+    runner.script = [{ hold: true, ok: false, limit: { resetsAt } }, {}, {}, {}];
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    clot.steerEvent("[event] CI failed");
+    runner.release!();
+    await first;
+
+    // While paused: another event is queued, and then the user asks for the work to go on.
+    await clot.queueEvent(event("d-2"), "Another issue.", false);
+    await clot.onMessage(msg("continue the original job"));
+    now = new Date(resetsAt * 1000 + 5000);
+    timers[0].fn();
+
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(3));
+    expect(contexts[1]).toMatchObject({ kind: "investigation" });
+    expect(contexts[2]).toMatchObject({ kind: "work" });
+    expect(contexts[2].steered()).toBe(true);
+    await vi.waitFor(() => expect(store.activeSession("graphite")!.steered).toBe(false));
+
+    await clot.onMessage(msg("something new"));
+    expect(contexts[3].steered()).toBe(false);
+  });
+
+  it("does not carry an event steered into an investigation over to the user's next turn", async () => {
+    await rebuild();
+    runner.script = [{ hold: true }, {}];
+    await clot.queueEvent(event("d-1"), "Login fails.");
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    clot.steerEvent("[event] CI failed");
+    expect(contexts[0].steered()).toBe(true);
+    runner.release!();
+    await vi.waitFor(() => expect(clot.isBusy()).toBe(false));
+
+    await clot.onMessage(msg("build the page"));
+    expect(contexts[1]).toMatchObject({ kind: "work" });
+    expect(contexts[1].steered()).toBe(false);
+  });
+
+  it("still treats the turn as joined by a steered event when a restart cut it off", async () => {
+    await rebuild();
+    const m = msg("build the page");
+    store.enqueue({ id: m.id, clot: "graphite", channelId: m.channelId, text: m.text, receivedAt: 1 });
+    store.setInboxStatus(m.id, "running");
+    store.setSteered(store.activeSession("graphite")!.id, true);
+
+    await rebuild();
+    expect(runner.calls).toHaveLength(1);
+    expect(contexts[0].steered()).toBe(true);
+  });
+
   it("tells the tools when the turn is a brainstorm turn", async () => {
     await rebuild();
     router.next = [{ effort: "low", modeChange: "enter_brainstorm" }];
@@ -3731,6 +4165,21 @@ describe("Clot, stage 2b", () => {
     expect(closed).toHaveLength(1);
     expect(store.notes("graphite")).toEqual([]);
   });
+
+  it("carries no notes into a session whose unused recap the user discards", async () => {
+    await rebuild();
+    runner.script = [{}, { say: ["RECAP: built the footer."] }, {}];
+    await clot.onMessage(msg("do the thing"));
+    await clot.onMessage(msg("&close"));
+    store.addNote("graphite", "These rule changes you proposed were withdrawn: X");
+    const channel = store.activeSession("graphite")!.channelId;
+
+    await clot.onMessage(msg("&close nosummary"));
+    expect(chat.postsIn(channel).at(-1)).toBe("Recap discarded. This session now starts from scratch.");
+    expect(store.notes("graphite")).toEqual([]);
+    await clot.onMessage(msg("something unrelated"));
+    expect(runner.calls[2].prompt).toBe("something unrelated");
+  });
 });
 ```
 
@@ -3853,6 +4302,8 @@ function instantCommand(command: Command): InstantCommand | undefined {
   private liveLocked = false;
   /** Whether a steered event has joined the running turn. From then on the turn holds text the user did not write. */
   private liveSteered = false;
+  /** Whether the running turn is the investigation of an event. */
+  private liveIsEvent = false;
   /** The last of the daemon's notes that the running turn was given, or 0 when it was given none. */
   private liveNotes = 0;
   private draining = false;
@@ -3876,6 +4327,9 @@ function instantCommand(command: Command): InstantCommand | undefined {
     if (!this.live || this.d.store.nextPending(this.d.name)) return false;
     if (!this.live.push(text)) return false;
     this.liveSteered = true;
+    // Kept with the session while the user's own work is what it joined: if that turn is cut off,
+    // the turn that picks the work up holds the event too. An investigation proposes anyway.
+    if (!this.liveIsEvent) this.d.store.setSteered(this.d.store.activeSession(this.d.name)!.id, true);
     return true;
   }
 ```
@@ -3945,6 +4399,23 @@ function instantCommand(command: Command): InstantCommand | undefined {
 **Replace**
 
 ```ts
+    store.setInterrupted(session.id, false);
+    store.finishRunning(name);
+```
+
+**With**
+
+```ts
+    store.setInterrupted(session.id, false);
+    // The user's work that a steered event joined is over when a turn of the user's own ends: one
+    // the usage limit cut off is picked up again, and an investigation in between is not that work.
+    if (!isEvent && !result.limit) store.setSteered(session.id, false);
+    store.finishRunning(name);
+```
+
+**Replace**
+
+```ts
       store.setInterrupted(session.id, true, row.kind);
 ```
 
@@ -3994,6 +4465,7 @@ function instantCommand(command: Command): InstantCommand | undefined {
     const standing = event === undefined ? [] : (this.d.standingFor?.(name, event) ?? []);
     store.setInboxStatus(row.id, "running");
     this.liveLocked = true;
+    this.liveIsEvent = true;
     this.liveSteered = false;
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
@@ -4051,7 +4523,10 @@ function instantCommand(command: Command): InstantCommand | undefined {
     });
 
     this.liveLocked = newMode === "brainstorm";
-    this.liveSteered = false;
+    this.liveIsEvent = false;
+    // Still set when the work a steered event had joined was cut off, by the usage limit or a
+    // restart, and has not ended since: this turn picks that work up, whatever ran in between.
+    this.liveSteered = session.steered;
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt,
@@ -4087,6 +4562,25 @@ function instantCommand(command: Command): InstantCommand | undefined {
     // unless it starts with nothing carried over.
     await this.d.onSessionClosed?.(name).catch((error) => console.error(`[${name}] closing the session's proposals failed:`, error));
     if (!summary) store.clearNotes(name);
+```
+
+A session whose unused recap the user discards also starts with nothing carried over:
+
+**Replace**
+
+```ts
+        store.clearSeed(session.id);
+        store.setMode(name, "action");
+        store.clearTail(name);
+```
+
+**With**
+
+```ts
+        store.clearSeed(session.id);
+        store.setMode(name, "action");
+        store.clearTail(name);
+        store.clearNotes(name);
 ```
 
 - [ ] **Step 12: Run the tests to see them pass**
