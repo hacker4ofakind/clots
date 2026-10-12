@@ -24,7 +24,21 @@ it("merges the config file and the environment", () => {
     githubToken: "gh",
     webhookSecret: "w",
     rolloverPercent: 65,
+    home: false,
+    maxProposals: 3,
   });
+});
+
+it("reads the home Clot and the limit on open proposals", () => {
+  expect(loadConfig({ ...json, home: true }, { ...env, CLOTS_MAX_PROPOSALS: "5" })).toMatchObject({ home: true, maxProposals: 5 });
+});
+
+it("rejects a limit on open proposals that is not a whole number of at least one", () => {
+  for (const bad of ["0", "-1", "2.5", "many"]) expect(() => loadConfig(json, { ...env, CLOTS_MAX_PROPOSALS: bad })).toThrow("CLOTS_MAX_PROPOSALS");
+});
+
+it("keeps the names home and global for the daemon's own use", () => {
+  for (const name of ["home", "global"]) expect(() => loadConfig({ ...json, clots: [{ name, repoUrl: "https://github.com/o/r.git" }] }, env)).toThrow();
 });
 
 it("reads the rollover override", () => {

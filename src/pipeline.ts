@@ -27,6 +27,14 @@ export interface PipelineDeps {
   schedule: (ms: number, fn: () => void) => () => void;
 }
 
+/**
+ * Picks the Clot for a repository: the one bound to it, or the home Clot, when there is one,
+ * for a repository no Clot is bound to.
+ */
+export function routeByRepo(bound: Map<string, string>, home: string | undefined): (repo: string) => string | undefined {
+  return (repo) => bound.get(repo) ?? home;
+}
+
 /** Takes a stored event from arrival to its outcome: dropped, held, asked about, or queued for the Clot. */
 export class Pipeline {
   private held: Hold;
@@ -61,7 +69,7 @@ export class Pipeline {
     const groups = new Map<string, { clot: string; events: ClotEvent[] }>();
     for (const event of this.d.store.eventsWithStatus("held")) {
       if (event.clot === null) continue;
-      const key = `${event.clot}\n${event.subject}`;
+      const key = `${event.clot}\n${event.repo}\n${event.subject}`;
       const group = groups.get(key) ?? { clot: event.clot, events: [] };
       group.events.push(event);
       groups.set(key, group);

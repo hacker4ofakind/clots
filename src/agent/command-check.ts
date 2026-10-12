@@ -191,6 +191,16 @@ const LOCKED_TOOLS = new Set([
 /** Tools removed from a locked turn altogether, so the model does not reach for them. */
 export const LOCK_REMOVED_TOOLS = ["Edit", "Write", "NotebookEdit"];
 
+/** The name under which the daemon's own tools are given to a turn. */
+export const DAEMON_TOOL_SERVER = "clots";
+
+/**
+ * How the daemon's tools are named in a turn. They run in the daemon, not in the container,
+ * and each enforces its own limits: an edit made in a locked turn is only ever proposed, and a
+ * send happens only under a standing rule the user approved.
+ */
+export const DAEMON_TOOL_PREFIX = `mcp__${DAEMON_TOOL_SERVER}__`;
+
 /** The daemon's answer to a tool request made during a locked turn. */
 export function lockDecision(toolName: string, input: Record<string, unknown>, testCommand?: string): Verdict {
   if (toolName === "Bash") {
@@ -198,7 +208,7 @@ export function lockDecision(toolName: string, input: Record<string, unknown>, t
     const verdict = checkCommand(input.command, testCommand);
     return verdict.ok ? OK : no(`Refused: ${verdict.reason}. While locked, only read-only commands run; nothing can be changed or sent.`);
   }
-  if (LOCKED_TOOLS.has(toolName)) return OK;
+  if (LOCKED_TOOLS.has(toolName) || toolName.startsWith(DAEMON_TOOL_PREFIX)) return OK;
   return no(`Refused: ${toolName} is not available while locked. Nothing can be changed or sent until the lock is off.`);
 }
 

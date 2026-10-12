@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Clot } from "../src/clot.js";
+import { Clot, type ClotDeps } from "../src/clot.js";
+import type { DaemonTools, TurnContext } from "../src/tools.js";
 import { Store } from "../src/store.js";
 import { FakeChat } from "../src/chat/fake.js";
 import type { AgentRunner, TurnHandle, TurnRequest, TurnResult } from "../src/agent/runner.js";
@@ -15,6 +16,8 @@ interface Step {
   limit?: { resetsAt: number };
   hold?: boolean;
   activity?: TurnActivity;
+  /** Something the turn does while it runs, such as calling one of its tools. */
+  act?: (req: TurnRequest) => Promise<void> | void;
 }
 
 class FakeRunner implements AgentRunner {
@@ -29,6 +32,7 @@ class FakeRunner implements AgentRunner {
     const step = this.script.shift() ?? {};
     const done = (async (): Promise<TurnResult> => {
       for (const line of step.say ?? ["ok"]) req.onText(line);
+      if (step.act) await step.act(req);
       if (step.hold) await new Promise<void>((resolve) => (this.release = resolve));
       return {
         sessionId: req.resume ?? req.newSessionId ?? "",
@@ -68,6 +72,8 @@ let ids: number;
 let timers: { ms: number; fn: () => void }[];
 let seq: number;
 let turnEnds: string[];
+/** Dependencies a test adds to the Clot it builds. */
+let extra: Partial<ClotDeps>;
 
 function msg(text: string, overrides: Partial<InboundMessage> = {}): InboundMessage {
   seq += 1;
@@ -88,6 +94,7 @@ function build(rolloverPercent = 65): Clot {
     newId: () => `sess-${++ids}`,
     schedule: (ms, fn) => void timers.push({ ms, fn }),
     onTurnEnd: async (name) => void turnEnds.push(name),
+    ...extra,
   });
 }
 
@@ -121,6 +128,7 @@ beforeEach(async () => {
   seq = 0;
   timers = [];
   turnEnds = [];
+  extra = {};
   clot = build();
   await clot.init();
 });
@@ -896,5 +904,177 @@ describe("Clot", () => {
     expect(runner.calls).toHaveLength(1);
     expect(runner.calls[0].prompt).toContain("cut off");
     expect(runner.calls[0].prompt).toContain("half done");
+  });
+});
+
+describe("Clot, stage 2b", () => {
+  let contexts: TurnContext[];
+  let closed: { clot: string; session: string }[];
+
+  const fakeTools: DaemonTools = { show: async () => "", prefilter: async () => "", guidance: async () => "", standing: async () => "", send: async () => "" };
+
+  /** Builds the Clot again, with the daemon's tools and whatever else the test adds. */
+  async function rebuild(more: Partial<ClotDeps> = {}): Promise<void> {
+    contexts = [];
+    closed = [];
+    extra = {
+      makeTools: (ctx) => {
+        contexts.push(ctx);
+        return fakeTools;
+      },
+      onSessionClosed: async (name) => void closed.push({ clot: name, session: store.activeSession(name)!.id }),
+      ...more,
+    };
+    clot = build();
+    await clot.init();
+  }
+
+  it("gives a working turn its tools, and marks the turn once a steered event has joined it", async () => {
+    await rebuild();
+    runner.script = [{ hold: true }, {}];
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+
+    expect(runner.calls[0].tools).toBe(fakeTools);
+    expect(contexts[0]).toMatchObject({ clot: "graphite", kind: "work" });
+    expect(contexts[0].event).toBeUndefined();
+    expect(contexts[0].steered()).toBe(false);
+
+    runner.acceptPushes = false;
+    clot.steerEvent("[event] refused");
+    expect(contexts[0].steered()).toBe(false);
+    runner.acceptPushes = true;
+    clot.steerEvent("[event] CI failed");
+    expect(contexts[0].steered()).toBe(true);
+
+    runner.release!();
+    await first;
+    await clot.onMessage(msg("and the footer"));
+    expect(contexts[1].steered()).toBe(false);
+  });
+
+  it("tells the tools when the turn is a brainstorm turn", async () => {
+    await rebuild();
+    router.next = [{ effort: "low", modeChange: "enter_brainstorm" }];
+    await clot.onMessage(msg("let's brainstorm the pricing"));
+    expect(contexts[0]).toMatchObject({ kind: "brainstorm" });
+    expect(runner.calls[0]).toMatchObject({ locked: true, tools: fakeTools });
+  });
+
+  it("gives an investigation its event, and names the standing rules that apply to it", async () => {
+    const asked: string[] = [];
+    await rebuild({
+      standingFor: (name, e) => {
+        asked.push(`${name}:${e.id}`);
+        return [{ rule: { name: "ack-issue", trigger: { kind: "issue_opened" }, via: "github_comment", template: "Thanks, @{actor}." }, from: e, filled: "Thanks, @someone." }];
+      },
+    });
+    await clot.queueEvent(event("d-1"), "Login fails.");
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
+
+    expect(contexts[0]).toMatchObject({ kind: "investigation" });
+    expect(contexts[0].event?.id).toBe("d-1");
+    expect(asked).toEqual(["graphite:d-1"]);
+    expect(runner.calls[0].prompt).toContain("Standing rules that apply to this event");
+    expect(runner.calls[0].prompt).toContain("- ack-issue: Thanks, @someone.");
+  });
+
+  it("keeps an investigation tied to its event when the usage limit cuts it off, across a restart too", async () => {
+    await rebuild();
+    const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+    runner.script = [{ ok: false, limit: { resetsAt } }, {}];
+    await clot.queueEvent(event("d-1"), "Login fails.");
+    await vi.waitFor(() => expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt));
+    expect(store.activeSession("graphite")).toMatchObject({ interruptedKind: "event", interruptedEvent: "d-1" });
+
+    now = new Date(resetsAt * 1000 + 5000);
+    timers = [];
+    await rebuild();
+    timers[0].fn();
+
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
+    expect(contexts[0]).toMatchObject({ kind: "investigation" });
+    expect(contexts[0].event?.id).toBe("d-1");
+  });
+
+  it("puts the daemon's notes in front of the next turn, and clears them once a turn has read them", async () => {
+    await rebuild();
+    store.addNote("graphite", "The user declined X.");
+    runner.script = [{ ok: false, say: [], contextPercent: 0 }, {}, {}];
+
+    await clot.onMessage(msg("one"));
+    expect(runner.calls[0].prompt).toContain("[Since your last turn:\n- The user declined X.]");
+    expect(store.notes("graphite")).toHaveLength(1);
+
+    await clot.onMessage(msg("two"));
+    expect(runner.calls[1].prompt).toContain("- The user declined X.");
+    expect(store.notes("graphite")).toEqual([]);
+
+    await clot.onMessage(msg("three"));
+    expect(runner.calls[2].prompt).toBe("three");
+  });
+
+  it("keeps a note that arrived while the turn was running, for the turn after", async () => {
+    await rebuild();
+    store.addNote("graphite", "early");
+    runner.script = [{ act: () => store.addNote("graphite", "late") }, {}];
+    await clot.onMessage(msg("one"));
+    expect(store.notes("graphite").map((note) => note.text)).toEqual(["late"]);
+    await clot.onMessage(msg("two"));
+    expect(runner.calls[1].prompt).toContain("- late");
+  });
+
+  it("answers &rules and &rules undo at once, without the model, also while a turn runs", async () => {
+    const undone: string[] = [];
+    await rebuild({
+      rules: {
+        list: (name) => `Rules in force for ${name}`,
+        undo: (name) => {
+          undone.push(name);
+          return "Undid: X";
+        },
+      },
+    });
+    const channel = store.activeSession("graphite")!.channelId;
+
+    await clot.onMessage(msg("&rules"));
+    expect(chat.postsIn(channel).at(-1)).toBe("Rules in force for graphite");
+    await clot.onMessage(msg("&rules undo"));
+    expect(chat.postsIn(channel).at(-1)).toBe("Undid: X");
+    await clot.onMessage(msg("&rules redo"));
+    expect(chat.postsIn(channel).at(-1)).toContain("`&rules undo`");
+    expect(runner.calls).toHaveLength(0);
+    expect(router.inputs).toHaveLength(0);
+
+    runner.script = [{ hold: true }];
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    await clot.onMessage(msg("&rules undo"));
+    expect(undone).toEqual(["graphite", "graphite"]);
+    expect(runner.pushes).toEqual([]);
+    runner.release!();
+    await first;
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("closes the session's proposals when it rolls over or is closed, once the new session exists", async () => {
+    await rebuild();
+    runner.script = [{ contextPercent: 70 }, { say: ["RECAP: built the footer."] }, {}, { say: ["RECAP: more."] }];
+    await clot.onMessage(msg("do the thing"));
+    expect(closed).toEqual([{ clot: "graphite", session: "sess-2" }]);
+
+    store.addNote("graphite", "These rule changes you proposed were withdrawn: X");
+    await clot.onMessage(msg("carry on"));
+    await clot.onMessage(msg("&close"));
+    expect(closed.map((c) => c.session)).toEqual(["sess-2", "sess-3"]);
+  });
+
+  it("carries no notes into a session that starts from scratch", async () => {
+    await rebuild();
+    await clot.onMessage(msg("do the thing"));
+    store.addNote("graphite", "The user declined X.");
+    await clot.onMessage(msg("&close nosummary"));
+    expect(closed).toHaveLength(1);
+    expect(store.notes("graphite")).toEqual([]);
   });
 });

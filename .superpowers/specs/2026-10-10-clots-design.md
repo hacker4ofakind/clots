@@ -6,8 +6,8 @@ Status: approved in brainstorming. Stages 1 and 2a are implemented; stage 2b is 
 ## 1. What Clots is
 
 Clots are always-on agents built on Claude Code, in the spirit of OpenAI's dots and
-Grok Bot. Each opted-in project gets one Clot, plus one "home" Clot for things that
-belong to no project. A Clot:
+Grok Bot. Each opted-in project gets one Clot, and an optional "home" Clot takes
+what belongs to no project. A Clot:
 
 - is triggered by events from connected services, by the user's chat messages, and
   by a 90-minute clock;
@@ -54,7 +54,8 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Session manager | Start a Clot's process for a turn, resume its session, apply effort and mode, stop the process afterwards. Enforce one heavy job at a time per host. | Agent SDK, Docker |
 | Clot container | The Clot's computer: repo clone, Chromium with a persistent profile, live view, scoped credentials, its own Claude login, a copy of the user's Claude setup. | Image for arm64 and x64 |
 | Commands | Messages that start with `&`. Handled by the daemon before routing; never passed to the model. | Session manager |
-| Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container. | Rulebook, chat adapter |
+| Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container, and are made for each turn, so each call knows what kind of turn it is in. | Rulebook, chat adapter |
+| Proposals | Puts a rule change to the user in a temporary channel and carries out the answer. | Chat adapter, rulebook |
 | Chat adapter | One interface for all chat platforms. Discord is the default and the first built. | Platform bot credentials |
 | Sweep | A throwaway session every 90 minutes that reports only what changed. | Recap, rulebook |
 | `clots` CLI | `clots add`, secret entry, status. Runs on the PC and talks to the daemon. | Network path to the Pi |
@@ -146,7 +147,7 @@ run, the same failure reported again for the pull request, a comment from each
 deploy service. Investigated one by one they would produce the same findings
 several times over.
 
-- Automated events are held, grouped by Clot and subject. A group is released 60
+- Automated events are held, grouped by Clot, repository and subject. A group is released 60
   seconds after its last event and at most 120 seconds after its first; both are
   configurable.
 - Within a group the same CI failure counts once. If one event is left it goes on
@@ -234,7 +235,8 @@ second router.
 
 - Each source is bound to one project at setup. Sources that belong to no project
   are bound to the home Clot. A GitHub repository is bound to the Clot whose
-  `repoUrl` names it.
+  `repoUrl` names it; an event from a repository no Clot is bound to goes to the
+  home Clot, and is discarded when there is none.
 - A shared source (one inbox or one Stripe account serving several projects) carries
   several bindings, each with a deterministic match condition: recipient alias,
   sender domain, subject keyword, product or price ID.
@@ -246,27 +248,71 @@ second router.
 - Readable files in a folder and git repository of their own, apart from the
   Clots code: `global.yaml` for every Clot and `<clot>.yaml` for one. The daemon
   creates the folder and its starter files when they are missing.
-- Contents: pre-filters, routing match rules, plain-language triage guidance,
-  urgency markers, standing-rule templates, watch recipes. A pre-filter drops an
-  event when every field it names matches: kind, actor, and text the title
-  contains.
+- Contents: pre-filters, routing match rules, triage guidance as a list of
+  plain-language lines, urgency markers, standing rules, watch recipes. A
+  pre-filter drops an event when every field it names matches: kind, actor,
+  repository, and text the title contains.
 - The daemon reloads a file when it changes. A file that cannot be read or does
   not fit the schema is ignored: its last good version stays in force and the user
   is told once.
-- Edits the user asks for in chat are applied immediately and the resulting rule is
-  shown.
-- Edits the Clot suggests need the user's yes.
-- Standing rules always need explicit confirmation, whoever raised them.
-- All edits go through a daemon tool, so the Clot cannot change the rulebook from
-  inside its container.
+- All edits from chat go through daemon tools, so the Clot cannot change the
+  rulebook from inside its container. The files can still be edited by hand.
+
+### Editing the rulebook from chat
+
+The daemon decides whether an edit is applied or put to the user. The Clot cannot
+choose.
+
+- **Applied at once:** a pre-filter or a triage line in the Clot's own file, in a
+  working turn the user started that no steered event has joined. The daemon
+  posts the resulting rule in the Clot's channel.
+- **A proposal, needing the user's yes:** any edit made in an investigation, in a
+  brainstorm turn, or in a turn a steered event has joined; any edit to
+  `global.yaml`; and any standing rule added, replaced or removed. These are the
+  turns that are locked or that hold text the user did not write, and the edits
+  that reach beyond one Clot or let it send.
+- **How a proposal is answered:** like a steering question (section 3). The
+  daemon opens a temporary channel in the Clot's category (`<clot>-rule`),
+  mentions the user and shows the exact edit. `yes`, `sure`, `do that` or `yeah`
+  applies it; `no`, `dont` or `not at all` declines it; anything else repeats the
+  question. The reply never reaches the model. The channel is deleted when the
+  answer has been carried out.
+- **What the Clot learns:** the tool returns at once and the Clot does not wait.
+  The outcome is posted in its live channel and placed as a note in front of its
+  next turn. A note starts no turn.
+- **Limits:** a proposal lasts as long as its session and is closed as unanswered
+  when the session closes or rolls over. A Clot may have three open, or the
+  number in `CLOTS_MAX_PROPOSALS`.
+- **When a Clot suggests a rule unasked:** only on a clear pattern (the same kind
+  of event dismissed more than once, or a stated standing preference), with the
+  reason in one line, and never again once declined.
+- **History:** every applied edit is checked against the schema, written so that
+  comments and hand-written parts survive, committed in the rulebook's
+  repository, and logged with the edit that undoes it (`&rules undo`, section 6).
 
 ### Standing rules
 
-A standing rule lets the Clot send a message without approval. It consists of an
-exact template and a named trigger. A send is allowed only if at most 5 words
-differ from the template. The `send_from_template` daemon tool fills the template
-from fields of the triggering event, counts the changed words, and refuses anything
-over the limit or outside the trigger.
+A standing rule lets the Clot send a message without approval. It consists of a
+named trigger, an exact template and a way of sending.
+
+- **Trigger:** matched like a pre-filter; it must name a kind of event.
+- **Template:** exact text, with fields filled from the triggering event: who
+  caused it, its title, its reference, its repository and its link.
+- **Way of sending** (`via`): how the message leaves, which also fixes where it
+  goes. The Clot never names a destination. For GitHub it is a comment on the
+  issue or pull request the event is about. Each source adds its own.
+- **Who sends:** the Clot, with the `send_from_template` daemon tool, in the
+  turn that investigates the event. The rules that apply are named in that turn's
+  prompt, and the Clot may leave one unsent. A batch triggers a rule when any
+  report in it matches.
+- **What the daemon enforces:** the turn is the investigation of an event the
+  rule's trigger matches; the rule has not been sent for that event before; and
+  at most 5 words differ from the filled-in template, counting each word added,
+  removed or replaced. Filled-in values never count.
+- **Mentions:** an `@` notifies someone only where the template itself wrote it,
+  never from a filled-in value or a word the Clot changed.
+- Adding, replacing or removing a standing rule always needs the user's yes,
+  whoever raised it.
 
 ## 6. Sessions, recap and chat layout
 
@@ -344,6 +390,8 @@ it; it never reaches the model. A mistyped or unknown command gets a usage reply
 | `&close nosummary` | A new session and channel with nothing carried over: no recap, brainstorm mode off, the router's recent-message context cleared. On a new session that still holds an unused recap, it discards the recap in place. |
 | `&effort low\|medium\|high <message>` | Sends the message at that effort level. |
 | `&effort low\|medium\|high` | Sets the level for the next message only. It is spent on the next message delivered, and kept if that delivery is refused. |
+| `&rules` | Lists the rules in force for this Clot, each with its file, and its open proposals. Answered at once, also during a turn. |
+| `&rules undo` | Reverts the most recent rulebook edit made from chat through this Clot and shows what it reverted. Sent again, it steps one edit further back. It needs no further yes. |
 
 A `&close` sent during a turn waits for the turn to end. On a session with no turns
 yet and no recap, it does nothing.
@@ -425,8 +473,10 @@ user replies; for brainstorming, when the mode ends.
   mode with a callback that gives the same answer, and the tools that edit and
   write files are removed from it.
 - **What is approved**: reading, searching and listing files; web search and web
-  fetch; subagents and skills; and a fixed list of shell commands that only read,
-  plus the project's own test command, given exactly. The list, and the flags and
+  fetch; subagents and skills; the daemon's own tools, each of which enforces its
+  own limits (a rulebook edit made under the lock is only ever proposed); and a
+  fixed list of shell commands that only read, plus the project's own test
+  command, given exactly. The list, and the flags and
   shell features that are refused because they would make a reader write or run
   something, are in the stage 2a specification.
 - **Refused when in doubt.** A command line is approved only when every command in
@@ -528,6 +578,8 @@ In scope:
 
 Each container holds its own clone of the repository. The user and the Clot do not
 share a working directory; the Clot's work appears as branches and pull requests.
+The home Clot has no repository of its own: it looks into things through `gh` and
+the web, and clones a repository into its workspace when the work needs it.
 
 The browser is Chromium driven by Playwright. It starts on demand and stops when
 idle. A web-based live view lets the user watch, and take over for logins, captchas
@@ -568,7 +620,8 @@ onboarding can be resumed.
 - **Daemon crash or power loss**: systemd restarts the daemon. The queue and state
   are in SQLite with write-ahead logging. Sessions resume from disk. An event that
   was stored is picked up from the step it had reached; events that were being
-  held are released at once; open steering questions lapse to the queue.
+  held are released at once; open steering questions lapse to the queue; open
+  rule proposals stay open and can still be answered.
 - **Daemon starting**: the intake port is taken before anything else is read or
   changed, and deliveries are stored from that moment. A second daemon finds the
   port taken, says so and stops, having touched nothing.
@@ -659,9 +712,13 @@ Each stage gets its own specification and plan.
      question, the lock for investigations and for brainstorm mode, the Clots' own
      GitHub account, a rulebook edited by hand, and GitHub as the only source
      (`.superpowers/specs/2026-10-11-clots-stage-2a-pipeline-design.md`).
-   - **2b. Rulebook editing and standing rules**, and the home Clot.
+   - **2b. Rulebook editing and standing rules**, and the home Clot: the daemon
+     tools, edits applied or proposed, proposals, `&rules`, standing rules sent
+     as GitHub comments, and the home Clot for repositories no Clot is bound to
+     (`.superpowers/specs/2026-10-12-clots-stage-2b-rulebook-design.md`).
    - **2c. More sources**: Sentry, Stripe, Vercel, email, PostHog, Calendar, watch
-     recipes.
+     recipes; with them, sources shared between projects, routing match rules and
+     routing corrections, and each source's way of sending a standing rule.
    - **2d. Gates and sweep**, with the spend log and rollover re-grounding.
 3. **Pi deployment and onboarding.**
 4. **Browser and live view.**

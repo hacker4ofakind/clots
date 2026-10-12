@@ -82,4 +82,14 @@ describe("Hold", () => {
     advance(60_000);
     expect(released.at(-1)).toEqual({ clot: "graphite", ids: ["d-4"] });
   });
+
+  it("keeps the same subject in two repositories apart", () => {
+    hold.add("home", event("d-1"));
+    hold.add("home", { ...event("d-2"), repo: "octo/gadgets" });
+    advance(60_000);
+    expect(released).toEqual([
+      { clot: "home", ids: ["d-1"] },
+      { clot: "home", ids: ["d-2"] },
+    ]);
+  });
 });

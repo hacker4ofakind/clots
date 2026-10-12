@@ -20,6 +20,8 @@ export interface SessionRow {
   interrupted: boolean;
   /** What the cut-off turn was for, so that picking it up again keeps an investigation locked. */
   interruptedKind: InboxKind;
+  /** The event the cut-off turn was looking into, when it was an investigation. */
+  interruptedEvent: string | null;
   active: boolean;
 }
 
@@ -36,6 +38,37 @@ export interface InboxRow {
   receivedAt: number;
   status: InboxStatus;
   kind: InboxKind;
+  /** The event this row's turn is for, when it is an investigation. */
+  eventId: string | null;
+}
+
+/** A rule change waiting for the user's yes or no, in a temporary channel of its own. */
+export interface ProposalRow {
+  id: number;
+  clot: string;
+  channelId: string;
+  channelName: string;
+  scope: "own" | "global";
+  /** The edit, as JSON. */
+  edit: string;
+  summary: string;
+}
+
+/** Something the daemon has to tell a Clot at the start of its next turn. */
+export interface NoteRow {
+  seq: number;
+  text: string;
+}
+
+/** An edit made from chat, kept with the edit that undoes it. */
+export interface RuleEditRow {
+  id: number;
+  clot: string;
+  /** "global", or the name of a Clot. */
+  file: string;
+  /** The undoing edit, as JSON. */
+  inverse: string;
+  summary: string;
 }
 
 /**
@@ -116,6 +149,34 @@ CREATE TABLE IF NOT EXISTS tail (
   role TEXT NOT NULL,
   text TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE,
+  channel_name TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  edit TEXT NOT NULL,
+  summary TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notes (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rule_edits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  file TEXT NOT NULL,
+  inverse TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  undone INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sends (
+  event_id TEXT NOT NULL,
+  rule TEXT NOT NULL,
+  url TEXT,
+  PRIMARY KEY (event_id, rule)
+);
 `;
 
 function toSession(r: any): SessionRow {
@@ -128,12 +189,17 @@ function toSession(r: any): SessionRow {
     started: r.started === 1,
     interrupted: r.interrupted === 1,
     interruptedKind: r.interrupted_kind,
+    interruptedEvent: r.interrupted_event ?? null,
     active: r.active === 1,
   };
 }
 
 function toInbox(r: any): InboxRow {
-  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind };
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind, eventId: r.event_id ?? null };
+}
+
+function toProposal(r: any): ProposalRow {
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, channelName: r.channel_name, scope: r.scope, edit: r.edit, summary: r.summary };
 }
 
 function toEvent(r: any): EventRow {
@@ -176,6 +242,8 @@ export class Store {
     this.addColumn("events", "enriched", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("events", "subject", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("inbox", "event_id", "TEXT");
+    this.addColumn("sessions", "interrupted_event", "TEXT");
   }
 
   /** Columns added after the first release, so a database created by an earlier version keeps working. */
@@ -252,14 +320,16 @@ export class Store {
     this.db.prepare("UPDATE sessions SET started = 1, seed = NULL WHERE id = ?").run(id);
   }
 
-  setInterrupted(id: string, interrupted: boolean, kind: InboxKind = "message"): void {
-    this.db.prepare("UPDATE sessions SET interrupted = ?, interrupted_kind = ? WHERE id = ?").run(interrupted ? 1 : 0, interrupted ? kind : "message", id);
+  setInterrupted(id: string, interrupted: boolean, kind: InboxKind = "message", eventId: string | null = null): void {
+    this.db
+      .prepare("UPDATE sessions SET interrupted = ?, interrupted_kind = ?, interrupted_event = ? WHERE id = ?")
+      .run(interrupted ? 1 : 0, interrupted ? kind : "message", interrupted ? eventId : null, id);
   }
 
-  enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind }): boolean {
+  enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind; eventId?: string | null }): boolean {
     const info = this.db
-      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at, kind) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt, m.kind ?? "message");
+      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at, kind, event_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt, m.kind ?? "message", m.eventId ?? null);
     return info.changes === 1;
   }
 
@@ -363,5 +433,82 @@ export class Store {
   tail(clot: string, n: number): TailMessage[] {
     const rows: any[] = this.db.prepare("SELECT role, text FROM tail WHERE clot = ? ORDER BY seq DESC LIMIT ?").all(clot, n);
     return rows.reverse().map((r) => ({ role: r.role, text: r.text }));
+  }
+
+  /** The events that were gathered into a batch, oldest first. */
+  eventsMergedInto(id: string): EventRow[] {
+    return this.db.prepare("SELECT * FROM events WHERE status = 'merged' AND note = ? ORDER BY rowid").all(`into ${id}`).map(toEvent);
+  }
+
+  /** Stores an open proposal and returns its ID. */
+  createProposal(p: Omit<ProposalRow, "id">): number {
+    const info = this.db
+      .prepare("INSERT INTO proposals (clot, channel_id, channel_name, scope, edit, summary) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(p.clot, p.channelId, p.channelName, p.scope, p.edit, p.summary);
+    return Number(info.lastInsertRowid);
+  }
+
+  proposalByChannel(channelId: string): ProposalRow | undefined {
+    const r = this.db.prepare("SELECT * FROM proposals WHERE channel_id = ?").get(channelId);
+    return r ? toProposal(r) : undefined;
+  }
+
+  /** Open proposals, oldest first: one Clot's, or everyone's. */
+  openProposals(clot?: string): ProposalRow[] {
+    const rows = clot === undefined ? this.db.prepare("SELECT * FROM proposals ORDER BY id").all() : this.db.prepare("SELECT * FROM proposals WHERE clot = ? ORDER BY id").all(clot);
+    return rows.map(toProposal);
+  }
+
+  /** Closes a proposal. Returns false when it was closed already: only the caller that gets true may carry out its outcome. */
+  deleteProposal(id: number): boolean {
+    return this.db.prepare("DELETE FROM proposals WHERE id = ?").run(id).changes === 1;
+  }
+
+  addNote(clot: string, text: string): void {
+    this.db.prepare("INSERT INTO notes (clot, text) VALUES (?, ?)").run(clot, text);
+  }
+
+  /** The notes waiting for a Clot, oldest first. */
+  notes(clot: string): NoteRow[] {
+    const rows: any[] = this.db.prepare("SELECT seq, text FROM notes WHERE clot = ? ORDER BY seq").all(clot);
+    return rows.map((r) => ({ seq: r.seq, text: r.text }));
+  }
+
+  /** Removes a Clot's notes up to and including one of them, or all of them. */
+  clearNotes(clot: string, upTo: number = Number.MAX_SAFE_INTEGER): void {
+    this.db.prepare("DELETE FROM notes WHERE clot = ? AND seq <= ?").run(clot, upTo);
+  }
+
+  logRuleEdit(e: Omit<RuleEditRow, "id">): void {
+    this.db.prepare("INSERT INTO rule_edits (clot, file, inverse, summary) VALUES (?, ?, ?, ?)").run(e.clot, e.file, e.inverse, e.summary);
+  }
+
+  /** The most recent edit made from chat through a Clot that has not been undone. */
+  lastRuleEdit(clot: string): RuleEditRow | undefined {
+    const r: any = this.db.prepare("SELECT * FROM rule_edits WHERE clot = ? AND undone = 0 ORDER BY id DESC LIMIT 1").get(clot);
+    return r && { id: r.id, clot: r.clot, file: r.file, inverse: r.inverse, summary: r.summary };
+  }
+
+  markRuleEditUndone(id: number): void {
+    this.db.prepare("UPDATE rule_edits SET undone = 1 WHERE id = ?").run(id);
+  }
+
+  /** Whether a standing rule has been sent, or is being sent, for an event. */
+  hasSend(eventId: string, rule: string): boolean {
+    return this.db.prepare("SELECT 1 FROM sends WHERE event_id = ? AND rule = ?").get(eventId, rule) !== undefined;
+  }
+
+  /** Records that a rule is being sent for an event. Returns false when it already was: a rule is sent once per event. */
+  claimSend(eventId: string, rule: string): boolean {
+    return this.db.prepare("INSERT OR IGNORE INTO sends (event_id, rule) VALUES (?, ?)").run(eventId, rule).changes === 1;
+  }
+
+  setSendUrl(eventId: string, rule: string, url: string): void {
+    this.db.prepare("UPDATE sends SET url = ? WHERE event_id = ? AND rule = ?").run(url, eventId, rule);
+  }
+
+  /** Withdraws a claim, when the message was definitely not sent. */
+  releaseSend(eventId: string, rule: string): void {
+    this.db.prepare("DELETE FROM sends WHERE event_id = ? AND rule = ?").run(eventId, rule);
   }
 }

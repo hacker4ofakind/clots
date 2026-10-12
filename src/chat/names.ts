@@ -23,6 +23,11 @@ export function askChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-ask`, existing);
 }
 
+/** The temporary channel in which the user is asked about a rule change: `project-rule`, then `-2`, `-3` while others are open. */
+export function ruleChannelName(project: string, existing: string[]): string {
+  return firstFree(`${slug(project)}-rule`, existing);
+}
+
 export function splitMessage(text: string, max = 2000): string[] {
   const parts: string[] = [];
   let rest = text;

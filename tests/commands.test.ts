@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseCommand } from "../src/commands.js";
+import { COMMAND_USAGE, parseCommand } from "../src/commands.js";
 import { InputQueue } from "../src/agent/input-queue.js";
 import { isSuccessfulResult } from "../src/agent/turn-tracker.js";
 
@@ -65,4 +65,11 @@ describe("isSuccessfulResult", () => {
     expect(isSuccessfulResult({ subtype: "success", is_error: true })).toBe(false);
     expect(isSuccessfulResult({ subtype: "error_during_execution", is_error: true })).toBe(false);
   });
+});
+
+it("reads &rules and &rules undo, and nothing else after &rules", () => {
+  expect(parseCommand("&rules")).toEqual({ kind: "rules", undo: false });
+  expect(parseCommand("&Rules  UNDO ")).toEqual({ kind: "rules", undo: true });
+  expect(parseCommand("&rules redo")).toEqual({ kind: "invalid", name: "rules" });
+  expect(COMMAND_USAGE).toContain("`&rules undo`");
 });

@@ -186,3 +186,88 @@ describe("Store", () => {
     expect(store.tail("graphite", 4).map((m) => m.text)).toEqual(["t2", "t3", "t4", "t5"]);
   });
 });
+
+describe("Store, stage 2b", () => {
+  const proposal = (clot: string, channelId: string) => ({ clot, channelId, channelName: `${clot}-rule`, scope: "own" as const, edit: '{"op":"add_guidance","line":"x"}', summary: 'Add triage guidance: "x"' });
+
+  it("keeps proposals until they are closed, and closes each exactly once", () => {
+    const store = new Store(":memory:");
+    const first = store.createProposal(proposal("graphite", "ch-1"));
+    store.createProposal(proposal("graphite", "ch-2"));
+    store.createProposal(proposal("other", "ch-3"));
+    expect(store.openProposals("graphite").map((p) => p.channelId)).toEqual(["ch-1", "ch-2"]);
+    expect(store.openProposals().map((p) => p.channelId)).toEqual(["ch-1", "ch-2", "ch-3"]);
+    expect(store.proposalByChannel("ch-1")).toMatchObject({ id: first, clot: "graphite", scope: "own", channelName: "graphite-rule" });
+    expect(store.deleteProposal(first)).toBe(true);
+    expect(store.deleteProposal(first)).toBe(false);
+    expect(store.proposalByChannel("ch-1")).toBeUndefined();
+  });
+
+  it("keeps notes in order and clears them up to a point", () => {
+    const store = new Store(":memory:");
+    store.addNote("graphite", "first");
+    store.addNote("graphite", "second");
+    store.addNote("other", "theirs");
+    const notes = store.notes("graphite");
+    expect(notes.map((n) => n.text)).toEqual(["first", "second"]);
+    store.addNote("graphite", "third");
+    store.clearNotes("graphite", notes[1].seq);
+    expect(store.notes("graphite").map((n) => n.text)).toEqual(["third"]);
+    store.clearNotes("graphite");
+    expect(store.notes("graphite")).toEqual([]);
+    expect(store.notes("other").map((n) => n.text)).toEqual(["theirs"]);
+  });
+
+  it("gives back the latest edit that has not been undone, per Clot", () => {
+    const store = new Store(":memory:");
+    store.logRuleEdit({ clot: "graphite", file: "graphite", inverse: "{}", summary: "one" });
+    store.logRuleEdit({ clot: "other", file: "global", inverse: "{}", summary: "theirs" });
+    store.logRuleEdit({ clot: "graphite", file: "global", inverse: "{}", summary: "two" });
+    const last = store.lastRuleEdit("graphite")!;
+    expect(last).toMatchObject({ summary: "two", file: "global" });
+    store.markRuleEditUndone(last.id);
+    expect(store.lastRuleEdit("graphite")).toMatchObject({ summary: "one" });
+    store.markRuleEditUndone(store.lastRuleEdit("graphite")!.id);
+    expect(store.lastRuleEdit("graphite")).toBeUndefined();
+  });
+
+  it("lets a rule be sent for an event once, and again only after the claim is released", () => {
+    const store = new Store(":memory:");
+    expect(store.hasSend("d-1", "ack")).toBe(false);
+    expect(store.claimSend("d-1", "ack")).toBe(true);
+    expect(store.claimSend("d-1", "ack")).toBe(false);
+    expect(store.claimSend("d-1", "other-rule")).toBe(true);
+    expect(store.claimSend("d-2", "ack")).toBe(true);
+    store.setSendUrl("d-1", "ack", "https://example.test/c1");
+    expect(store.hasSend("d-1", "ack")).toBe(true);
+    store.releaseSend("d-1", "ack");
+    expect(store.claimSend("d-1", "ack")).toBe(true);
+  });
+
+  it("lists the events a batch was made from, oldest first", () => {
+    const store = new Store(":memory:");
+    const event = (id: string) => ({ id, source: "github" as const, kind: "comment" as const, repo: "octo/widgets", actor: "vercel[bot]", title: "t", body: "", url: "u", ref: "14", subject: "pr:14", automated: true, receivedAt: 0 });
+    store.insertEvent(event("d-1"));
+    store.insertEvent(event("d-2"));
+    store.insertEvent(event("d-3"));
+    store.recordRelease({ event: { ...event("batch:d-1"), kind: "batch" }, clot: "graphite", isNew: true, absorbed: ["d-1", "d-2"] });
+    expect(store.eventsMergedInto("batch:d-1").map((e) => e.id)).toEqual(["d-1", "d-2"]);
+    expect(store.eventsMergedInto("d-3")).toEqual([]);
+  });
+
+  it("remembers which event an inbox row and a cut-off turn belong to", () => {
+    const store = new Store(":memory:");
+    store.upsertClot("graphite", "cat");
+    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: null });
+    store.enqueue({ id: "event:d-1", clot: "graphite", channelId: "ch-1", text: "x", receivedAt: 0, kind: "event", eventId: "d-1" });
+    store.enqueue({ id: "m1", clot: "graphite", channelId: "ch-1", text: "hi", receivedAt: 1 });
+    expect(store.nextPending("graphite")).toMatchObject({ id: "event:d-1", eventId: "d-1" });
+    store.setInboxStatus("event:d-1", "done");
+    expect(store.nextPending("graphite")).toMatchObject({ id: "m1", eventId: null });
+
+    store.setInterrupted("s1", true, "event", "d-1");
+    expect(store.activeSession("graphite")).toMatchObject({ interrupted: true, interruptedKind: "event", interruptedEvent: "d-1" });
+    store.setInterrupted("s1", false);
+    expect(store.activeSession("graphite")).toMatchObject({ interrupted: false, interruptedEvent: null });
+  });
+});

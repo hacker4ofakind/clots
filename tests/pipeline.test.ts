@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeChat } from "../src/chat/fake.js";
 import type { ClotEvent, TriageResult } from "../src/events/types.js";
 import { acceptGithub, startIntake } from "../src/intake.js";
-import { Pipeline } from "../src/pipeline.js";
+import { Pipeline, routeByRepo } from "../src/pipeline.js";
 import type { ClotPort } from "../src/steering.js";
 import { Store } from "../src/store.js";
 import type { Triage, TriageInput } from "../src/triage.js";
@@ -365,6 +365,22 @@ describe("Pipeline", () => {
     await pipeline.resume();
 
     expect(reads).toBe(1);
+  });
+
+  it("releases events held for the same subject in two repositories separately, after a restart", async () => {
+    for (const held of [report("d-1"), report("d-2", { repo: "octo/gadgets" })]) {
+      store.setEventClot(held.id, "graphite");
+      store.setEventStatus(held.id, "held");
+    }
+    await pipeline.resume();
+    expect(port.queued.map((q) => q.id).sort()).toEqual(["d-1", "d-2"]);
+  });
+
+  it("routes a repository to its Clot, and one that has none to the home Clot when there is one", () => {
+    const bound = new Map([["octo/widgets", "graphite"]]);
+    expect(routeByRepo(bound, "home")("octo/widgets")).toBe("graphite");
+    expect(routeByRepo(bound, "home")("octo/other")).toBe("home");
+    expect(routeByRepo(bound, undefined)("octo/other")).toBeUndefined();
   });
 });
 
