@@ -157,6 +157,27 @@ describe("RuleWriter", () => {
     expect(parseRuleFile(read("graphite"))).toMatchObject({ prefilters: [{ actor: "dependabot[bot]" }], triage: [] });
   });
 
+  it("says so when an edit's undo record cannot be saved, and does not undo an older edit in its place", () => {
+    let failing = false;
+    const flaky: Store = Object.create(store);
+    flaky.logRuleEdit = (edit) => {
+      if (failing) throw new Error("database is locked");
+      store.logRuleEdit(edit);
+    };
+    writer = new RuleWriter({ rulebook, store: flaky, commit: () => undefined });
+    writer.apply("graphite", "own", { op: "add_guidance", line: "Earlier." });
+
+    failing = true;
+    expect(writer.apply("graphite", "own", { op: "add_guidance", line: "Latest." })).toEqual({ ok: true, file: "graphite", summary: 'Add triage guidance: "Latest."', unlogged: true });
+    expect(writer.undo("graphite")).toMatchObject({ ok: false, retry: true });
+    expect(parseRuleFile(read("graphite")).triage).toEqual(["Earlier.", "Latest."]);
+
+    failing = false;
+    expect(writer.undo("graphite")).toMatchObject({ ok: true, summary: 'Undid: Add triage guidance: "Latest."' });
+    expect(writer.undo("graphite")).toMatchObject({ ok: true, summary: 'Undid: Add triage guidance: "Earlier."' });
+    expect(parseRuleFile(read("graphite")).triage).toEqual([]);
+  });
+
   it("commits in the rulebook's own repository", () => {
     writer = new RuleWriter({ rulebook, store });
     writer.apply("graphite", "own", { op: "add_guidance", line: "Billing is urgent." });

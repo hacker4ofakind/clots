@@ -975,6 +975,47 @@ describe("Clot, stage 2b", () => {
     expect(contexts[2].steered()).toBe(false);
   });
 
+  it("keeps that state through an investigation that runs before the cut-off work is picked up", async () => {
+    await rebuild();
+    const resetsAt = Math.floor(now.getTime() / 1000) + 60;
+    runner.script = [{ hold: true, ok: false, limit: { resetsAt } }, {}, {}, {}];
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    clot.steerEvent("[event] CI failed");
+    runner.release!();
+    await first;
+
+    // While paused: another event is queued, and then the user asks for the work to go on.
+    await clot.queueEvent(event("d-2"), "Another issue.", false);
+    await clot.onMessage(msg("continue the original job"));
+    now = new Date(resetsAt * 1000 + 5000);
+    timers[0].fn();
+
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(3));
+    expect(contexts[1]).toMatchObject({ kind: "investigation" });
+    expect(contexts[2]).toMatchObject({ kind: "work" });
+    expect(contexts[2].steered()).toBe(true);
+    await vi.waitFor(() => expect(store.activeSession("graphite")!.steered).toBe(false));
+
+    await clot.onMessage(msg("something new"));
+    expect(contexts[3].steered()).toBe(false);
+  });
+
+  it("does not carry an event steered into an investigation over to the user's next turn", async () => {
+    await rebuild();
+    runner.script = [{ hold: true }, {}];
+    await clot.queueEvent(event("d-1"), "Login fails.");
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    clot.steerEvent("[event] CI failed");
+    expect(contexts[0].steered()).toBe(true);
+    runner.release!();
+    await vi.waitFor(() => expect(clot.isBusy()).toBe(false));
+
+    await clot.onMessage(msg("build the page"));
+    expect(contexts[1]).toMatchObject({ kind: "work" });
+    expect(contexts[1].steered()).toBe(false);
+  });
+
   it("still treats the turn as joined by a steered event when a restart cut it off", async () => {
     await rebuild();
     const m = msg("build the page");

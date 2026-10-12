@@ -1,6 +1,6 @@
 import { threadNumber, type Sender } from "./events/github-comment.js";
 import type { ClotEvent } from "./events/types.js";
-import type { WriteResult } from "./rule-writer.js";
+import { UNLOGGED_NOTE, type WriteResult } from "./rule-writer.js";
 import { describeMatch, describeStanding, type RuleEdit, type RuleScope } from "./rulebook-edit.js";
 import type { Prefilter, RuleFile, StandingRule } from "./rulebook.js";
 import { checkSend, matchStanding, MAX_CHANGED_WORDS } from "./standing.js";
@@ -76,8 +76,9 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
     if (mustPropose(ctx, file, edit)) return d.proposals.open(ctx.clot, file, edit);
     const done = d.writer.apply(ctx.clot, file, edit);
     if (!done.ok) return `Not applied: ${done.reason}.`;
-    await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}`);
-    return `Applied, and in force now. The user has been shown it: ${done.summary}`;
+    const caveat = done.unlogged ? `\n${UNLOGGED_NOTE}` : "";
+    await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}${caveat}`);
+    return `Applied, and in force now. The user has been shown it: ${done.summary}${caveat}`;
   };
 
   return {

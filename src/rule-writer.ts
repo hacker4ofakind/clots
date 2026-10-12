@@ -2,14 +2,17 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { applyEdit, EditRefused, type EditResult, type RuleEdit, type RuleScope } from "./rulebook-edit.js";
-import type { Store } from "./store.js";
+import type { RuleEditRow, Store } from "./store.js";
 
 /**
  * What became of an edit. `file` is "global" or the name of a Clot. An edit that was not made
  * left the file as it was; `retry` says the cause was the disk and not the edit, so the same
  * edit may go through later.
  */
-export type WriteResult = { ok: true; file: string; summary: string } | { ok: false; reason: string; retry?: true };
+export type WriteResult = { ok: true; file: string; summary: string; unlogged?: true } | { ok: false; reason: string; retry?: true };
+
+/** Added to what the user and the Clot are told about an edit that was made but whose undo record could not be saved. */
+export const UNLOGGED_NOTE = "Its undo record could not be saved yet, so `&rules undo` is not available until it can be.";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -34,7 +37,24 @@ export interface RuleWriterDeps {
  * time whichever Clots they come from.
  */
 export class RuleWriter {
+  /** Undo records of edits that were made but could not be saved to the log, oldest first. */
+  private unlogged: Omit<RuleEditRow, "id">[] = [];
+
   constructor(private d: RuleWriterDeps) {}
+
+  /** Saves the undo records that are waiting, in order. Returns false while one still cannot be saved. */
+  private saveLog(): boolean {
+    while (this.unlogged.length > 0) {
+      try {
+        this.d.store.logRuleEdit(this.unlogged[0]);
+      } catch (error) {
+        console.error("[rulebook] an edit's undo record could not be saved:", error);
+        return false;
+      }
+      this.unlogged.shift();
+    }
+    return true;
+  }
 
   /** What an edit would do, without doing it. */
   preview(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult {
@@ -50,6 +70,8 @@ export class RuleWriter {
 
   /** Reverts the most recent edit made from chat through this Clot that has not been undone. */
   undo(clot: string): WriteResult {
+    // With a newer edit missing from the log, the latest one in it is not the latest edit.
+    if (!this.saveLog()) return { ok: false, reason: "The record of a recent edit could not be saved, so undo is not available right now. Nothing was changed; send the command again later.", retry: true };
     const last = this.d.store.lastRuleEdit(clot);
     if (!last) return { ok: false, reason: "There is no edit made from chat left to undo." };
     const done = this.write(clot, last.file, JSON.parse(last.inverse) as RuleEdit, false);
@@ -98,11 +120,9 @@ export class RuleWriter {
     } catch (error) {
       console.error(`[rulebook] ${target}.yaml was changed but could not be committed:`, error);
     }
-    try {
-      if (log) this.d.store.logRuleEdit({ clot, file: target, inverse: JSON.stringify(result.inverse), summary: result.summary });
-    } catch (error) {
-      console.error(`[rulebook] the change to ${target}.yaml stands but could not be logged, so it cannot be undone from chat:`, error);
-    }
-    return { ok: true, file: target, summary: result.summary };
+    if (!log) return { ok: true, file: target, summary: result.summary };
+    // Kept here until it is in the log, behind any that are still waiting, so the order of edits holds.
+    this.unlogged.push({ clot, file: target, inverse: JSON.stringify(result.inverse), summary: result.summary });
+    return this.saveLog() ? { ok: true, file: target, summary: result.summary } : { ok: true, file: target, summary: result.summary, unlogged: true };
   }
 }

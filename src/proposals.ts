@@ -1,7 +1,7 @@
 import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
 import { ruleChannelName } from "./chat/names.js";
 import { matchYesNo, RULE_REPLIES, RULE_RETRY } from "./events/reply.js";
-import type { WriteResult } from "./rule-writer.js";
+import { UNLOGGED_NOTE, type WriteResult } from "./rule-writer.js";
 import type { RuleEdit, RuleScope } from "./rulebook-edit.js";
 import type { ProposalRow, Store } from "./store.js";
 
@@ -83,6 +83,13 @@ export class Proposals {
     const proposal = this.d.store.proposalByChannel(m.channelId);
     if (!proposal) return false;
     if (m.authorId !== this.d.userId) return true;
+    // A proposal lasts as long as its session. One left over from a session that has been
+    // replaced is withdrawn here, whatever the reply: startup may not have got to it yet.
+    const session = this.d.store.activeSession(proposal.clot)?.id;
+    if (proposal.sessionId !== null && session !== undefined && proposal.sessionId !== session) {
+      await this.withdraw(proposal.clot, [proposal], "when the previous session closed");
+      return true;
+    }
     const answer = matchYesNo(m.text);
     if (answer === undefined) {
       await this.d.chat.post(m.channelId, RULE_RETRY).catch(() => undefined);
@@ -157,7 +164,7 @@ export class Proposals {
       }
       if (done.ok) {
         store.addNote(proposal.clot, `The user approved the rule change you proposed, and it is in force: ${what}`);
-        await this.d.say(proposal.clot, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}`);
+        await this.d.say(proposal.clot, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}${done.unlogged ? `\n${UNLOGGED_NOTE}` : ""}`);
       } else {
         store.addNote(proposal.clot, `The user approved the rule change you proposed, but it could not be applied (${done.reason}): ${what}`);
         await this.d.say(proposal.clot, `Approved, but it could not be applied (${done.reason}), so nothing was changed: ${what}`);

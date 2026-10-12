@@ -117,7 +117,8 @@ the moment a steered event has joined it. These are the turns that are locked, o
 that hold untrusted text the user did not write. A turn that picks up a working
 turn which was cut off, by the usage limit or by a restart, after a steered event
 had joined it, is still such a turn: the daemon keeps that fact with the session
-until the work has ended.
+until a turn of the user's own has ended without being cut off. An investigation
+that runs in between does not end it.
 
 ### Applying an edit
 
@@ -194,7 +195,8 @@ Rules:
   one note that lists them for the new session. All of them are closed in one
   step, before any channel is deleted, and a proposal records the session it was
   opened in: one that a stopped daemon left behind from a replaced session is
-  closed at startup. A session started with nothing carried over gets no note,
+  closed at startup, and a reply to it that arrives first closes it as
+  unanswered instead of answering it. A session started with nothing carried over gets no note,
   also when the user discards the recap of a session that has not started.
 - **A limit on open proposals per Clot.** It is three unless
   `CLOTS_MAX_PROPOSALS` in `.env` sets another number. One more is refused, and
@@ -311,6 +313,10 @@ the model. They work while a turn is running.
   else, another Clot included.
 - **When the file cannot be written:** the command says so, changes nothing, and
   the same edit is still the next one to undo.
+- **When an edit cannot be logged:** the edit stands, and the user and the Clot
+  are told that undo is not available yet. The daemon keeps the record and
+  saves it as soon as it can; until then `&rules undo` changes nothing, so that
+  it never reverts an older edit in place of the latest.
 - An undo is written, committed and posted like any other edit.
 - **The Clot is told.** The command does not reach the model, so an undo leaves a
   note for the Clot (section 6): the rule is no longer in force, and what the user

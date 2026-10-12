@@ -64,6 +64,8 @@ export class Clot {
   private liveLocked = false;
   /** Whether a steered event has joined the running turn. From then on the turn holds text the user did not write. */
   private liveSteered = false;
+  /** Whether the running turn is the investigation of an event. */
+  private liveIsEvent = false;
   /** The last of the daemon's notes that the running turn was given, or 0 when it was given none. */
   private liveNotes = 0;
   private draining = false;
@@ -162,8 +164,9 @@ export class Clot {
     if (!this.live || this.d.store.nextPending(this.d.name)) return false;
     if (!this.live.push(text)) return false;
     this.liveSteered = true;
-    // Kept with the session: if this turn is cut off, the turn that picks the work up holds the event too.
-    this.d.store.setSteered(this.d.store.activeSession(this.d.name)!.id, true);
+    // Kept with the session while the user's own work is what it joined: if that turn is cut off,
+    // the turn that picks the work up holds the event too. An investigation proposes anyway.
+    if (!this.liveIsEvent) this.d.store.setSteered(this.d.store.activeSession(this.d.name)!.id, true);
     return true;
   }
 
@@ -272,8 +275,9 @@ export class Clot {
     // The session exists on disk once any model response has come back.
     if (result.ok || result.contextPercent > 0) store.markSessionStarted(session.id);
     store.setInterrupted(session.id, false);
-    // A turn the usage limit cut off is picked up again, and what joined it is still in it.
-    if (!result.limit) store.setSteered(session.id, false);
+    // The user's work that a steered event joined is over when a turn of the user's own ends: one
+    // the usage limit cut off is picked up again, and an investigation in between is not that work.
+    if (!isEvent && !result.limit) store.setSteered(session.id, false);
     store.finishRunning(name);
 
     if (!result.ok && !result.limit) {
@@ -335,6 +339,7 @@ export class Clot {
     const standing = event === undefined ? [] : (this.d.standingFor?.(name, event) ?? []);
     store.setInboxStatus(row.id, "running");
     this.liveLocked = true;
+    this.liveIsEvent = true;
     this.liveSteered = false;
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
@@ -400,10 +405,10 @@ export class Clot {
     });
 
     this.liveLocked = newMode === "brainstorm";
-    // A turn that picks up one a steered event had joined, after a usage limit or a restart, is
-    // still such a turn. Any other turn starts without one.
-    this.liveSteered = session.interrupted && session.steered;
-    if (session.steered !== this.liveSteered) store.setSteered(session.id, this.liveSteered);
+    this.liveIsEvent = false;
+    // Still set when the work a steered event had joined was cut off, by the usage limit or a
+    // restart, and has not ended since: this turn picks that work up, whatever ran in between.
+    this.liveSteered = session.steered;
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt,

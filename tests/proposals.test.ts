@@ -235,6 +235,27 @@ describe("Proposals", () => {
     expect(writer.applied).toEqual([]);
   });
 
+  it("withdraws a replaced session's proposal instead of applying a yes that arrives before the startup cleanup", async () => {
+    await proposals.open("graphite", "own", dropDependabot);
+    const channel = store.openProposals("graphite")[0].channelId;
+    store.createSession({ id: "s2", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1310"), seed: null });
+
+    expect(await proposals.onReply(reply(channel, "yes"))).toBe(true);
+    expect(writer.applied).toEqual([]);
+    expect(said).toEqual([]);
+    expect(store.openProposals("graphite")).toEqual([]);
+    expect(chat.deleted).toEqual([channel]);
+    expect(store.notes("graphite")[0].text).toContain("when the previous session closed");
+  });
+
+  it("still answers a proposal from before sessions were recorded", async () => {
+    const channelId = await chat.createChannel(category, "graphite-rule");
+    store.createProposal({ clot: "graphite", channelId, channelName: "graphite-rule", scope: "own", edit: JSON.stringify(dropDependabot), summary: "Drop events" });
+    store.createSession({ id: "s2", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1310"), seed: null });
+    await proposals.onReply(reply(channelId, "yes"));
+    expect(writer.applied).toHaveLength(1);
+  });
+
   it("closes every proposal of the session before it touches a channel", async () => {
     await proposals.open("graphite", "own", dropDependabot);
     await proposals.open("graphite", "own", guidance("Billing is urgent."));
