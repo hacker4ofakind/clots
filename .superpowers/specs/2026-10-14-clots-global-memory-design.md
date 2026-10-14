@@ -59,9 +59,11 @@ daemon copies files into each container with `docker exec`.
 
 ## 4. Noticing a change
 
-After every home Clot turn, and once at startup, the daemon reads the
+After every home Clot turn, after each answer of the user's (section 5), and once
+at startup, before any project Clot's turn, the daemon reads the
 `global-clot-*.md` files in the home Clot's folder and compares each with the
-approved set and with the open questions (section 5).
+approved set and with the open questions. An answer that comes during a home
+Clot turn is followed by the check at the end of that turn.
 
 | Home Clot's folder | Approved set | Open question for the file | Daemon does |
 |---|---|---|---|
@@ -79,8 +81,9 @@ approved set and with the open questions (section 5).
   Clot's live channel.
 - **When the folder itself is missing** (a new volume, for example), nothing is
   deleted: the daemon writes the approved files back into it.
-- **When the folder cannot be read**, the check is skipped and tried again after
-  the next home Clot turn.
+- **When the folder, or a file in it, cannot be read**, the check is skipped and
+  tried again after the next home Clot turn. A folder that is there but cannot be
+  listed is never taken for an empty one.
 
 ## 5. The user's answer
 
@@ -108,16 +111,18 @@ A question is put to the user the way a rule proposal is (2b section 6):
 Rules:
 
 - **One question per file.** When the home Clot changes a file again before the
-  user has answered, the daemon posts the new text in the same channel, and the
-  answer applies to that text.
+  user has answered, the daemon posts the new text in the same channel, and once
+  that post has gone out the answer applies to that text. Until then it applies to
+  the text the user was shown, and the next check posts the new one again.
 - **At most three open questions**, or the number in `CLOTS_MAX_PROPOSALS`. These
   are counted apart from rule proposals. A changed file that finds the limit
-  reached is asked about when an earlier question closes.
+  reached is asked about when an earlier question closes: the check that follows
+  the answer asks it.
 - **Questions do not end with the session.** Unlike a rule proposal, a question
   is about a file that is still there, so it stays open across a rollover or
   `&close` of the home Clot's session. It survives a daemon restart. When its
-  channel is gone at startup, the question is closed and the next check asks
-  again.
+  channel is gone at startup, the question is closed before the startup check,
+  which asks again.
 
 ### A deletion
 
@@ -158,9 +163,11 @@ A sync that fails is logged, the turn runs anyway, and the next turn tries again
 - **At the top of the file**, so it is always inside the part of `MEMORY.md` a
   session reads.
 - **The Clot's own lines are never touched.** The daemon removes its block,
-  wherever the Clot has moved it, and any line outside the block that links to a
-  `global-clot-` file. It then writes the block at the top again. A Clot that
-  edits or deletes the block gets it back at its next sync.
+  wherever the Clot has moved it, and any line outside the block that is an index
+  line for a `global-clot-` file: one whose own link, at its start, points to such
+  a file. A line of the Clot's own that only mentions one stays. The daemon then
+  writes the block at the top again. A Clot that edits or deletes the block gets it
+  back at its next sync.
 - With no approved files, no block is written.
 - When `MEMORY.md` does not exist yet, the daemon creates it with the block.
 

@@ -250,6 +250,11 @@ describe("withGlobalBlock", () => {
     expect(withGlobalBlock(`${own}${deploy}\n`, [deploy])).toBe(`${BLOCK_START}\n${deploy}\n${BLOCK_END}\n${own}`);
   });
 
+  it("keeps a line of the Clot's own that only mentions a global memory", () => {
+    const mention = "- [Release notes](release-notes.md) — follows [Deploy days](global-clot-deploy-days.md)\n";
+    expect(withGlobalBlock(`${own}${mention}`, [deploy])).toBe(`${BLOCK_START}\n${deploy}\n${BLOCK_END}\n${own}${mention}`);
+  });
+
   it("takes out only a start marker that has no end after it", () => {
     expect(withGlobalBlock(`${BLOCK_START}\n${own}`, [deploy])).toBe(`${BLOCK_START}\n${deploy}\n${BLOCK_END}\n${own}`);
   });
@@ -282,8 +287,8 @@ const GLOBAL_FILE = /^global-clot-[a-z0-9][a-z0-9-]*\.md$/;
 export const BLOCK_START = "<!-- clots: global memories, kept by the daemon. Do not edit. -->";
 export const BLOCK_END = "<!-- clots: end of global memories -->";
 
-/** A line of the index that links to a global memory, wherever it is. */
-const GLOBAL_LINK = /\]\(global-clot-[^)]*\)/;
+/** An index line for a global memory: one whose own link, at its start, points to a global-clot- file. */
+const GLOBAL_LINK = /^\s*(?:[-*+]\s+)?\[[^\]]*\]\(global-clot-[^)]*\)/;
 
 export function isGlobalFile(name: string): boolean {
   return GLOBAL_FILE.test(name);
@@ -341,7 +346,7 @@ export function withGlobalBlock(index: string, lines: string[]): string {
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run tests/memory-index.test.ts`
-Expected: PASS, 14 tests.
+Expected: PASS, 15 tests.
 
 ---
 
@@ -612,11 +617,19 @@ export interface MemoryFolders {
   write(clot: string, change: FolderChange): Promise<void>;
 }
 
-/** Prints the folder as lines: `F <name> <base64>` for each global memory, `I - <base64>` for the index. */
+/**
+ * Prints the folder as lines: `F <name> <base64>` for each global memory, `I - <base64>` for the index.
+ * Fails when the folder or a file in it cannot be read: an unlisted file would look deleted.
+ */
 export const READ_SCRIPT = `d="$1"
 [ -d "$d" ] || { echo MISSING; exit 0; }
-for f in "$d"/global-clot-*.md; do [ -f "$f" ] && echo "F $(basename "$f") $(base64 -w0 < "$f")"; done
-[ -f "$d/MEMORY.md" ] && echo "I - $(base64 -w0 < "$d/MEMORY.md")"
+cd "$d" && [ -r . ] || exit 1
+for f in global-clot-*.md; do
+  [ -f "$f" ] || continue
+  b=$(base64 -w0 < "$f") || exit 1
+  echo "F $f $b"
+done
+if [ -f MEMORY.md ]; then b=$(base64 -w0 < MEMORY.md) || exit 1; echo "I - $b"; fi
 exit 0`;
 
 /** Reads lines from stdin: `P <name> <base64>` writes a file, `R <name> -` removes one, `I - <base64>` writes the index. */
@@ -669,6 +682,8 @@ function runWithInput(args: string[], input: string): Promise<void> {
     let stderr = "";
     child.stderr.on("data", (chunk) => (stderr += String(chunk)));
     child.on("error", reject);
+    // Docker exiting while the input is still being written breaks the pipe: the write fails, the daemon carries on.
+    child.stdin.on("error", reject);
     child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`docker exited with ${code}: ${stderr.trim()}`))));
     child.stdin.end(input);
   });
@@ -708,11 +723,17 @@ await f.write('tryfolder', { put: {}, remove: ['global-clot-b.md'] });
 const s = await f.read('tryfolder');
 console.log('after:', s);
 console.log(s.files.get('global-clot-a.md') === 'Teal — é\n\`\`\`x\n' && !s.files.has('global-clot-b.md') && s.index === '- [A](global-clot-a.md)\n' ? 'FOLDER OK' : 'FOLDER FAILED');
+const { execFileSync } = await import('node:child_process');
+const lock = (mode, path) => execFileSync('docker', ['exec', 'clot-tryfolder', 'chmod', mode, '/home/clot/.claude/projects/-workspace-repo/memory' + path]);
+const fails = async () => f.read('tryfolder').then(() => false, () => true);
+lock('300', ''); const unlisted = await fails(); lock('755', '');
+lock('000', '/global-clot-a.md'); const unread = await fails(); lock('644', '/global-clot-a.md');
+console.log(unlisted && unread ? 'UNREADABLE OK' : 'UNREADABLE FAILED');
 "
 docker rm -f clot-tryfolder
 ```
 
-Expected: `before: undefined`, the folder printed with one file and the index, then `FOLDER OK`.
+Expected: `before: undefined`, the folder printed with one file and the index, `FOLDER OK`, then `UNREADABLE OK`: a folder that cannot be listed, or a file in it that cannot be read, fails the read instead of looking empty.
 
 ---
 
@@ -1460,6 +1481,24 @@ describe("a new or changed global memory", () => {
     expect(store.approvedMemories().get(DEPLOY)).toBe(deployV2);
   });
 
+  it("keeps the question on the text the user saw when the newer text cannot be posted, and posts it at the next check", async () => {
+    folders.put("home", DEPLOY, deployV1);
+    await memory.afterHomeTurn();
+    const channel = questions()[0].channelId;
+    folders.put("home", DEPLOY, deployV2);
+    const post = chat.post.bind(chat);
+    chat.post = async () => {
+      throw new Error("Discord is down");
+    };
+    await memory.afterHomeTurn();
+    expect(questions()[0].text).toBe(deployV1);
+
+    chat.post = post;
+    await memory.afterHomeTurn();
+    expect(questions()[0].text).toBe(deployV2);
+    expect(chat.postsIn(channel).at(-1)).toContain("Fridays and Mondays.");
+  });
+
   it("keeps to the limit, and asks about the rest once a question closes", async () => {
     memory = build(2);
     folders.put("home", "global-clot-a.md", "a");
@@ -1469,8 +1508,23 @@ describe("a new or changed global memory", () => {
     expect(questions().map((q) => q.file)).toEqual(["global-clot-a.md", "global-clot-b.md"]);
 
     await memory.onReply(reply(questions()[0].channelId, "yes"));
-    await memory.afterHomeTurn();
     expect(questions().map((q) => q.file)).toEqual(["global-clot-b.md", "global-clot-c.md"]);
+  });
+
+  it("asks about a file held back by the limit after the running home turn, when the answer comes during one", async () => {
+    memory = build(1);
+    folders.put("home", "global-clot-a.md", "a");
+    folders.put("home", "global-clot-b.md", "b");
+    await memory.afterHomeTurn();
+    busy.add("home");
+    await memory.onReply(reply(questions()[0].channelId, "no"));
+    expect(questions()).toEqual([]);
+    expect(folders.file("home", "global-clot-a.md")).toBe("a");
+
+    busy.delete("home");
+    await memory.afterHomeTurn();
+    expect(folders.file("home", "global-clot-a.md")).toBeUndefined();
+    expect(questions().map((q) => q.file)).toEqual(["global-clot-b.md"]);
   });
 
   it("withdraws the question when the home Clot removes the file or puts it back", async () => {
@@ -1885,8 +1939,13 @@ export class GlobalMemory {
       this.noteOthers(spreadNote(action.file, text ?? null, null));
       await this.d.say(home, `Global memory removed from every Clot: ${title(action.file, text)} (\`${action.file}\`). \`&memory undo\` brings it back.`);
     } else if (action.kind === "update") {
+      // The answer moves to the new text only once the user has been shown it; otherwise the next check posts it again.
+      try {
+        await chat.post(action.channelId, `The home Clot changed \`${action.file}\` again. Your answer now applies to this text:\n\n${block(action.text)}\n\n${MEMORY_REPLIES}`);
+      } catch {
+        return;
+      }
       store.setMemoryQuestionText(action.file, action.text);
-      await chat.post(action.channelId, `The home Clot changed \`${action.file}\` again. Your answer now applies to this text:\n\n${block(action.text)}\n\n${MEMORY_REPLIES}`).catch(() => undefined);
     } else {
       await this.ask(action.file, action.text, action.approved);
     }
@@ -1939,9 +1998,12 @@ export class GlobalMemory {
         `The user declined the global memory you wrote, ${name} (${question.file}). Your copy was ${old === undefined ? "removed" : "put back to the approved text"}. Do not write it again unless the user asks.`,
       );
       await this.d.say(home, `Declined: global memory ${name} (\`${question.file}\`).`);
-      await this.restoreHomeNow();
     }
     await this.d.chat.deleteChannel(question.channelId).catch(() => undefined);
+    // Looks at the home Clot's folder again: a declined copy is put back, and a file held back by the
+    // limit is asked about now that a question has closed. During a home turn, both wait for its end.
+    if (this.d.isBusy(home)) return;
+    await this.check().catch((error) => console.error(`[${home}] checking global memories failed:`, error));
   }
 
   /** Leaves a note for every Clot but the home Clot, which is told in its own words. */
@@ -1975,7 +2037,7 @@ function undoneWhat(change: MemoryChangeRow): string {
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `npx vitest run tests/global-memory.test.ts`
-Expected: PASS, 25 tests.
+Expected: PASS, 27 tests.
 
 Run: `npm run typecheck`
 Expected: no errors.
@@ -2273,17 +2335,40 @@ await chat.start((m) => {
 **Replace**
 
 ```ts
-// A proposal whose channel was removed while the daemon was down can no longer be answered.
-await proposals.closeOrphans();
+    if (clot) await clot.onMessage(m);
+  })().catch((error) => console.error("[chat]", error));
+});
 ```
 
 **With**
 
 ```ts
-// A proposal whose channel was removed while the daemon was down can no longer be answered.
-await proposals.closeOrphans();
-// Nor can a question about a global memory; the home Clot's next turn asks it again.
+    if (clot) await clot.onMessage(m);
+  })().catch((error) => console.error("[chat]", error));
+});
+
+// A question about a global memory whose channel was removed while the daemon was down can no longer
+// be answered. Closed before the home Clot's startup check, which then asks it again.
 await memory.closeOrphans();
+```
+
+The home Clot is set up first, so that its startup check of the global memories runs before any project Clot's turn:
+
+**Replace**
+
+```ts
+/** Every Clot the daemon runs: one per project, and the home Clot when the configuration asks for it. */
+const definitions: { name: string; repoUrl?: string; testCommand?: string }[] = [...config.clots, ...(config.home ? [{ name: HOME_CLOT }] : [])];
+```
+
+**With**
+
+```ts
+/**
+ * Every Clot the daemon runs: one per project, and the home Clot when the configuration asks for it.
+ * The home Clot comes first: its startup check of the global memories runs before any project Clot's turn.
+ */
+const definitions: { name: string; repoUrl?: string; testCommand?: string }[] = [...(config.home ? [{ name: HOME_CLOT }] : []), ...config.clots];
 ```
 
 Run: `npm run typecheck`
@@ -2297,7 +2382,7 @@ Expected: every test passes.
 The home Clot is already configured (`"home": true` in `clots.config.json`) from stage 2b. Start the daemon as a background process:
 
 Run: `npm run daemon`
-Expected: `[encryptify] ready`, `[home] ready`, then `[events] ready`. No `checking global memories failed` line.
+Expected: `[home] ready`, `[encryptify] ready`, then `[events] ready`. No `checking global memories failed` line.
 
 - [ ] **Step 3: Live acceptance**
 
