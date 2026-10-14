@@ -294,8 +294,12 @@ restricted key), and `checkoutCompleted` (default `false`).
 restricted key with read access to customers, charges, disputes, invoices,
 payouts, products, prices, refunds and subscriptions.
 
-**Verifying:** `Stripe-Signature`, checked with the official `stripe` package
-against the raw body, with its default tolerance of five minutes.
+**Verifying:** `Stripe-Signature`, as Stripe documents it: the header holds a
+timestamp `t` and one or more signatures `v1`, each an HMAC-SHA256 in hex of the
+timestamp, a dot and the raw body, with the endpoint's secret. One must match, in
+constant time, and the timestamp must be within five minutes of the daemon's clock.
+No Stripe library is needed: verification is these few lines, and the reads below
+are plain HTTPS requests.
 
 **Kinds:**
 
@@ -1062,6 +1066,8 @@ In the development environment:
   delay of hours.
 - IMAP IDLE works on the folder of a Gmail label, and Gmail gives a thread ID over
   IMAP from which a working web link can be made.
+- Gmail's SMTP server keeps a `+alias` of the account's own address as the sender
+  of a message, so a standing reply comes from the alias the mail was sent to.
 - Linear's free plan allows the Clots' member as a second member, and a webhook's
   `webhookTimestamp` is a time in milliseconds.
 - Notion's hosted MCP server accepts dynamic client registration with the daemon's
