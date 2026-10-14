@@ -37,4 +37,13 @@ describe("the system prompts", () => {
     expect(HOME_SYSTEM_PROMPT.startsWith("You are the home Clot")).toBe(true);
     expect(HOME_SYSTEM_PROMPT).not.toContain("for this project");
   });
+
+  it("tell a project Clot to leave the global memories alone, and the home Clot how to keep them", () => {
+    expect(CLOT_SYSTEM_PROMPT).toContain("Never edit, rename or remove a global-clot- file");
+    expect(CLOT_SYSTEM_PROMPT).not.toContain("You also keep the user's global memories");
+    expect(HOME_SYSTEM_PROMPT).toContain("You also keep the user's global memories");
+    expect(HOME_SYSTEM_PROMPT).toContain("Do not add it to MEMORY.md");
+    expect(HOME_SYSTEM_PROMPT).toContain("Deleting a global-clot- file removes it from every Clot at once.");
+    expect(HOME_SYSTEM_PROMPT).not.toContain("Never edit, rename or remove a global-clot- file");
+  });
 });

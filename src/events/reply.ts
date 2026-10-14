@@ -47,3 +47,11 @@ export function matchYesNo(text: string): "yes" | "no" | undefined {
 export const RULE_REPLIES = ["Reply with one of:", "- `yes`, `sure`, `do that` or `yeah` to put it in force", "- `no`, `dont` or `not at all` to decline it"].join("\n");
 
 export const RULE_RETRY = `I couldn't match that reply.\n\n${RULE_REPLIES}`;
+
+export const MEMORY_REPLIES = [
+  "Reply with one of:",
+  "- `yes`, `sure`, `do that` or `yeah` to give it to every Clot",
+  "- `no`, `dont` or `not at all` to decline it; the home Clot's copy is put back",
+].join("\n");
+
+export const MEMORY_RETRY = `I couldn't match that reply.\n\n${MEMORY_REPLIES}`;

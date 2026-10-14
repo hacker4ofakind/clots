@@ -271,3 +271,52 @@ describe("Store, stage 2b", () => {
     expect(store.activeSession("graphite")).toMatchObject({ interrupted: false, interruptedEvent: null });
   });
 });
+
+describe("Store, global memory", () => {
+  it("keeps the approved set, logs each change with what it replaced, and undoes the latest first", () => {
+    const store = new Store(":memory:");
+    store.applyMemoryChange("global-clot-b.md", "b1");
+    store.applyMemoryChange("global-clot-a.md", "a1");
+    store.applyMemoryChange("global-clot-a.md", "a2");
+    store.applyMemoryChange("global-clot-b.md", null);
+    expect([...store.approvedMemories()]).toEqual([["global-clot-a.md", "a2"]]);
+
+    const deletion = store.lastMemoryChange()!;
+    expect(deletion).toMatchObject({ file: "global-clot-b.md", oldText: "b1", newText: null });
+    store.undoMemoryChange(deletion);
+    const change = store.lastMemoryChange()!;
+    expect(change).toMatchObject({ file: "global-clot-a.md", oldText: "a1", newText: "a2" });
+    store.undoMemoryChange(change);
+    expect([...store.approvedMemories()]).toEqual([
+      ["global-clot-a.md", "a1"],
+      ["global-clot-b.md", "b1"],
+    ]);
+    store.undoMemoryChange(store.lastMemoryChange()!);
+    expect(store.lastMemoryChange()).toMatchObject({ file: "global-clot-b.md", oldText: null, newText: "b1" });
+    store.undoMemoryChange(store.lastMemoryChange()!);
+    expect(store.approvedMemories().size).toBe(0);
+    expect(store.lastMemoryChange()).toBeUndefined();
+  });
+
+  it("keeps questions until they are closed, and closes each exactly once", () => {
+    const store = new Store(":memory:");
+    store.createMemoryQuestion({ file: "global-clot-b.md", text: "b", channelId: "ch-2", channelName: "home-memory-2" });
+    store.createMemoryQuestion({ file: "global-clot-a.md", text: "a", channelId: "ch-1", channelName: "home-memory" });
+    expect(store.memoryQuestions().map((q) => q.file)).toEqual(["global-clot-a.md", "global-clot-b.md"]);
+    store.setMemoryQuestionText("global-clot-a.md", "a2");
+    expect(store.memoryQuestionByChannel("ch-1")).toEqual({ file: "global-clot-a.md", text: "a2", channelId: "ch-1", channelName: "home-memory" });
+    expect(store.deleteMemoryQuestion("global-clot-a.md")).toBe(true);
+    expect(store.deleteMemoryQuestion("global-clot-a.md")).toBe(false);
+    expect(store.memoryQuestionByChannel("ch-1")).toBeUndefined();
+  });
+
+  it("remembers which of the home Clot's copies are still to be put back", () => {
+    const store = new Store(":memory:");
+    store.addMemoryRestore("global-clot-b.md");
+    store.addMemoryRestore("global-clot-a.md");
+    store.addMemoryRestore("global-clot-a.md");
+    expect(store.memoryRestores()).toEqual(["global-clot-a.md", "global-clot-b.md"]);
+    store.clearMemoryRestores(["global-clot-a.md"]);
+    expect(store.memoryRestores()).toEqual(["global-clot-b.md"]);
+  });
+});

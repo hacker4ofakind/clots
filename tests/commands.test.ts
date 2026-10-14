@@ -73,3 +73,10 @@ it("reads &rules and &rules undo, and nothing else after &rules", () => {
   expect(parseCommand("&rules redo")).toEqual({ kind: "invalid", name: "rules" });
   expect(COMMAND_USAGE).toContain("`&rules undo`");
 });
+
+it("reads &memory and &memory undo, and nothing else after &memory", () => {
+  expect(parseCommand("&memory")).toEqual({ kind: "memory", undo: false });
+  expect(parseCommand(" &Memory Undo")).toEqual({ kind: "memory", undo: true });
+  expect(parseCommand("&memory forget it")).toEqual({ kind: "invalid", name: "memory" });
+  expect(COMMAND_USAGE).toContain("`&memory`, `&memory undo`");
+});

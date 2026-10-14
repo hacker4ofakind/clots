@@ -1,7 +1,8 @@
 # Clots: design
 
 Date: 2026-10-10
-Status: approved in brainstorming. Stages 1 and 2a are implemented; stage 2b is next.
+Status: approved in brainstorming. Stages 1, 2a and 2b and global memory are
+implemented.
 
 ## 1. What Clots is
 
@@ -17,6 +18,8 @@ what belongs to no project. A Clot:
 - has its own isolated computer (a container with a repo clone and a browser);
 - lives in one long session, rolled over into a fresh session with a written recap
   when context reaches 65% or when the user closes it;
+- keeps its own memory across sessions, and shares the global memories the user
+  approves through the home Clot;
 - is text only. Voice is out of scope.
 
 It is not specific to SaaS businesses; the examples in this document are
@@ -56,6 +59,7 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Commands | Messages that start with `&`. Handled by the daemon before routing; never passed to the model. | Session manager |
 | Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container, and are made for each turn, so each call knows what kind of turn it is in. | Rulebook, chat adapter |
 | Proposals | Puts a rule change to the user in a temporary channel and carries out the answer. | Chat adapter, rulebook |
+| Global memory | Notices the global memories the home Clot writes, asks the user about each, and copies the approved ones into every Clot's memory before its turns. | Chat adapter, Docker |
 | Chat adapter | One interface for all chat platforms. Discord is the default and the first built. | Platform bot credentials |
 | Sweep | A throwaway session every 90 minutes that reports only what changed. | Recap, rulebook |
 | `clots` CLI | `clots add`, secret entry, status. Runs on the PC and talks to the daemon. | Network path to the Pi |
@@ -343,6 +347,28 @@ The recap covers:
 - proposals still awaiting an answer;
 - work in progress, with branch names.
 
+### Memory
+
+Each Clot keeps Claude Code's own auto memory in its container: one file per
+memory and a `MEMORY.md` index, written by the Clot and read by every session,
+including one that is resumed.
+
+Global memories apply to every Clot, as `global.yaml` does for rules. The full
+design is in `.superpowers/specs/2026-10-14-clots-global-memory-design.md`.
+
+- **Only the home Clot writes them**, as files named `global-clot-…` in its own
+  memory folder: when the user asks, or on its own for what clearly applies to all
+  of the user's work. Project Clots cannot suggest one.
+- **The user's yes:** the daemon notices a new or changed file after each home
+  Clot turn and asks in a temporary channel (`home-memory`), as for a rule
+  proposal. A no puts the home Clot's copy back. A deletion is applied at once.
+- **Delivery:** before each turn, the daemon copies the approved files into the
+  Clot's memory folder, removes any other `global-clot-` file, and keeps a block of
+  index lines at the top of its `MEMORY.md`. Each change also leaves the Clot a
+  note.
+- **Clots are told** not to edit or remove global memories or the daemon's block.
+  This is an instruction only; the next sync undoes any change.
+
 ### Discord layout
 
 - One server.
@@ -392,6 +418,8 @@ it; it never reaches the model. A mistyped or unknown command gets a usage reply
 | `&effort low\|medium\|high` | Sets the level for the next message only. It is spent on the next message delivered, and kept if that delivery is refused. |
 | `&rules` | Lists the rules in force for this Clot, each with its file, and its open proposals. Answered at once, also during a turn. |
 | `&rules undo` | Reverts the most recent rulebook edit made from chat through this Clot and shows what it reverted. Sent again, it steps one edit further back. It needs no further yes. |
+| `&memory` | Lists the global memories in force and those waiting for the user's answer. Works in every Clot's channel, also during a turn. |
+| `&memory undo` | Reverts the most recent global memory change that spread: an approval or a deletion. Sent again, it steps one further back. |
 
 A `&close` sent during a turn waits for the turn to end. On a session with no turns
 yet and no recap, it does nothing.
@@ -705,8 +733,8 @@ Every implementation plan must carry both sets of steps and begin with this chec
 Each stage gets its own specification and plan.
 
 1. **Runtime and Discord.**
-2. **Intake, triage and rulebook**, built in four parts, each with its own
-   specification and plan:
+2. **Intake, triage and rulebook**, built in four parts, with global memory
+   between 2b and 2c, each with its own specification and plan:
    - **2a. Pipeline with one source**: the event format, intake, the self-caused
      drop, pre-filter, routing, holding automated events, triage, the steering
      question, the lock for investigations and for brainstorm mode, the Clots' own
@@ -716,6 +744,9 @@ Each stage gets its own specification and plan.
      tools, edits applied or proposed, proposals, `&rules`, standing rules sent
      as GitHub comments, and the home Clot for repositories no Clot is bound to
      (`.superpowers/specs/2026-10-12-clots-stage-2b-rulebook-design.md`).
+   - **Global memory**, built after 2b as a part of its own: memories the home
+     Clot writes, the user approves and every Clot receives, and `&memory`
+     (`.superpowers/specs/2026-10-14-clots-global-memory-design.md`).
    - **2c. More sources**: Sentry, Stripe, Vercel, email, PostHog, Calendar, watch
      recipes; with them, sources shared between projects, routing match rules and
      routing corrections, and each source's way of sending a standing rule.
