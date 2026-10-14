@@ -46,9 +46,11 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 
 | Component | Responsibility | Depends on |
 |---|---|---|
-| Intake | Receive webhooks, hold IMAP IDLE connections, run watch recipes, fire the 90-minute tick. Verify each delivery, drop repeats, store the event and answer the source at once. Normalise everything into one event format (section 3). | Tunnel, source credentials |
+| Intake | Receive webhooks, hold IMAP IDLE connections, poll calendar feeds, run watch and webhook recipes, fire the 90-minute tick. Verify each delivery, drop repeats, store the event and answer the source at once. Normalise everything into one event format (section 3). | Tunnel, source credentials |
 | Rulebook | A folder and git repository of its own, one file for every Clot and one per Clot: pre-filters, routing match rules, triage guidance, urgency markers, standing-rule templates, watch recipes. | None |
 | Hold | Keeps automated events (CI runs, anything from a bot account) back for a minute or two and gathers those about the same pull request or branch into one event. | A timer |
+| Routing call | Sonnet 5.5, low effort, no tools, fixed output schema. Picks the Clot for an event from a shared source that no routing rule matched. | Each Clot's one-line description |
+| MCP client | Connects the daemon to MCP servers of its own, logging in through OAuth where a server needs it, for watch recipes. | Tunnel |
 | Triage | Sonnet 5.5 (`claude-sonnet-5-5`), low effort, no tools, fixed output schema. | Rulebook |
 | Steering | Asks the user, in a temporary channel, whether an event that bears on the running turn should be fed into it. The question is written by the explainer: Haiku 5.5, medium effort, no tools. | Chat adapter |
 | Lock | Decides what a locked turn may do: read, look things up, and run a fixed list of read-only commands. Asked before every tool call. | None |
@@ -76,16 +78,19 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 3. **Pre-filter**: deterministic rulebook rules drop events. Nothing else is
    dropped without a rule (the user's own pull requests, for example, pass
    through).
-4. **Routing**: match rules bind the event to a project (section 5). Unmatched
-   events from shared sources are routed by triage in step 7. If triage is not
-   confident, the event goes to the home Clot.
+4. **Routing**: a source bound to a project sends its events there; routing rules
+   bind an event from a shared source to a project (section 5). An event no rule
+   matches goes to the routing call. If it is not confident, the event goes to the
+   home Clot.
 5. **Hold**: an automated event waits a short while and is gathered with others
    about the same subject ("Automated events" below). Events written by people
    skip this step.
 6. **Enrichment**: what the source left out of the delivery and the Clot will
    need is fetched and added to the event. For GitHub that is a review's inline
-   comments, with file, line and the code commented on.
-7. **Triage** returns: needs action (yes or no), project, a one-line message for
+   comments, with file, line and the code commented on; for Stripe the customer
+   and the products; for Linear the issue and its comments; for Notion the page
+   and the comment, since Notion's events only say that something changed.
+7. **Triage** returns: needs action (yes or no), a one-line message for
    the user, urgent (yes or no), suspicious (yes or no), and, when a turn is
    running for that Clot, whether the event bears on that turn right now. A
    suspicious event is reported to the user and goes no further; this is checked
@@ -129,9 +134,10 @@ Every source is turned into the same shape before anything else looks at it:
 | Field | Meaning |
 |---|---|
 | `id` | The source's delivery ID. Unique; used to drop repeats. |
-| `source` | Where it came from |
-| `kind` | What happened. For GitHub: an issue opened, a comment, a review, a pull request opened, a failed CI run. |
-| `repo` | The project it belongs to at the source |
+| `source` | Where it came from: a built-in source, or a recipe |
+| `account` | Which configured account of the source |
+| `kind` | What happened. For GitHub: an issue opened, a comment, a review, a pull request opened, a failed CI run. Sources share a kind where it means the same thing. |
+| `place` | Where at the source: a repository, a Linear team, the address mail was sent to |
 | `actor` | Who caused it |
 | `title` | One line: what happened |
 | `body` | The relevant text, trimmed to a fixed length |
@@ -151,7 +157,7 @@ run, the same failure reported again for the pull request, a comment from each
 deploy service. Investigated one by one they would produce the same findings
 several times over.
 
-- Automated events are held, grouped by Clot, repository and subject. A group is released 60
+- Automated events are held, grouped by Clot, place and subject. A group is released 60
   seconds after its last event and at most 120 seconds after its first; both are
   configurable.
 - Within a group the same CI failure counts once. If one event is left it goes on
@@ -186,6 +192,7 @@ the turn that is running, whatever kind of turn it is:
 |---|---|---|
 | Clot main session | Opus 5.5 (`claude-opus-5-5`) | Chosen per prompt by the router |
 | Triage | Sonnet 5.5 | Low |
+| Routing call (shared sources) | Sonnet 5.5 | Low |
 | Router | Haiku 5.5 | Medium |
 | Explainer (steering questions) | Haiku 5.5 | Medium |
 | Sweep | Sonnet 5.5 | Medium |
@@ -237,25 +244,29 @@ second router.
 
 ### Routing
 
-- Each source is bound to one project at setup. Sources that belong to no project
-  are bound to the home Clot. A GitHub repository is bound to the Clot whose
-  `repoUrl` names it; an event from a repository no Clot is bound to goes to the
-  home Clot, and is discarded when there is none.
-- A shared source (one inbox or one Stripe account serving several projects) carries
-  several bindings, each with a deterministic match condition: recipient alias,
-  sender domain, subject keyword, product or price ID.
-- Events that match nothing are routed by the triage call that already runs.
-- When the user corrects a routing, the Clot proposes a new match rule.
+- Each account of a source is set up either bound to one Clot or shared. A GitHub
+  repository is bound to the Clot whose `repoUrl` names it; an event from a
+  repository no Clot is bound to goes to the home Clot, and is discarded when
+  there is none.
+- A shared account (one inbox, one calendar, one Linear workspace serving several
+  projects) is routed by routing rules in `global.yaml`, each a deterministic
+  match on source, account, place (an email alias, a Linear team), actor or a
+  word in the title. Email aliases are routing rules, any number per account.
+- Events that match no rule go to the routing call, which sees each Clot's
+  one-line description. When it is not confident they go to the home Clot.
+- When the user says an event belongs to another Clot, the Clot hands it over
+  with a daemon tool, and proposes a routing rule when there is a pattern.
 
 ### Rulebook
 
 - Readable files in a folder and git repository of their own, apart from the
   Clots code: `global.yaml` for every Clot and `<clot>.yaml` for one. The daemon
   creates the folder and its starter files when they are missing.
-- Contents: pre-filters, routing match rules, triage guidance as a list of
-  plain-language lines, urgency markers, standing rules, watch recipes. A
-  pre-filter drops an event when every field it names matches: kind, actor,
-  repository, and text the title contains.
+- Contents: pre-filters, routing rules (in `global.yaml` only), triage guidance as
+  a list of plain-language lines, urgency markers, standing rules, watch recipes
+  and webhook recipes. A pre-filter drops an event when every field it names
+  matches: source, account, kind, place (such as a repository), actor, and text
+  the title contains.
 - The daemon reloads a file when it changes. A file that cannot be read or does
   not fit the schema is ignored: its last good version stays in force and the user
   is told once.
@@ -304,7 +315,9 @@ named trigger, an exact template and a way of sending.
   caused it, its title, its reference, its repository and its link.
 - **Way of sending** (`via`): how the message leaves, which also fixes where it
   goes. The Clot never names a destination. For GitHub it is a comment on the
-  issue or pull request the event is about. Each source adds its own.
+  issue or pull request the event is about; for email, a reply to the sender in
+  the thread, from the address the mail came to; for Linear and Notion, a comment
+  on the issue or page. Stripe and the calendar have none.
 - **Who sends:** the Clot, with the `send_from_template` daemon tool, in the
   turn that investigates the event. The rules that apply are named in that turn's
   prompt, and the Clot may leave one unsent. A batch triggers a rule when any
@@ -453,7 +466,12 @@ yet and no recap, it does nothing.
 - Each of these needs its own explicit yes: merging to the main branch, deploying,
   spending money, deleting data.
 - Anything addressed to a person is written as a draft and never sent, except
-  through a standing rule.
+  through a standing rule. An email draft can be saved in the user's own Drafts
+  folder, for the user to send.
+- In the user's calendar a Clot may add events and move or change them, never
+  one with guests and never a repeating one. Removing an event needs two yeses:
+  the user's in chat, then the user's in a temporary channel where the daemon
+  shows the event.
 
 ### Enforcement
 
@@ -462,7 +480,11 @@ yet and no recap, it does nothing.
   collaborator to each bound repository and holds a classic token with the `repo`
   scope, which reaches exactly the repositories it was invited to. (A fine-grained
   token cannot reach a repository its account is only a collaborator on.)
-  Elsewhere, read-only keys unless a standing rule needs more.
+  On Linear the Clots have a member of their own, as on GitHub. Elsewhere,
+  read-only keys unless a standing rule needs more. The one exception is email:
+  the daemon reads the user's own mailboxes, and a standing `email_reply` is sent
+  as the user, from the address the mail came to, with text the user approved
+  word for word.
 - **Knowing its own work**: the daemon reads the account's login from the token
   at startup. That is how an event the Clot caused itself is recognised (section
   3).
@@ -483,7 +505,10 @@ yet and no recap, it does nothing.
   the container and the scoped credentials are the boundary. In a locked turn the
   lock decides every call.
 - **Privileged actions** (sending from a template, editing the rulebook, posting to
-  chat) exist only as daemon tools, outside the container.
+  chat, saving an email draft, changing the calendar, handing an event to another
+  Clot) exist only as daemon tools, outside the container. Under the lock, the
+  tools that only read (the calendar, the daemon's MCP servers) are allowed,
+  rulebook edits are only proposed, and the rest are refused.
 - **Secrets** are entered through the `clots` CLI, never through chat.
 
 ### The lock
@@ -566,11 +591,12 @@ passes a configured threshold.
 
 | Source | Mechanism | Target latency |
 |---|---|---|
-| Sentry, Stripe, GitHub, Vercel | Webhook | Seconds |
-| Email | IMAP IDLE | Seconds |
-| PostHog | Webhook destination, plus a poll | Seconds to 5 minutes |
-| Google Calendar | Poll with a sync token | 1 to 5 minutes |
-| Any other MCP connector | Watch recipe | 1 to 5 minutes |
+| GitHub, Stripe, Linear, Notion, Sentry, Vercel | Webhook | Seconds |
+| Email (Gmail or any IMAP server) | IMAP IDLE | Seconds |
+| PostHog | Webhook destination with a token header | Seconds |
+| Google Calendar | Poll of the calendar's secret iCal address; changes through an Apps Script the user deploys | 1 to 5 minutes |
+| Any service that sends webhooks | Webhook recipe | Seconds |
+| Any other MCP server | Watch recipe | 1 to 5 minutes |
 | Connectors that exist only in the user's claude.ai account | Sweep | Up to 90 minutes |
 
 - **Webhooks** reach the daemon through Tailscale Funnel, which gives the machine
@@ -581,12 +607,22 @@ passes a configured threshold.
 - **GitHub** sends five kinds of event: an issue opened or reopened, a comment on
   an issue or pull request, a review submitted, a pull request opened or reopened,
   and a workflow run that failed or timed out. Every other delivery is
-  acknowledged and discarded.
-- **Watch recipes**: the daemon acts as an MCP client. On a timer it calls one
-  read-only tool on a connector and diffs the result against the previous result.
-  No model is involved. A recipe names the tool, its arguments, the field that
-  identifies an item, and the interval. When a new connector appears, the Clot
-  inspects its tools and proposes a recipe for the user to approve.
+  acknowledged and discarded. What each other source sends, and how it is
+  verified, is in the stage 2c specification.
+- **No Google Cloud project**: the calendar is read through its secret iCal
+  address and changed through an Apps Script that runs as the user, so the user's
+  own Google account is all it needs.
+- **Watch recipes**: the daemon acts as an MCP client of servers set in its own
+  configuration, logging in through OAuth with a link it posts in chat when a
+  server needs it. On a timer it calls one read-only tool and diffs the result
+  against the previous result. No model is involved. A recipe names the tool, its
+  arguments, where the items are, the field that identifies an item, and the
+  interval. When a new server appears, the Clot is told, inspects its tools and
+  proposes a recipe for the user to approve.
+- **Webhook recipes**: a service with no built-in support is described in the
+  rulebook: how its signature is checked, which payloads are kept and which fields
+  give the event. Adding one needs the user's yes; the user sets up the webhook
+  and puts its secret in `.env`.
 - **Sweep**: every 90 minutes the daemon starts a fresh Sonnet 5.5 medium session
   with the current recap, the rulebook and a record of what was last seen. It checks
   the connectors and reports only changes. Its transcript is deleted once the
@@ -747,9 +783,13 @@ Each stage gets its own specification and plan.
    - **Global memory**, built after 2b as a part of its own: memories the home
      Clot writes, the user approves and every Clot receives, and `&memory`
      (`.superpowers/specs/2026-10-14-clots-global-memory-design.md`).
-   - **2c. More sources**: Sentry, Stripe, Vercel, email, PostHog, Calendar, watch
-     recipes; with them, sources shared between projects, routing match rules and
-     routing corrections, and each source's way of sending a standing rule.
+   - **2c. More sources**: Stripe, email, Google Calendar, Linear and Notion, watch
+     recipes with the daemon's MCP client, and webhook recipes; with them, shared
+     sources, routing rules, the routing call and routing corrections, each
+     source's way of sending a standing rule, email drafts and the calendar tools.
+     Sentry, Vercel and PostHog are specified there and built later, once each can
+     be checked live
+     (`.superpowers/specs/2026-10-14-clots-stage-2c-sources-design.md`).
    - **2d. Gates and sweep**, with the spend log and rollover re-grounding.
 3. **Pi deployment and onboarding.**
 4. **Browser and live view.**
