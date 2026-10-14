@@ -33,14 +33,18 @@ export interface ClotDeps {
   rules?: { list(clot: string): string; undo(clot: string): string };
   /** Called when a session has been replaced by a new one. */
   onSessionClosed?: (clot: string) => Promise<void>;
+  /** Called before each turn starts, when no turn of this Clot is running: brings its global memories up to date. */
+  beforeTurn?: (clot: string) => Promise<void>;
+  /** Answers `&memory` and `&memory undo`. */
+  memory?: { list(): string; undo(): Promise<string> };
 }
 
 /** A command the daemon answers at once, without a turn and without the session. */
-type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" }>;
+type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" | "memory" }>;
 
 /** Returns the command when it is one answered at once; an `&effort` that carries a message is not. */
 function instantCommand(command: Command): InstantCommand | undefined {
-  return command.kind === "invalid" || command.kind === "rules" || (command.kind === "effort" && command.rest === "") ? command : undefined;
+  return command.kind === "invalid" || command.kind === "rules" || command.kind === "memory" || (command.kind === "effort" && command.rest === "") ? command : undefined;
 }
 
 const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: string; closed: string }> = {
@@ -216,6 +220,9 @@ export class Clot {
     } else if (command.kind === "rules") {
       const rules = this.d.rules;
       await chat.post(channelId, rules === undefined ? "The rulebook is not available." : command.undo ? rules.undo(name) : rules.list(name));
+    } else if (command.kind === "memory") {
+      const memory = this.d.memory;
+      await chat.post(channelId, memory === undefined ? "Global memory is not available." : command.undo ? await memory.undo() : memory.list());
     } else {
       await chat.post(channelId, `I don't know \`&${command.name}\` used that way. ${COMMAND_USAGE}`);
     }
@@ -256,6 +263,8 @@ export class Clot {
     }
 
     const stopTyping = chat.startTyping(session.channelId);
+    // Between turns, so the daemon never writes in the memory folder while the Clot may be writing there too.
+    await this.d.beforeTurn?.(name).catch((error) => console.error(`[${name}] syncing global memories failed:`, error));
     let result: TurnResult;
     try {
       result = isEvent ? await this.runEventTurn(row, session, mode) : await this.runTurn(row, session, mode, command);

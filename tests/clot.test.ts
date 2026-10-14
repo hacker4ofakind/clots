@@ -1168,3 +1168,67 @@ describe("Clot, stage 2b", () => {
     expect(runner.calls[2].prompt).toBe("something unrelated");
   });
 });
+
+describe("Clot, global memory", () => {
+  it("syncs its memory before every turn, a user's or an event's, and before the turn starts", async () => {
+    const synced: { clot: string; calls: number }[] = [];
+    extra = { beforeTurn: async (name) => void synced.push({ clot: name, calls: runner.calls.length }) };
+    clot = build();
+    await clot.init();
+
+    await clot.onMessage(msg("one"));
+    await clot.queueEvent(event("d-1"), "New issue.", false);
+    await clot.onMessage(msg("two"));
+    expect(synced).toEqual([
+      { clot: "graphite", calls: 0 },
+      { clot: "graphite", calls: 1 },
+      { clot: "graphite", calls: 2 },
+    ]);
+  });
+
+  it("still runs the turn when the sync fails", async () => {
+    extra = {
+      beforeTurn: async () => {
+        throw new Error("docker is not running");
+      },
+    };
+    clot = build();
+    await clot.init();
+    await clot.onMessage(msg("one"));
+    expect(runner.calls).toHaveLength(1);
+  });
+
+  it("answers &memory and &memory undo at once, without the model, also while a turn runs", async () => {
+    let undone = 0;
+    extra = {
+      memory: {
+        list: () => "Global memories in force:",
+        undo: async () => `Undid ${++undone}.`,
+      },
+    };
+    clot = build();
+    await clot.init();
+    const channel = store.activeSession("graphite")!.channelId;
+
+    await clot.onMessage(msg("&memory"));
+    expect(chat.postsIn(channel).at(-1)).toBe("Global memories in force:");
+    await clot.onMessage(msg("&memory undo"));
+    expect(chat.postsIn(channel).at(-1)).toBe("Undid 1.");
+    expect(runner.calls).toHaveLength(0);
+
+    runner.script = [{ hold: true }];
+    const first = clot.onMessage(msg("build the page"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    await clot.onMessage(msg("&memory undo"));
+    expect(chat.postsIn(channel).at(-1)).toBe("Undid 2.");
+    expect(runner.pushes).toEqual([]);
+    runner.release!();
+    await first;
+  });
+
+  it("says so when there is no global memory", async () => {
+    const channel = store.activeSession("graphite")!.channelId;
+    await clot.onMessage(msg("&memory"));
+    expect(chat.postsIn(channel).at(-1)).toBe("Global memory is not available.");
+  });
+});

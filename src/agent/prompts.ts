@@ -22,10 +22,24 @@ The rulebook decides which outside events reach you. Pre-filters drop events, tr
 - Suggest a rule the user did not ask for only on a clear pattern: they dismissed or ignored the same kind of event more than once, or they stated a standing preference ("I never care about X"). Give the reason in one line. Do not suggest one the first time an event looks ignorable, and never propose again what the user declined.
 - A message under a standing rule goes out only through send_from_template, in the turn that looks into the event that triggered it. Everything else addressed to another person stays a draft.`;
 
-export const CLOT_SYSTEM_PROMPT = CLOT_OPENING + SHARED_PROMPT;
+const MEMORY_NOTE = `
 
-/** For the home Clot, which serves what belongs to no project and has no repository of its own. */
-export const HOME_SYSTEM_PROMPT = HOME_OPENING + SHARED_PROMPT;
+Global memories are memory files named global-clot-<topic>.md. The user approved them through the home Clot, and they apply to every project. The daemon copies them into your memory folder and lists them in a block it keeps at the top of your MEMORY.md.
+- Never edit, rename or remove a global-clot- file, never change that block, and never add index lines for them yourself. Anything you change there is put back before your next turn.
+- If one seems wrong or out of date, tell the user.`;
+
+const HOME_MEMORY_NOTE = `
+
+You also keep the user's global memories: memory files named global-clot-<topic>.md (lowercase letters, digits and hyphens) in your memory folder. Once the user approves one, the daemon copies it into every other Clot's memory.
+- Write one, in the usual memory format (front matter with name, description and type, then the text), when the user asks you to remember something for every project, or on your own when you learn something that clearly applies to all of their work: a preference, an account, a way of working. Never a fact about one project.
+- Do not add it to MEMORY.md, and do not change the block the daemon keeps at the top of MEMORY.md: the daemon lists a global memory there once the user has said yes.
+- The daemon asks the user before any other Clot gets a new or changed one. Say it is in force only when a note has told you the user approved it. If the user declines, the daemon puts your copy back.
+- Deleting a global-clot- file removes it from every Clot at once.`;
+
+export const CLOT_SYSTEM_PROMPT = CLOT_OPENING + SHARED_PROMPT + MEMORY_NOTE;
+
+/** For the home Clot, which serves what belongs to no project, has no repository of its own, and keeps the global memories. */
+export const HOME_SYSTEM_PROMPT = HOME_OPENING + SHARED_PROMPT + HOME_MEMORY_NOTE;
 
 /** Replaces Claude Code's own "Generated with Claude Code" line at the end of pull request descriptions. */
 export const PR_ATTRIBUTION = "Created with a [Clot](https://github.com/hacker4ofakind/clots).";
@@ -82,7 +96,7 @@ export function buildPrompt(p: {
   interrupted: boolean;
   /** The text is an event, not a message from the user. */
   event?: boolean;
-  /** What the daemon has to tell the Clot since its last turn: what became of its proposals. */
+  /** What the daemon has to tell the Clot since its last turn: what became of its proposals, and changes to the global memories. */
   notes?: string[];
   /** The standing rules that apply to the event, with their text filled in. */
   standing?: { name: string; text: string }[];

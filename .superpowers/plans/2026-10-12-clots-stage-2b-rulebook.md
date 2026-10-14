@@ -23,6 +23,7 @@
 - Template fields: `{actor}`, `{title}`, `{ref}`, `{repo}`, `{url}`. `via` has one value: `github_comment`.
 - `&rules` and `&rules undo` are answered by the daemon at once, never reach the model, and work while a turn runs.
 - The home Clot is optional (`"home": true`), is named `home`, has no clone, no test command, and works in `/workspace`. `home` and `global` are refused as names of project Clots.
+- The home Clot's other role, global memory, is not in this plan. It is built on top of this one, by `.superpowers/plans/2026-10-14-clots-global-memory.md` from `.superpowers/specs/2026-10-14-clots-global-memory-design.md`. In this plan the home Clot keeps only its own memory, and nothing here touches a Clot's memory folder.
 - Automated events are held in groups by Clot, repository and subject.
 - The daemon's tools are approved under the lock. Nothing else about the lock changes.
 - Secrets live in `.env` and are never committed, printed or posted.
@@ -4594,6 +4595,8 @@ Expected: no errors.
 ---
 
 ### Task 12: The home Clot
+
+The home Clot as an events Clot for unbound repositories. Its global memory comes later, in its own plan (see Global Constraints).
 
 **Files:**
 - Modify: `src/config.ts`, `src/agent/container.ts`, `src/hold.ts`, `src/pipeline.ts`

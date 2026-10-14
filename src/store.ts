@@ -75,6 +75,23 @@ export interface RuleEditRow {
   summary: string;
 }
 
+/** A question about a global memory, waiting for the user's answer in a temporary channel. */
+export interface MemoryQuestionRow {
+  file: string;
+  /** The text the user is being asked about. */
+  text: string;
+  channelId: string;
+  channelName: string;
+}
+
+/** A global memory change that spread: an approval or a deletion. Null text means the file was not there. */
+export interface MemoryChangeRow {
+  id: number;
+  file: string;
+  oldText: string | null;
+  newText: string | null;
+}
+
 /**
  * Where an event stands. "received": stored, the pipeline has not finished with it.
  * "held": an automated event waiting a short while for others about the same subject.
@@ -180,6 +197,26 @@ CREATE TABLE IF NOT EXISTS sends (
   rule TEXT NOT NULL,
   url TEXT,
   PRIMARY KEY (event_id, rule)
+);
+CREATE TABLE IF NOT EXISTS global_memories (
+  file TEXT PRIMARY KEY,
+  text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_questions (
+  file TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE,
+  channel_name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file TEXT NOT NULL,
+  old_text TEXT,
+  new_text TEXT,
+  undone INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS memory_restores (
+  file TEXT PRIMARY KEY
 );
 `;
 
@@ -535,5 +572,78 @@ export class Store {
   /** Withdraws a claim, when the message was definitely not sent. */
   releaseSend(eventId: string, rule: string): void {
     this.db.prepare("DELETE FROM sends WHERE event_id = ? AND rule = ?").run(eventId, rule);
+  }
+
+  /** The global memories in force: file name to the text the user approved, in name order. */
+  approvedMemories(): Map<string, string> {
+    const rows: any[] = this.db.prepare("SELECT file, text FROM global_memories ORDER BY file").all();
+    return new Map(rows.map((r) => [r.file, r.text]));
+  }
+
+  private setApprovedMemory(file: string, text: string | null): void {
+    if (text === null) this.db.prepare("DELETE FROM global_memories WHERE file = ?").run(file);
+    else this.db.prepare("INSERT INTO global_memories (file, text) VALUES (?, ?) ON CONFLICT(file) DO UPDATE SET text = excluded.text").run(file, text);
+  }
+
+  /** Puts a change in force and logs it for undo, all or nothing. Null text removes the memory. */
+  applyMemoryChange(file: string, newText: string | null): void {
+    this.db.transaction(() => {
+      const oldText = this.approvedMemories().get(file) ?? null;
+      this.setApprovedMemory(file, newText);
+      this.db.prepare("INSERT INTO memory_changes (file, old_text, new_text) VALUES (?, ?, ?)").run(file, oldText, newText);
+    })();
+  }
+
+  /** The most recent change that has not been undone. */
+  lastMemoryChange(): MemoryChangeRow | undefined {
+    const r: any = this.db.prepare("SELECT * FROM memory_changes WHERE undone = 0 ORDER BY id DESC LIMIT 1").get();
+    return r && { id: r.id, file: r.file, oldText: r.old_text, newText: r.new_text };
+  }
+
+  /** Puts back what a change replaced and marks it undone, all or nothing. */
+  undoMemoryChange(change: MemoryChangeRow): void {
+    this.db.transaction(() => {
+      this.setApprovedMemory(change.file, change.oldText);
+      this.db.prepare("UPDATE memory_changes SET undone = 1 WHERE id = ?").run(change.id);
+    })();
+  }
+
+  createMemoryQuestion(q: MemoryQuestionRow): void {
+    this.db.prepare("INSERT INTO memory_questions (file, text, channel_id, channel_name) VALUES (?, ?, ?, ?)").run(q.file, q.text, q.channelId, q.channelName);
+  }
+
+  /** Open questions, in file name order. */
+  memoryQuestions(): MemoryQuestionRow[] {
+    const rows: any[] = this.db.prepare("SELECT * FROM memory_questions ORDER BY file").all();
+    return rows.map((r) => ({ file: r.file, text: r.text, channelId: r.channel_id, channelName: r.channel_name }));
+  }
+
+  memoryQuestionByChannel(channelId: string): MemoryQuestionRow | undefined {
+    return this.memoryQuestions().find((q) => q.channelId === channelId);
+  }
+
+  setMemoryQuestionText(file: string, text: string): void {
+    this.db.prepare("UPDATE memory_questions SET text = ? WHERE file = ?").run(text, file);
+  }
+
+  /** Closes a question. Returns false when it was closed already: only the caller that gets true may carry out its outcome. */
+  deleteMemoryQuestion(file: string): boolean {
+    return this.db.prepare("DELETE FROM memory_questions WHERE file = ?").run(file).changes === 1;
+  }
+
+  /** Marks the home Clot's copy of a file to be put back to the approved text, or removed when there is none. */
+  addMemoryRestore(file: string): void {
+    this.db.prepare("INSERT OR IGNORE INTO memory_restores (file) VALUES (?)").run(file);
+  }
+
+  memoryRestores(): string[] {
+    return this.db.prepare("SELECT file FROM memory_restores ORDER BY file").pluck().all() as string[];
+  }
+
+  clearMemoryRestores(files: string[]): void {
+    const remove = this.db.prepare("DELETE FROM memory_restores WHERE file = ?");
+    this.db.transaction(() => {
+      for (const file of files) remove.run(file);
+    })();
   }
 }

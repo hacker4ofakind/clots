@@ -341,6 +341,11 @@ the model. They work while a turn is running.
   repository.
 - **Holding automated events:** a group is formed by Clot, repository and
   subject. `pr:14` in two repositories is two groups.
+- **Global memory** is the home Clot's other role: it alone writes the memories
+  every Clot shares, which spread after the user's yes. That part is built on top
+  of 2b, with its own specification
+  (`.superpowers/specs/2026-10-14-clots-global-memory-design.md`) and plan. In 2b
+  the home Clot keeps only its own memory, as every Clot does.
 
 ## 10. Components
 
@@ -429,7 +434,7 @@ In the development environment:
 Routing match rules and routing corrections, every source other than GitHub, ways
 of sending other than a GitHub comment, a fixed destination on a standing rule,
 sends the daemon makes without the Clot, urgency markers, watch recipes, gates,
-the sweep.
+the sweep, global memory.
 
 ## 15. Assumptions to verify first
 

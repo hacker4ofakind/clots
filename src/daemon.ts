@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { containerName, ensureContainer, hasOwnLogin, sessionEnv } from "./agent/container.js";
+import { DockerMemoryFolders } from "./agent/memory-folder.js";
 import { HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
 import { SdkRunner } from "./agent/runner.js";
 import { DiscordChat } from "./chat/discord.js";
@@ -11,6 +12,7 @@ import { repoSlug } from "./events/github.js";
 import type { ClotEvent } from "./events/types.js";
 import { inlineCommentReader } from "./events/review-comments.js";
 import { SdkExplainer } from "./explainer.js";
+import { GlobalMemory } from "./global-memory.js";
 import { startIntake } from "./intake.js";
 import { Pipeline, routeByRepo } from "./pipeline.js";
 import { Proposals } from "./proposals.js";
@@ -77,11 +79,25 @@ const writer = new RuleWriter({ rulebook, store });
 const proposals = new Proposals({ store, chat, writer, userId: config.userId, max: config.maxProposals, say });
 const toolDeps: ToolDeps = { rulebook, writer, proposals, store, senders: { github_comment: githubCommentSender(config.githubToken) }, say };
 
+const memory = new GlobalMemory({
+  store,
+  chat,
+  // A Clot's memory folder is named after the directory its turns start in: the home Clot has no clone.
+  folders: new DockerMemoryFolders((name) => (name === HOME_CLOT ? "/workspace" : "/workspace/repo")),
+  home: HOME_CLOT,
+  clots: names,
+  userId: config.userId,
+  max: config.maxProposals,
+  say,
+  isBusy: (name) => clots.get(name)?.isBusy() ?? false,
+});
+
 await chat.start((m) => {
   void (async () => {
     // A reply in a temporary channel is an answer to the daemon's question there, not a message for the Clot.
     if (await steering.onReply(m)) return;
     if (await proposals.onReply(m)) return;
+    if (await memory.onReply(m)) return;
     const session = store.sessionByChannel(m.channelId);
     const clot = session && clots.get(session.clot);
     if (clot) await clot.onMessage(m);
@@ -117,8 +133,14 @@ for (const c of definitions) {
     now: () => new Date(),
     newId: randomUUID,
     schedule: (ms, fn) => void setTimeout(fn, ms),
-    // When no turn is running, a question about "the running turn" has lapsed.
-    onTurnEnd: (name) => steering.lapse(name),
+    // When no turn is running, a question about "the running turn" has lapsed. After the home Clot's
+    // turns, and once at startup, its global memories are looked at.
+    onTurnEnd: async (name) => {
+      await steering.lapse(name);
+      if (name === HOME_CLOT) await memory.afterHomeTurn();
+    },
+    beforeTurn: (name) => memory.beforeTurn(name),
+    memory: { list: () => memory.list(), undo: () => memory.undo() },
     makeTools: (ctx) => makeTools(toolDeps, ctx),
     standingFor: (name, event) => matchStanding(rulebook.standingFor(name), event, event.kind === "batch" ? store.eventsMergedInto(event.id) : []),
     rules: {
@@ -137,6 +159,8 @@ for (const c of definitions) {
 
 // A proposal whose channel was removed while the daemon was down can no longer be answered.
 await proposals.closeOrphans();
+// Nor can a question about a global memory; the home Clot's next turn asks it again.
+await memory.closeOrphans();
 
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);

@@ -28,6 +28,11 @@ export function ruleChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-rule`, existing);
 }
 
+/** The temporary channel in which the user is asked about a global memory: `home-memory`, then `-2`, `-3` while others are open. */
+export function memoryChannelName(project: string, existing: string[]): string {
+  return firstFree(`${slug(project)}-memory`, existing);
+}
+
 export function splitMessage(text: string, max = 2000): string[] {
   const parts: string[] = [];
   let rest = text;
