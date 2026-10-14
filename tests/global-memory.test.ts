@@ -228,8 +228,23 @@ describe("a new or changed global memory", () => {
     expect(questions().map((q) => q.file)).toEqual(["global-clot-a.md", "global-clot-b.md"]);
 
     await memory.onReply(reply(questions()[0].channelId, "yes"));
-    await memory.afterHomeTurn();
     expect(questions().map((q) => q.file)).toEqual(["global-clot-b.md", "global-clot-c.md"]);
+  });
+
+  it("asks about a file held back by the limit after the running home turn, when the answer comes during one", async () => {
+    memory = build(1);
+    folders.put("home", "global-clot-a.md", "a");
+    folders.put("home", "global-clot-b.md", "b");
+    await memory.afterHomeTurn();
+    busy.add("home");
+    await memory.onReply(reply(questions()[0].channelId, "no"));
+    expect(questions()).toEqual([]);
+    expect(folders.file("home", "global-clot-a.md")).toBe("a");
+
+    busy.delete("home");
+    await memory.afterHomeTurn();
+    expect(folders.file("home", "global-clot-a.md")).toBeUndefined();
+    expect(questions().map((q) => q.file)).toEqual(["global-clot-b.md"]);
   });
 
   it("withdraws the question when the home Clot removes the file or puts it back", async () => {

@@ -243,9 +243,12 @@ export class GlobalMemory {
         `The user declined the global memory you wrote, ${name} (${question.file}). Your copy was ${old === undefined ? "removed" : "put back to the approved text"}. Do not write it again unless the user asks.`,
       );
       await this.d.say(home, `Declined: global memory ${name} (\`${question.file}\`).`);
-      await this.restoreHomeNow();
     }
     await this.d.chat.deleteChannel(question.channelId).catch(() => undefined);
+    // Looks at the home Clot's folder again: a declined copy is put back, and a file held back by the
+    // limit is asked about now that a question has closed. During a home turn, both wait for its end.
+    if (this.d.isBusy(home)) return;
+    await this.check().catch((error) => console.error(`[${home}] checking global memories failed:`, error));
   }
 
   /** Leaves a note for every Clot but the home Clot, which is told in its own words. */

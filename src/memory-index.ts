@@ -9,8 +9,8 @@ const GLOBAL_FILE = /^global-clot-[a-z0-9][a-z0-9-]*\.md$/;
 export const BLOCK_START = "<!-- clots: global memories, kept by the daemon. Do not edit. -->";
 export const BLOCK_END = "<!-- clots: end of global memories -->";
 
-/** A line of the index that links to a global memory, wherever it is. */
-const GLOBAL_LINK = /\]\(global-clot-[^)]*\)/;
+/** An index line for a global memory: one whose own link, at its start, points to a global-clot- file. */
+const GLOBAL_LINK = /^\s*(?:[-*+]\s+)?\[[^\]]*\]\(global-clot-[^)]*\)/;
 
 export function isGlobalFile(name: string): boolean {
   return GLOBAL_FILE.test(name);

@@ -71,6 +71,11 @@ describe("withGlobalBlock", () => {
     expect(withGlobalBlock(`${own}${deploy}\n`, [deploy])).toBe(`${BLOCK_START}\n${deploy}\n${BLOCK_END}\n${own}`);
   });
 
+  it("keeps a line of the Clot's own that only mentions a global memory", () => {
+    const mention = "- [Release notes](release-notes.md) — follows [Deploy days](global-clot-deploy-days.md)\n";
+    expect(withGlobalBlock(`${own}${mention}`, [deploy])).toBe(`${BLOCK_START}\n${deploy}\n${BLOCK_END}\n${own}${mention}`);
+  });
+
   it("takes out only a start marker that has no end after it", () => {
     expect(withGlobalBlock(`${BLOCK_START}\n${own}`, [deploy])).toBe(`${BLOCK_START}\n${deploy}\n${BLOCK_END}\n${own}`);
   });

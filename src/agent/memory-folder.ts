@@ -32,11 +32,19 @@ export interface MemoryFolders {
   write(clot: string, change: FolderChange): Promise<void>;
 }
 
-/** Prints the folder as lines: `F <name> <base64>` for each global memory, `I - <base64>` for the index. */
+/**
+ * Prints the folder as lines: `F <name> <base64>` for each global memory, `I - <base64>` for the index.
+ * Fails when the folder or a file in it cannot be read: an unlisted file would look deleted.
+ */
 export const READ_SCRIPT = `d="$1"
 [ -d "$d" ] || { echo MISSING; exit 0; }
-for f in "$d"/global-clot-*.md; do [ -f "$f" ] && echo "F $(basename "$f") $(base64 -w0 < "$f")"; done
-[ -f "$d/MEMORY.md" ] && echo "I - $(base64 -w0 < "$d/MEMORY.md")"
+cd "$d" && [ -r . ] || exit 1
+for f in global-clot-*.md; do
+  [ -f "$f" ] || continue
+  b=$(base64 -w0 < "$f") || exit 1
+  echo "F $f $b"
+done
+if [ -f MEMORY.md ]; then b=$(base64 -w0 < MEMORY.md) || exit 1; echo "I - $b"; fi
 exit 0`;
 
 /** Reads lines from stdin: `P <name> <base64>` writes a file, `R <name> -` removes one, `I - <base64>` writes the index. */
