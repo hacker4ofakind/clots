@@ -201,6 +201,24 @@ describe("a new or changed global memory", () => {
     expect(store.approvedMemories().get(DEPLOY)).toBe(deployV2);
   });
 
+  it("keeps the question on the text the user saw when the newer text cannot be posted, and posts it at the next check", async () => {
+    folders.put("home", DEPLOY, deployV1);
+    await memory.afterHomeTurn();
+    const channel = questions()[0].channelId;
+    folders.put("home", DEPLOY, deployV2);
+    const post = chat.post.bind(chat);
+    chat.post = async () => {
+      throw new Error("Discord is down");
+    };
+    await memory.afterHomeTurn();
+    expect(questions()[0].text).toBe(deployV1);
+
+    chat.post = post;
+    await memory.afterHomeTurn();
+    expect(questions()[0].text).toBe(deployV2);
+    expect(chat.postsIn(channel).at(-1)).toContain("Fridays and Mondays.");
+  });
+
   it("keeps to the limit, and asks about the rest once a question closes", async () => {
     memory = build(2);
     folders.put("home", "global-clot-a.md", "a");

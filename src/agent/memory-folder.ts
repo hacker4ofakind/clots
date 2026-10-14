@@ -89,6 +89,8 @@ function runWithInput(args: string[], input: string): Promise<void> {
     let stderr = "";
     child.stderr.on("data", (chunk) => (stderr += String(chunk)));
     child.on("error", reject);
+    // Docker exiting while the input is still being written breaks the pipe: the write fails, the daemon carries on.
+    child.stdin.on("error", reject);
     child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`docker exited with ${code}: ${stderr.trim()}`))));
     child.stdin.end(input);
   });

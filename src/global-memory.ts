@@ -184,8 +184,13 @@ export class GlobalMemory {
       this.noteOthers(spreadNote(action.file, text ?? null, null));
       await this.d.say(home, `Global memory removed from every Clot: ${title(action.file, text)} (\`${action.file}\`). \`&memory undo\` brings it back.`);
     } else if (action.kind === "update") {
+      // The answer moves to the new text only once the user has been shown it; otherwise the next check posts it again.
+      try {
+        await chat.post(action.channelId, `The home Clot changed \`${action.file}\` again. Your answer now applies to this text:\n\n${block(action.text)}\n\n${MEMORY_REPLIES}`);
+      } catch {
+        return;
+      }
       store.setMemoryQuestionText(action.file, action.text);
-      await chat.post(action.channelId, `The home Clot changed \`${action.file}\` again. Your answer now applies to this text:\n\n${block(action.text)}\n\n${MEMORY_REPLIES}`).catch(() => undefined);
     } else {
       await this.ask(action.file, action.text, action.approved);
     }

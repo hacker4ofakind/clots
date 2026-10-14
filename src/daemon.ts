@@ -50,8 +50,11 @@ await new Promise<void>((resolve) => {
 });
 console.log(`[events] listening for GitHub webhooks on http://127.0.0.1:${config.intakePort}/webhooks/github`);
 
-/** Every Clot the daemon runs: one per project, and the home Clot when the configuration asks for it. */
-const definitions: { name: string; repoUrl?: string; testCommand?: string }[] = [...config.clots, ...(config.home ? [{ name: HOME_CLOT }] : [])];
+/**
+ * Every Clot the daemon runs: one per project, and the home Clot when the configuration asks for it.
+ * The home Clot comes first: its startup check of the global memories runs before any project Clot's turn.
+ */
+const definitions: { name: string; repoUrl?: string; testCommand?: string }[] = [...(config.home ? [{ name: HOME_CLOT }] : []), ...config.clots];
 const names = definitions.map((c) => c.name);
 
 const chat = new DiscordChat(config.discordToken, config.guildId);
@@ -103,6 +106,10 @@ await chat.start((m) => {
     if (clot) await clot.onMessage(m);
   })().catch((error) => console.error("[chat]", error));
 });
+
+// A question about a global memory whose channel was removed while the daemon was down can no longer
+// be answered. Closed before the home Clot's startup check, which then asks it again.
+await memory.closeOrphans();
 
 /** The Clots share one GitHub account; its login is what marks an event as caused by a Clot. */
 let clotLogin = "";
@@ -159,8 +166,6 @@ for (const c of definitions) {
 
 // A proposal whose channel was removed while the daemon was down can no longer be answered.
 await proposals.closeOrphans();
-// Nor can a question about a global memory; the home Clot's next turn asks it again.
-await memory.closeOrphans();
 
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
