@@ -102,7 +102,7 @@ const WRITING_FLAG: Record<string, (arg: string) => boolean> = {
 
 const GIT_SUBCOMMANDS = new Set(["log", "diff", "show", "status", "blame", "ls-files", "grep", "branch"]);
 const GIT_BRANCH_LISTING = new Set(["-a", "-r", "-v", "-vv", "--list", "--all", "--remotes", "--show-current"]);
-const GH_SUBCOMMANDS = new Set(["issue view", "issue list", "pr view", "pr list", "pr diff", "pr checks", "run view", "run list", "repo view"]);
+const GH_SUBCOMMANDS = new Set(["issue view", "issue list", "pr view", "pr list", "pr diff", "pr checks", "run view", "run list", "repo view", "repo list"]);
 
 function checkGit(args: string[]): Verdict {
   const sub = args[0];

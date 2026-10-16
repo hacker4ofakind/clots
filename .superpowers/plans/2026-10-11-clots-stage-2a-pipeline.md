@@ -1512,6 +1512,8 @@ const APPROVED = [
   "gh repo view",
   "gh repo view --json name,description,defaultBranchRef",
   "gh repo view owner/app --json defaultBranchRef --jq .defaultBranchRef.name",
+  "gh repo list",
+  "gh repo list owner --limit 50 --json name,isArchived",
   "ls missing 2>/dev/null",
   "docker ps -a",
   "pm2 ps",
@@ -1607,7 +1609,6 @@ const REFUSED: [command: string, why: string][] = [
   ["gh repo view --web", "browser"],
   ["gh repo view owner/app -w", "browser"],
   ["gh repo", "gh repo"],
-  ["gh repo list", "gh repo list"],
   ["gh repo create owner/new --private", "gh repo create"],
   ["gh repo delete owner/app --yes", "gh repo delete"],
   ["gh repo edit --visibility public", "gh repo edit"],
@@ -1804,7 +1805,7 @@ const WRITING_FLAG: Record<string, (arg: string) => boolean> = {
 
 const GIT_SUBCOMMANDS = new Set(["log", "diff", "show", "status", "blame", "ls-files", "grep", "branch"]);
 const GIT_BRANCH_LISTING = new Set(["-a", "-r", "-v", "-vv", "--list", "--all", "--remotes", "--show-current"]);
-const GH_SUBCOMMANDS = new Set(["issue view", "issue list", "pr view", "pr list", "pr diff", "pr checks", "run view", "run list", "repo view"]);
+const GH_SUBCOMMANDS = new Set(["issue view", "issue list", "pr view", "pr list", "pr diff", "pr checks", "run view", "run list", "repo view", "repo list"]);
 
 function checkGit(args: string[]): Verdict {
   const sub = args[0];

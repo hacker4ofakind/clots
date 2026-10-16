@@ -258,7 +258,7 @@ Approved shell commands:
 - **Git:** `log`, `diff`, `show`, `status`, `blame`, `branch` (listing only),
   `ls-files`, `grep`
 - **GitHub CLI:** `issue view`, `issue list`, `pr view`, `pr list`, `pr diff`,
-  `pr checks`, `run view`, `run list`, `repo view`
+  `pr checks`, `run view`, `run list`, `repo view`, `repo list`
 - **System:** `ps`, `docker ps`, `pm2 ps`, `pm2 list`, `ping` with a count
 - **The project's test command**, set per Clot in the configuration, matched
   exactly
