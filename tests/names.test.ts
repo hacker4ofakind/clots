@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { askChannelName, memoryChannelName, ruleChannelName, sessionChannelName, splitMessage } from "../src/chat/names.js";
+import { askChannelName, calChannelName, memoryChannelName, ruleChannelName, sessionChannelName, splitMessage } from "../src/chat/names.js";
+
+it("names the channel of a calendar removal", () => {
+  expect(calChannelName("graphite", [])).toBe("graphite-cal");
+  expect(calChannelName("graphite", ["graphite-cal"])).toBe("graphite-cal-2");
+});
 
 describe("sessionChannelName", () => {
   const noon = new Date("2026-10-10T12:00:00Z");

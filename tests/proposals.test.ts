@@ -302,3 +302,77 @@ describe("Proposals", () => {
     expect(store.notes("graphite")[0].text).toContain("Drop events where actor is `dependabot[bot]`");
   });
 });
+
+describe("calendar removals", () => {
+  let previews: string[];
+  let removed: string[];
+  let removeAnswer: { ok: true; summary: string } | { ok: false; reason: string; retry?: true };
+
+  const texts = () => said.map((s) => s.text);
+
+  beforeEach(() => {
+    previews = [];
+    removed = [];
+    removeAnswer = { ok: true, summary: '"Demo", Fri 16 Oct 2026' };
+    proposals = new Proposals({
+      store,
+      chat,
+      writer,
+      userId: USER,
+      max: 3,
+      say: async (clot, text) => void said.push({ clot, text }),
+      calendar: {
+        preview: async (r) => {
+          previews.push(r.uid);
+          return r.uid === "gone" ? { ok: false, reason: "there is no event with that ID in this calendar" } : { ok: true, summary: `Remove from the calendar (${r.account}): "Demo", Fri 16 Oct 2026, 14:00–15:00` };
+        },
+        remove: async (r) => {
+          removed.push(r.uid);
+          return removeAnswer;
+        },
+      },
+    });
+  });
+
+  it("asks in a -cal channel, and removes the event on yes", async () => {
+    expect(await proposals.openRemoval("graphite", { account: "me", uid: "a@google.com" })).toBe(PROPOSAL_FILED);
+    const [open] = store.openProposals("graphite");
+    expect(open).toMatchObject({ channelName: "graphite-cal", scope: "calendar" });
+    expect(chat.postsIn(open.channelId)[0]).toContain("asks to remove this event from your calendar");
+    expect(chat.postsIn(open.channelId)[0]).toContain("to remove it");
+    await proposals.onReply(reply(open.channelId, "yes"));
+    expect(removed).toEqual(["a@google.com"]);
+    expect(texts()).toContain('Removed from the calendar: "Demo", Fri 16 Oct 2026');
+    expect(store.notes("graphite").at(-1)!.text).toContain("it is gone from the calendar");
+    expect(chat.deleted).toContain(open.channelId);
+  });
+
+  it("keeps the event on no, and asks nothing for an event it cannot remove", async () => {
+    await proposals.openRemoval("graphite", { account: "me", uid: "a@google.com" });
+    await proposals.onReply(reply(store.openProposals("graphite")[0].channelId, "no"));
+    expect(removed).toEqual([]);
+    expect(texts()).toContain('Kept in the calendar: Remove from the calendar (me): "Demo", Fri 16 Oct 2026, 14:00–15:00');
+    expect(await proposals.openRemoval("graphite", { account: "me", uid: "gone" })).toBe("Not proposed: there is no event with that ID in this calendar.");
+  });
+
+  it("keeps the question open when the script could not be reached", async () => {
+    removeAnswer = { ok: false, reason: "the script could not be reached", retry: true };
+    await proposals.openRemoval("graphite", { account: "me", uid: "a@google.com" });
+    const channel = store.openProposals("graphite")[0].channelId;
+    await proposals.onReply(reply(channel, "yes"));
+    expect(store.openProposals("graphite")).toHaveLength(1);
+    expect(chat.postsIn(channel).at(-1)).toContain("could not be done just now");
+  });
+
+  it("asks again in the same channel when the reply is not one it accepts", async () => {
+    await proposals.openRemoval("graphite", { account: "me", uid: "a@google.com" });
+    const channel = store.openProposals("graphite")[0].channelId;
+    await proposals.onReply(reply(channel, "maybe"));
+    expect(chat.postsIn(channel).at(-1)).toContain("to remove it from your calendar");
+  });
+
+  it("counts towards the limit on open proposals", async () => {
+    for (const uid of ["a", "b", "c"]) await proposals.openRemoval("graphite", { account: "me", uid });
+    expect(await proposals.openRemoval("graphite", { account: "me", uid: "d" })).toContain("already waiting");
+  });
+});

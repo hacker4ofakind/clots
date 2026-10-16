@@ -4,14 +4,18 @@ import type { ClotEvent } from "./types.js";
 /** Longest body kept from each event that goes into a batch, in characters. */
 const MAX_MEMBER_BODY = 800;
 
-/** "pr:14" becomes "pull request #14"; "issue:7", "issue #7"; "branch:main", "branch main". */
+/**
+ * A subject in words: "pr:14" is "pull request #14", "issue:7" "issue #7", "issue:ENC-12"
+ * "issue ENC-12", "customer:cus_1" "customer cus_1". A subject with no type is given as it is.
+ */
 export function describeSubject(subject: string): string {
   const at = subject.indexOf(":");
+  if (at < 0) return subject;
   const type = subject.slice(0, at);
   const name = subject.slice(at + 1);
   if (type === "pr") return `pull request #${name}`;
-  if (type === "issue") return `issue #${name}`;
-  return `branch ${name}`;
+  if (type === "issue") return /^\d+$/.test(name) ? `issue #${name}` : `issue ${name}`;
+  return `${type} ${name}`;
 }
 
 function clip(text: string, max: number): string {
@@ -31,18 +35,21 @@ export function combine(events: ClotEvent[]): { event: ClotEvent; absorbed: Clot
 
   const first = kept[0];
   const at = first.subject.indexOf(":");
-  const name = first.subject.slice(at + 1);
+  const name = at < 0 ? first.subject : first.subject.slice(at + 1);
   const body = kept.map((e) => [`- ${e.title}`, `  by ${e.actor}: ${e.url}`, ...(e.body.trim() === "" ? [] : [clip(e.body.trim(), MAX_MEMBER_BODY)])].join("\n")).join("\n\n");
+  // A GitHub pull request has a page that gathers what happened to it; any other subject is shown by its first report.
+  const onPullRequest = first.source === "github" && first.subject.startsWith("pr:");
   return {
     event: {
       id: `batch:${first.id}`,
       source: first.source,
+      account: first.account,
       kind: "batch",
-      repo: first.repo,
+      place: first.place,
       actor: [...new Set(kept.map((e) => e.actor))].join(", "),
       title: `${kept.length} automated reports on ${describeSubject(first.subject)}`,
       body: clip(body, MAX_BODY),
-      url: first.subject.startsWith("pr:") ? `https://github.com/${first.repo}/pull/${name}` : first.url,
+      url: onPullRequest ? `https://github.com/${first.place}/pull/${name}` : first.url,
       ref: name,
       subject: first.subject,
       automated: true,

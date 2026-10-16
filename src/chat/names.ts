@@ -28,6 +28,11 @@ export function ruleChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-rule`, existing);
 }
 
+/** The temporary channel in which the user is asked to remove a calendar event: `project-cal`, then `-2`, `-3` while others are open. */
+export function calChannelName(project: string, existing: string[]): string {
+  return firstFree(`${slug(project)}-cal`, existing);
+}
+
 /** The temporary channel in which the user is asked about a global memory: `home-memory`, then `-2`, `-3` while others are open. */
 export function memoryChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-memory`, existing);

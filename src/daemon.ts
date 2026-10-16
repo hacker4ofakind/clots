@@ -6,15 +6,32 @@ import { HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
 import { SdkRunner } from "./agent/runner.js";
 import { DiscordChat } from "./chat/discord.js";
 import { Clot } from "./clot.js";
-import { HOME_CLOT, loadConfig } from "./config.js";
+import { HOME_CLOT, loadConfig, type AccountBase } from "./config.js";
 import { githubCommentSender } from "./events/github-comment.js";
-import { repoSlug } from "./events/github.js";
+import { isSelfCaused, repoSlug } from "./events/github.js";
+import { enricherBySource, type Enricher } from "./enrich.js";
+import { SdkRoutingCall } from "./routing-call.js";
+import { bindingResolver, EventRouter } from "./routing.js";
 import type { ClotEvent } from "./events/types.js";
 import { inlineCommentReader } from "./events/review-comments.js";
+import { McpHub, oauthCallbackHandler, sdkOpener } from "./mcp/hub.js";
+import { Watcher } from "./watch.js";
+import { readEnvFile } from "./env-file.js";
+import { recipeHandler } from "./webhook-recipe.js";
+import { StoredOAuth } from "./mcp/oauth.js";
+import { CalendarFeed } from "./sources/calendar.js";
+import { calendarScript, describeScriptEvent } from "./sources/calendar-script.js";
+import { imapflowClient, MailboxListener, saveDraft } from "./sources/imap.js";
+import { linearCommentSender, linearEnricher, linearHandler, linearMember } from "./sources/linear.js";
+import { notionBot, notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
+import { emailReplySender, smtpTransport } from "./sources/smtp.js";
+import { stripeEnricher, stripeHandler } from "./sources/stripe.js";
 import { SdkExplainer } from "./explainer.js";
 import { GlobalMemory } from "./global-memory.js";
-import { startIntake } from "./intake.js";
-import { Pipeline, routeByRepo } from "./pipeline.js";
+import { handOver } from "./hand-over.js";
+import { Supervisor } from "./listeners.js";
+import { githubHandler, startIntake, type Handler } from "./intake.js";
+import { Pipeline } from "./pipeline.js";
 import { Proposals } from "./proposals.js";
 import { SdkRouter } from "./router.js";
 import { RuleWriter } from "./rule-writer.js";
@@ -33,12 +50,27 @@ const config = loadConfig(JSON.parse(fs.readFileSync("clots.config.json", "utf8"
 fs.mkdirSync("data", { recursive: true });
 const store = new Store("data/clots.db");
 let onEvent: (event: ClotEvent) => void = () => undefined;
+/**
+ * Hands a stored event on: to the pipeline, or nowhere when its source already knew it goes no
+ * further. Before the pipeline exists, an event stays as received and is picked up at its start.
+ */
+const deliver = (event: ClotEvent, dropped?: string): void => {
+  if (dropped !== undefined) store.setEventStatus(event.id, "dropped", dropped);
+  else onEvent(event);
+};
+/**
+ * The intake's paths. Each source adds its own as it is set up below. A request to a path that is
+ * not here yet is answered 404, and webhook sources deliver it again later.
+ */
+const handlers = new Map<string, Handler>([["/webhooks/github", githubHandler({ secret: config.webhookSecret, insertEvent: (event) => store.insertEvent(event), now: () => Date.now() })]]);
+/** The webhook recipes' paths, /webhooks/r/<name>, set once the rulebook is read. */
+let recipeHandlers: (name: string) => Handler | undefined = () => undefined;
 const intake = startIntake({
   port: config.intakePort,
-  secret: config.webhookSecret,
-  insertEvent: (event) => store.insertEvent(event),
-  now: () => Date.now(),
-  onEvent: (event) => onEvent(event),
+  handlerFor: (path) => handlers.get(path) ?? (path.startsWith("/webhooks/r/") ? recipeHandlers(path.slice("/webhooks/r/".length)) : undefined),
+  onAnswer: (answer) => {
+    if (answer.event) deliver(answer.event, answer.dropped);
+  },
 });
 await new Promise<void>((resolve) => {
   intake.once("listening", resolve);
@@ -48,7 +80,7 @@ await new Promise<void>((resolve) => {
     process.exit(1);
   });
 });
-console.log(`[events] listening for GitHub webhooks on http://127.0.0.1:${config.intakePort}/webhooks/github`);
+console.log(`[events] listening for webhooks on http://127.0.0.1:${config.intakePort}${config.publicUrl === "" ? "" : `, public at ${config.publicUrl}`}`);
 
 /**
  * Every Clot the daemon runs: one per project, and the home Clot when the configuration asks for it.
@@ -80,7 +112,15 @@ rulebook.watch();
 
 const writer = new RuleWriter({ rulebook, store });
 const proposals = new Proposals({ store, chat, writer, userId: config.userId, max: config.maxProposals, say });
-const toolDeps: ToolDeps = { rulebook, writer, proposals, store, senders: { github_comment: githubCommentSender(config.githubToken) }, say };
+const toolDeps: ToolDeps = {
+  rulebook,
+  writer,
+  proposals,
+  store,
+  senders: { github_comment: githubCommentSender(config.githubToken) },
+  say,
+  handOver: (from, eventId, to) => handOver({ store, clots, say }, from, eventId, to),
+};
 
 const memory = new GlobalMemory({
   store,
@@ -170,6 +210,205 @@ await proposals.closeOrphans();
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
 
+// Sources. Each sets up its intake path, its enricher, its way of sending and its listeners here.
+const enrichers: Record<string, Enricher> = { github: inlineCommentReader(config.githubToken) };
+const supervisor = new Supervisor({
+  schedule: (ms, fn) => {
+    const timer = setTimeout(fn, ms);
+    return () => clearTimeout(timer);
+  },
+});
+/** Tells the user about an account: in its Clot's channel, or in every Clot's channel when it is shared. */
+const tellAccount =
+  (account: { clot?: string }) =>
+  async (text: string): Promise<void> => {
+    for (const name of account.clot === undefined ? names : [account.clot]) await say(name, text);
+  };
+const insertEvent = (event: ClotEvent) => store.insertEvent(event);
+
+// Stripe: one path per business, each with its own signing secret.
+for (const account of config.sources.stripe) handlers.set(`/webhooks/stripe/${account.account}`, stripeHandler(account, { insertEvent, now: () => Date.now() }));
+if (config.sources.stripe.length > 0) enrichers.stripe = stripeEnricher(config.sources.stripe);
+
+// Email: one connection per watched mailbox, held open and reopened when it drops.
+for (const account of config.sources.email) {
+  for (const mailbox of account.mailboxes) {
+    const listener = new MailboxListener({ account, mailbox, client: () => imapflowClient(account), store, deliver, now: () => Date.now() });
+    supervisor.start({ name: `email ${account.account} (${mailbox})`, everyMs: 0, tell: tellAccount(account), run: (ready) => listener.run(ready) });
+  }
+}
+if (config.sources.email.length > 0) {
+  toolDeps.email = { accounts: config.sources.email, save: saveDraft };
+  toolDeps.senders.email_reply = emailReplySender({ accounts: config.sources.email, store, transport: smtpTransport });
+}
+
+// Calendar: each feed polled for reminders, and read for calendar_list.
+const feeds = new Map<string, CalendarFeed>();
+for (const account of config.sources.calendar) {
+  const feed = new CalendarFeed({ account, timeZone: config.timeZone, store, deliver: (event) => deliver(event), now: () => Date.now() });
+  feeds.set(account.account, feed);
+  supervisor.start({ name: `calendar ${account.account}`, everyMs: account.pollMinutes * 60_000, tell: tellAccount(account), run: () => feed.poll() });
+}
+/**
+ * Learns who the Clots are at a source, to drop what they did themselves. A lookup that fails is
+ * tried again with a growing wait, up to an hour; until it works, that source's standing sends are refused.
+ */
+function learnIdentity(what: string, lookup: () => Promise<string>, learnt: (id: string) => void, waitMs = 5_000): void {
+  lookup().then(learnt, (error) => {
+    console.warn(`[events] could not read ${what}; its standing sends wait until it is read. Trying again in ${Math.round(waitMs / 1000)} s:`, error);
+    setTimeout(() => learnIdentity(what, lookup, learnt, Math.min(waitMs * 2, 3_600_000)), waitMs).unref();
+  });
+}
+
+// Linear: one path per workspace. The Clots' member is learnt from its key, to drop what it did itself.
+const linearMembers = new Map<string, string>();
+const linearMemberOf = (account: string) => linearMembers.get(account) ?? "";
+for (const account of config.sources.linear) {
+  handlers.set(`/webhooks/linear/${account.account}`, linearHandler(account, { insertEvent, now: () => Date.now(), memberId: () => linearMemberOf(account.account) }));
+  learnIdentity(`the Clots' Linear member for ${account.account}`, () => linearMember(account.apiKey), (id) => {
+    linearMembers.set(account.account, id);
+    console.log(`[events] the Clots act on Linear (${account.account}) as member ${id}`);
+  });
+}
+if (config.sources.linear.length > 0) {
+  enrichers.linear = linearEnricher(config.sources.linear);
+  toolDeps.senders.linear_comment = linearCommentSender(config.sources.linear, linearMemberOf);
+}
+
+// Notion: one path per workspace. The integration's bot is learnt from its token, to drop what it did itself.
+const notionBots = new Map<string, string>();
+const notionBotOf = (account: string) => notionBots.get(account) ?? "";
+for (const account of config.sources.notion) {
+  handlers.set(`/webhooks/notion/${account.account}`, notionHandler(account, { store, now: () => Date.now(), botId: () => notionBotOf(account.account), log: (text) => console.log(text) }));
+  learnIdentity(`the Notion integration's bot for ${account.account}`, () => notionBot(account.token), (id) => notionBots.set(account.account, id));
+}
+if (config.sources.notion.length > 0) {
+  enrichers.notion = notionEnricher(config.sources.notion);
+  toolDeps.senders.notion_comment = notionCommentSender(config.sources.notion, notionBotOf);
+}
+
+// The daemon's MCP servers. A server that needs a login gets a link in chat, at most once an hour.
+const mcpNames = Object.keys(config.mcpServers);
+/** Who hears about a server: each Clot with a recipe on it in its own file; otherwise the home Clot, or every Clot when there is none. */
+const tellServer = async (server: string, text: string) => {
+  const owners = [...new Set(rulebook.watches().filter((entry) => entry.recipe.server === server && entry.file !== "global").map((entry) => entry.file))];
+  for (const name of owners.length > 0 ? owners : config.home ? [HOME_CLOT] : names) await say(name, text);
+};
+const lastLink = new Map<string, number>();
+const oauthFor = new Map(
+  mcpNames
+    .filter((name) => {
+      const s = config.mcpServers[name];
+      return s.kind === "http" && s.oauth;
+    })
+    .map((name) => [
+      name,
+      new StoredOAuth({
+        server: name,
+        store,
+        redirectUrl: `${config.publicUrl}/oauth/callback`,
+        now: () => Date.now(),
+        onLink: (url) => {
+          if (Date.now() - (lastLink.get(name) ?? 0) < 3_600_000) return;
+          lastLink.set(name, Date.now());
+          void tellServer(name, `Log in to the MCP server ${name} so the daemon can use it. The link works once, for ten minutes: ${url}`);
+        },
+      }),
+    ]),
+);
+const hub = new McpHub({ names: mcpNames, opener: sdkOpener({ servers: config.mcpServers, auth: (name) => oauthFor.get(name) }), tell: tellServer });
+if (mcpNames.length > 0) {
+  handlers.set("/oauth/callback", oauthCallbackHandler({ store, now: () => Date.now(), finish: (server, code) => hub.finishLogin(server, code) }));
+  toolDeps.mcp = { describe: () => hub.describe(), listTools: (server) => hub.listTools(server), callTool: (server, tool, args) => hub.callTool(server, tool, args) };
+  // A server the daemon has not seen before is pointed out to the Clots, which may propose a recipe for it.
+  const known = new Set(JSON.parse(store.getState("mcp-known-servers") ?? "[]") as string[]);
+  for (const name of mcpNames.filter((server) => !known.has(server))) {
+    for (const clot of config.home ? [HOME_CLOT] : names) store.addNote(clot, `A new MCP server is set up for the daemon: ${name}. Look at its tools with mcp_list; if one of its read-only tools would show something worth hearing about, propose a watch recipe with rulebook_watch.`);
+  }
+  store.setState("mcp-known-servers", JSON.stringify(mcpNames));
+  void hub.start();
+}
+
+// Watch recipes, from the rulebook: started, and restarted or stopped when the files change.
+const running = new Map<string, { definition: string; stop: () => void }>();
+const syncWatches = () => {
+  const wanted = new Map(rulebook.watches().map(({ recipe, file }) => [recipe.name, { recipe, file }]));
+  for (const [name, entry] of running) {
+    const now = wanted.get(name);
+    if (now === undefined || JSON.stringify(now.recipe) !== entry.definition) {
+      entry.stop();
+      running.delete(name);
+    }
+  }
+  for (const [name, { recipe, file }] of wanted) {
+    if (running.has(name)) continue;
+    const tell = file === "global" ? (text: string) => tellServer(recipe.server, text) : (text: string) => say(file, text);
+    const watcher = new Watcher({ recipe, hub, store, deliver: (event) => deliver(event), now: () => Date.now(), tell });
+    const stop = supervisor.start({ name: `watch recipe ${name}`, everyMs: recipe.every * 60_000, tell, run: () => watcher.run() });
+    running.set(name, { definition: JSON.stringify(recipe), stop });
+  }
+};
+rulebook.onLoad(syncWatches);
+syncWatches();
+
+// Webhook recipes: their secrets are the RECIPE_ keys of .env, read again whenever the rulebook changes.
+let recipeSecrets = readEnvFile(".env");
+rulebook.onLoad(() => {
+  recipeSecrets = readEnvFile(".env");
+});
+recipeHandlers = recipeHandler({
+  recipe: (name) => rulebook.webhook(name),
+  secret: (key) => (key.startsWith("RECIPE_") ? (recipeSecrets[key] ?? process.env[key]) : undefined),
+  insertEvent,
+  now: () => Date.now(),
+  missingSecret: (recipe) => {
+    const binding = rulebook.recipeBinding(recipe.name);
+    const text = `The webhook recipe \`${recipe.name}\` is not active yet: put its secret in .env as ${recipe.verify.secret}. Its address is ${config.publicUrl}/webhooks/r/${recipe.name}.`;
+    void (binding !== undefined && binding !== "shared" ? say(binding.clot, text) : tellAccount({})(text));
+  },
+});
+
+const scripts = new Map(config.sources.calendar.filter((account) => account.script !== undefined).map((account) => [account.account, calendarScript(account.script!)]));
+if (feeds.size > 0) {
+  toolDeps.calendar = {
+    accounts: config.sources.calendar,
+    timeZone: config.timeZone,
+    now: () => Date.now(),
+    list: (account, from, to) => feeds.get(account)!.list(from, to),
+    ...(scripts.size > 0 ? { call: (account: string, req: Parameters<ReturnType<typeof calendarScript>["call"]>[0]) => scripts.get(account)!.call(req) } : {}),
+  };
+}
+if (scripts.size > 0) {
+  // A removal is put to the user as a proposal; these are what it shows and what it does on yes.
+  proposals.useCalendar({
+    preview: async ({ account, uid }) => {
+      const found = await scripts.get(account)!.call({ action: "check", uid });
+      if (!found.ok) return { ok: false, reason: found.reason };
+      if (found.event.guests > 0) return { ok: false, reason: "the event has guests, and removing it would notify them; ask the user to remove it" };
+      return { ok: true, summary: `Remove from the calendar (${account}): ${describeScriptEvent(found.event, config.timeZone)}` };
+    },
+    remove: async ({ account, uid }) => {
+      const done = await scripts.get(account)!.call({ action: "remove", uid });
+      if (done.ok) return { ok: true, summary: describeScriptEvent(done.event, config.timeZone) };
+      return done.reached ? { ok: false, reason: done.reason } : { ok: false, reason: done.reason, retry: true };
+    },
+  });
+}
+// End of sources.
+
+const eventRouter = new EventRouter({
+  bindingOf: bindingResolver({
+    repos: repoToClot,
+    accounts: (Object.entries(config.sources) as [string, AccountBase[]][]).flatMap(([source, accounts]) => accounts.map((account) => ({ ...account, source }))),
+    recipes: (name) => rulebook.recipeBinding(name),
+  }),
+  rules: () => rulebook.routing(),
+  call: new SdkRoutingCall(),
+  clots: () => config.clots.map((c) => ({ name: c.name, about: c.about ?? `the project in the repository ${repoSlug(c.repoUrl)}` })),
+  guidance: () => rulebook.guidance("global"),
+  home: config.home ? HOME_CLOT : undefined,
+});
+
 const pipeline = new Pipeline({
   store,
   chat,
@@ -177,9 +416,9 @@ const pipeline = new Pipeline({
   triage: new SdkTriage(),
   steering,
   clots,
-  clotForRepo: routeByRepo(repoToClot, config.home ? HOME_CLOT : undefined),
-  clotLogin,
-  readInline: inlineCommentReader(config.githubToken),
+  route: (event) => eventRouter.route(event),
+  selfCaused: (event) => event.source === "github" && isSelfCaused(event, clotLogin),
+  enrich: enricherBySource(enrichers),
   hold: config.hold,
   now: () => Date.now(),
   schedule: (ms, fn) => {

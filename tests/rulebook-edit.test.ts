@@ -152,10 +152,66 @@ describe("applyEdit", () => {
 describe("describeEdit", () => {
   it("says what each edit does", () => {
     expect(describeEdit({ op: "add_prefilter", rule: { actor: "dependabot[bot]", repo: "octo/widgets" } })).toBe("Drop events where actor is `dependabot[bot]` and repository is `octo/widgets`");
+    expect(describeEdit({ op: "add_prefilter", rule: { source: "email", account: "gmail", place: "me+news@gmail.com" } })).toBe(
+      "Drop events where source is `email` and account is `gmail` and place is `me+news@gmail.com`",
+    );
     expect(describeEdit({ op: "remove_prefilter", rule: { kind: "comment" } })).toBe("Stop dropping events where kind is `comment`");
     expect(describeEdit({ op: "add_guidance", line: "Typos need no action." })).toBe('Add triage guidance: "Typos need no action."');
     expect(describeEdit({ op: "remove_guidance", line: "Typos need no action." })).toBe('Remove triage guidance: "Typos need no action."');
     expect(describeEdit({ op: "set_standing", rule: ack })).toBe("Standing rule `ack-issue`: when kind is `issue_opened`, send via github_comment:\n> Thanks, @{actor}.");
     expect(describeEdit({ op: "remove_standing", name: "ack-issue" })).toBe("Remove standing rule `ack-issue`");
+  });
+});
+
+describe("routing edits", () => {
+  const rule = { source: "email", place: "me+shop@gmail.com", clot: "shop" };
+
+  it("adds a routing rule and removes it again, and says what it does", () => {
+    const added = applyEdit("routing: []\n", { op: "add_routing", rule });
+    expect(parseRuleFile(added.text).routing).toEqual([rule]);
+    expect(added.summary).toBe("Route events where source is `email` and place is `me+shop@gmail.com` to shop");
+    expect(added.inverse).toEqual({ op: "remove_routing", rule });
+    const removed = applyEdit(added.text, added.inverse);
+    expect(parseRuleFile(removed.text).routing).toEqual([]);
+    expect(removed.summary).toBe("Stop routing events where source is `email` and place is `me+shop@gmail.com` to shop");
+  });
+
+  it("refuses a routing rule that is already there, one that matches nothing, and removing one that is not there", () => {
+    const text = applyEdit("", { op: "add_routing", rule }).text;
+    expect(() => applyEdit(text, { op: "add_routing", rule })).toThrow(EditRefused);
+    expect(() => applyEdit(text, { op: "add_routing", rule: { clot: "shop" } as never })).toThrow(EditRefused);
+    expect(() => applyEdit(text, { op: "remove_routing", rule: { ...rule, clot: "other" } })).toThrow("no such routing rule");
+  });
+});
+
+describe("watch recipe edits", () => {
+  const recipe = { name: "notion-feedback", server: "notion", tool: "search", arguments: { query: "Feedback" }, items: "results", id: "id", ignore: [], every: 5, report: "added" as const };
+
+  it("adds a recipe, replaces it by name, and removes it, each with its inverse", () => {
+    const added = applyEdit("", { op: "set_watch", recipe });
+    expect(parseRuleFile(added.text).watches).toEqual([recipe]);
+    expect(added.summary).toContain("Watch recipe `notion-feedback`: every 5 minutes, call `search` on `notion`");
+    const replaced = applyEdit(added.text, { op: "set_watch", recipe: { ...recipe, every: 10 } });
+    expect(parseRuleFile(replaced.text).watches[0].every).toBe(10);
+    expect(applyEdit(replaced.text, replaced.inverse).text).toContain("every: 5");
+    const removed = applyEdit(added.text, { op: "remove_watch", name: "notion-feedback" });
+    expect(parseRuleFile(removed.text).watches).toEqual([]);
+    expect(() => applyEdit(removed.text, { op: "remove_watch", name: "notion-feedback" })).toThrow(EditRefused);
+  });
+
+  it("shows a recipe for a tool that may change things in bold, with a warning", () => {
+    expect(applyEdit("", { op: "set_watch", recipe: { ...recipe, notReadOnly: true } }).summary).toContain("**This tool does not declare itself read-only");
+  });
+});
+
+describe("webhook recipe edits", () => {
+  const recipe = { name: "tracker", verify: { scheme: "token", header: "x-token", prefix: "", encoding: "hex", signed: "body", toleranceSeconds: 300, secret: "RECIPE_TRACKER" }, kinds: [{ kind: "ping", when: {} }], event: { title: "{t}" } } as never;
+
+  it("adds and removes a recipe, and its description tells the user where the webhook goes and where the secret goes", () => {
+    const added = applyEdit("", { op: "set_webhook", recipe });
+    expect(parseRuleFile(added.text).webhooks).toHaveLength(1);
+    expect(added.summary).toContain("Webhook recipe `tracker`");
+    expect(added.summary).toContain("RECIPE_TRACKER");
+    expect(parseRuleFile(applyEdit(added.text, added.inverse).text).webhooks).toEqual([]);
   });
 });

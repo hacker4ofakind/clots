@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ClotEvent } from "../src/events/types.js";
 import { buildExplainerPrompt, fallbackExplanation } from "../src/explainer.js";
-import { buildTriagePrompt, fallbackTriage, parseTriage, type TriageInput } from "../src/triage.js";
+import { buildTriagePrompt, fallbackTriage, parseTriage, TRIAGE_SYSTEM_PROMPT, type TriageInput } from "../src/triage.js";
 
 const event: ClotEvent = {
   id: "d-1",
   source: "github",
   kind: "issue_opened",
-  repo: "octo/widgets",
+  account: "github", place: "octo/widgets",
   actor: "someone",
   title: "Issue #7 opened: Login fails",
   body: "Steps to reproduce...",
@@ -68,5 +68,12 @@ describe("explainer", () => {
 
   it("falls back to the bare facts", () => {
     expect(fallbackExplanation(event, "Login fails.")).toBe("Login fails.\nIssue #7 opened: Login fails\n<https://github.com/octo/widgets/issues/7>");
+  });
+});
+
+describe("the triage prompt", () => {
+  it("is about more than code, and names email as a carrier of instructions", () => {
+    expect(TRIAGE_SYSTEM_PROMPT).toContain("payments");
+    expect(TRIAGE_SYSTEM_PROMPT).toContain("Email is where such attempts most often come from.");
   });
 });

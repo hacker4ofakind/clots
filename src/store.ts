@@ -52,8 +52,9 @@ export interface ProposalRow {
   channelName: string;
   /** The session it was opened in: a proposal lasts as long as that session. Null in a row older than this column. */
   sessionId: string | null;
-  scope: "own" | "global";
-  /** The edit, as JSON. */
+  /** A rule file ("own", "global"), or "calendar" for removing a calendar event. */
+  scope: "own" | "global" | "calendar";
+  /** The edit, or the calendar removal, as JSON. */
   edit: string;
   summary: string;
 }
@@ -218,6 +219,10 @@ CREATE TABLE IF NOT EXISTS memory_changes (
 CREATE TABLE IF NOT EXISTS memory_restores (
   file TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 function toSession(r: any): SessionRow {
@@ -248,8 +253,9 @@ function toEvent(r: any): EventRow {
   return {
     id: r.id,
     source: r.source,
+    account: r.account,
     kind: r.kind,
-    repo: r.repo,
+    place: r.place,
     actor: r.actor,
     title: r.title,
     body: r.body,
@@ -288,6 +294,10 @@ export class Store {
     this.addColumn("sessions", "interrupted_event", "TEXT");
     this.addColumn("sessions", "steered", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("proposals", "session_id", "TEXT");
+    this.addColumn("events", "account", "TEXT NOT NULL DEFAULT 'github'");
+    this.addColumn("events", "place", "TEXT NOT NULL DEFAULT ''");
+    // Every event stored before 2c came from GitHub, and its place is its repository.
+    this.db.exec("UPDATE events SET place = repo WHERE place = ''");
   }
 
   /** Columns added after the first release, so a database created by an earlier version keeps working. */
@@ -382,11 +392,14 @@ export class Store {
     return info.changes === 1;
   }
 
-  /** Stores a new event. Returns false when one with the same ID is already stored. */
+  /**
+   * Stores a new event. Returns false when one with the same ID is already stored. The `repo`
+   * column is older than `place` and gets the same value, so a database from before 2c keeps working.
+   */
   insertEvent(e: ClotEvent): boolean {
     const info = this.db
-      .prepare("INSERT OR IGNORE INTO events (id, source, kind, repo, actor, title, body, url, ref, subject, automated, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(e.id, e.source, e.kind, e.repo, e.actor, e.title, e.body, e.url, e.ref, e.subject, e.automated ? 1 : 0, e.receivedAt);
+      .prepare("INSERT OR IGNORE INTO events (id, source, account, kind, repo, place, actor, title, body, url, ref, subject, automated, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(e.id, e.source, e.account, e.kind, e.place, e.place, e.actor, e.title, e.body, e.url, e.ref, e.subject, e.automated ? 1 : 0, e.receivedAt);
     return info.changes === 1;
   }
 
@@ -407,6 +420,16 @@ export class Store {
   /** Replaces an event's body, after the daemon has added to it. */
   setEventBody(id: string, body: string): void {
     this.db.prepare("UPDATE events SET body = ?, enriched = 1 WHERE id = ?").run(body, id);
+  }
+
+  /** Replaces an event's title, when the daemon has learnt what it is about: a Notion event says only that something happened. */
+  setEventTitle(id: string, title: string): void {
+    this.db.prepare("UPDATE events SET title = ? WHERE id = ?").run(title, id);
+  }
+
+  /** Replaces an event's actor, when the daemon has learnt the name behind an ID: a Notion event names its author by ID. */
+  setEventActor(id: string, actor: string): void {
+    this.db.prepare("UPDATE events SET actor = ? WHERE id = ?").run(actor, id);
   }
 
   /** Whether the daemon has already added to this event's body. Kept apart from the body, whose text is the source's to write. */
@@ -465,6 +488,11 @@ export class Store {
 
   setInboxStatus(id: string, status: InboxStatus): void {
     this.db.prepare("UPDATE inbox SET status = ? WHERE id = ?").run(status, id);
+  }
+
+  /** Takes an event out of a Clot's queue if its turn has not started. Returns whether it was waiting there. */
+  withdrawPendingEvent(clot: string, eventId: string): boolean {
+    return this.db.prepare("UPDATE inbox SET status = 'done' WHERE clot = ? AND event_id = ? AND status = 'pending'").run(clot, eventId).changes > 0;
   }
 
   finishRunning(clot: string): void {
@@ -645,5 +673,27 @@ export class Store {
     this.db.transaction(() => {
       for (const file of files) remove.run(file);
     })();
+  }
+
+  /**
+   * The daemon's own small records, by key: how far a listener has read, OAuth logins, a Notion
+   * verification token, the Message-IDs of mail the daemon wrote. Keys start with what they are for.
+   */
+  getState(key: string): string | undefined {
+    return this.db.prepare("SELECT value FROM state WHERE key = ?").pluck().get(key) as string | undefined;
+  }
+
+  setState(key: string, value: string): void {
+    this.db.prepare("INSERT INTO state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+  }
+
+  deleteState(key: string): void {
+    this.db.prepare("DELETE FROM state WHERE key = ?").run(key);
+  }
+
+  /** The records whose key begins with a prefix, in key order. */
+  statesWithPrefix(prefix: string): { key: string; value: string }[] {
+    const rows: any[] = this.db.prepare("SELECT key, value FROM state WHERE substr(key, 1, ?) = ? ORDER BY key").all(prefix.length, prefix);
+    return rows.map((r) => ({ key: r.key, value: r.value }));
   }
 }

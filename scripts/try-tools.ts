@@ -27,6 +27,10 @@ const tools: DaemonTools = {
   guidance: async () => "unused",
   standing: async () => "unused",
   send: async () => "unused",
+  routing: async () => "unused",
+  routeCorrect: async () => "unused",
+  watch: async () => "unused",
+  webhook: async () => "unused",
 };
 
 const runner = new SdkRunner({ clot, env: { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN! } });

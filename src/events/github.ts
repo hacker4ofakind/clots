@@ -37,7 +37,7 @@ export function normalizeGithub(eventName: string, deliveryId: string, payload: 
   const actor = text(p.sender?.login);
   const action = text(p.action);
   if (repo === "" || actor === "") return undefined;
-  const base = { id: deliveryId, source: "github" as const, repo, actor, receivedAt };
+  const base = { id: deliveryId, source: "github", account: "github", place: repo, actor, receivedAt };
   const bot = p.sender?.type === "Bot" || actor.endsWith("[bot]");
 
   if (eventName === "issues" && (action === "opened" || action === "reopened") && p.issue) {

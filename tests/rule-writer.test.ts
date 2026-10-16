@@ -8,7 +8,10 @@ import { RuleWriter } from "../src/rule-writer.js";
 import { parseRuleFile, Rulebook } from "../src/rulebook.js";
 import { Store } from "../src/store.js";
 
-const event: ClotEvent = { id: "d-1", source: "github", kind: "pr_opened", repo: "octo/widgets", actor: "dependabot[bot]", title: "Bump lodash", body: "", url: "u", ref: "9", subject: "pr:9", automated: true, receivedAt: 0 };
+/** What the pipeline checks for a Clot: the global pre-filters, then the Clot's own. */
+const isDroppedFor = (rulebook: Rulebook, clot: string, event: ClotEvent) => rulebook.dropsIn("global", event) || rulebook.dropsIn(clot, event);
+
+const event: ClotEvent = { id: "d-1", source: "github", kind: "pr_opened", account: "github", place: "octo/widgets", actor: "dependabot[bot]", title: "Bump lodash", body: "", url: "u", ref: "9", subject: "pr:9", automated: true, receivedAt: 0 };
 
 let dir: string;
 let rulebook: Rulebook;
@@ -34,7 +37,7 @@ describe("RuleWriter", () => {
     expect(done).toEqual({ ok: true, file: "graphite", summary: "Drop events where actor is `dependabot[bot]`" });
     expect(parseRuleFile(read("graphite")).prefilters).toEqual([{ actor: "dependabot[bot]" }]);
     expect(read("graphite")).toContain("# Rules for the graphite Clot.");
-    expect(rulebook.isDropped("graphite", event)).toBe(true);
+    expect(isDroppedFor(rulebook, "graphite",event)).toBe(true);
     expect(commits).toEqual([{ file: "graphite.yaml", message: "graphite: Drop events where actor is `dependabot[bot]`" }]);
     expect(store.lastRuleEdit("graphite")).toMatchObject({ file: "graphite", summary: "Drop events where actor is `dependabot[bot]`" });
     expect(fs.readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
@@ -85,7 +88,7 @@ describe("RuleWriter", () => {
     expect(writer.undo("graphite")).toEqual({ ok: true, file: "global", summary: 'Undid: Add triage guidance: "Billing is urgent."' });
     expect(parseRuleFile(read("global")).triage).toEqual([]);
     expect(writer.undo("graphite")).toMatchObject({ ok: true, file: "graphite" });
-    expect(rulebook.isDropped("graphite", event)).toBe(false);
+    expect(isDroppedFor(rulebook, "graphite",event)).toBe(false);
     expect(writer.undo("graphite")).toEqual({ ok: false, reason: "There is no edit made from chat left to undo." });
     expect(commits).toHaveLength(4);
   });

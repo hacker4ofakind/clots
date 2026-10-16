@@ -20,7 +20,7 @@ const MAX_EXPLANATION = 1500;
 
 /** Used when the explainer call fails: the bare facts. */
 export function fallbackExplanation(event: ClotEvent, message: string): string {
-  return `${message}\n${event.title}\n<${event.url}>`;
+  return `${message}\n${event.title}${event.url === "" ? "" : `\n<${event.url}>`}`;
 }
 
 export const EXPLAINER_SYSTEM_PROMPT = `An autonomous coding agent is in the middle of a task, and something just happened on its project that may bear on that task. Write a short chat message to the project's owner, who will decide whether to hand the event to the agent now.
@@ -55,7 +55,7 @@ export class SdkExplainer implements Explainer {
       });
       for await (const message of run) {
         if (message.type === "result" && message.subtype === "success" && message.result.trim() !== "") {
-          return `${message.result.trim().slice(0, MAX_EXPLANATION)}\n<${input.event.url}>`;
+          return `${message.result.trim().slice(0, MAX_EXPLANATION)}${input.event.url === "" ? "" : `\n<${input.event.url}>`}`;
         }
       }
     } catch {
