@@ -283,6 +283,7 @@ describe("email_draft", () => {
     expect(saved[0]).toMatchObject({ from: "me+shop@gmail.com", to: ["jane@x.com"], subject: "Re: Order 7", text: "We are checking." });
     expect(said[0]).toContain("Draft saved in gmail");
     expect(said[0]).toContain("We are checking.");
+    expect(JSON.parse(store.getState("pending-drafts:graphite")!)).toMatchObject([{ account: "gmail", messageId: saved[0].messageId, subject: "Re: Order 7", to: ["jane@x.com"] }]);
   });
 
   it("saves a new message from an account the Clot may use", async () => {

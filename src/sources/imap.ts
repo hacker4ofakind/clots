@@ -4,7 +4,8 @@ import MailComposer from "nodemailer/lib/mail-composer/index.js";
 import type { EmailAccount } from "../config.js";
 import type { ClotEvent } from "../events/types.js";
 import type { Store } from "../store.js";
-import { emailEvent, emailMetaKey, fromParsed, metaOf, ownMessageKey, type OutgoingMail } from "./email.js";
+import type { DraftFate, PendingDraft } from "../drafts.js";
+import { emailEvent, emailMetaKey, fromParsed, metaOf, ownMessageKey, trimQuoted, type OutgoingMail } from "./email.js";
 
 /** A message as it is written to a mailbox or sent: its headers and its text. */
 export function composeMail(mail: OutgoingMail): Promise<Buffer> {
@@ -28,11 +29,63 @@ export async function saveDraft(account: EmailAccount, mail: OutgoingMail): Prom
   await client.connect();
   try {
     const boxes = await client.list();
-    const drafts = boxes.find((box) => box.specialUse === "\\Drafts") ?? boxes.find((box) => /^(\[gmail\]\/)?drafts$/i.test(box.path));
+    const drafts = findBox(boxes, "\\Drafts", /^(\[gmail\]\/)?drafts$/i);
     if (!drafts) throw new Error("the account has no Drafts folder");
     const appended = await client.append(drafts.path, await composeMail(mail), ["\\Draft", "\\Seen"]);
     if (!appended) throw new Error(`the server did not take the draft into ${drafts.path}`);
     return { mailbox: drafts.path };
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+}
+
+const findBox = (boxes: { path: string; specialUse?: string }[], use: string, name: RegExp) => boxes.find((box) => box.specialUse === use) ?? boxes.find((box) => name.test(box.path));
+
+/**
+ * What became of drafts the daemon saved: each is looked for in Drafts, then in Sent. A draft is
+ * found by its Message-ID, or else by its subject and first recipient after it was saved, since a
+ * mail program may give an edited draft, or the copy it sends, a new Message-ID.
+ */
+export async function draftFates(account: EmailAccount, drafts: PendingDraft[]): Promise<DraftFate[]> {
+  const client = new ImapFlow({ host: account.imap.host, port: account.imap.port, secure: account.imap.port === 993, auth: { user: account.address, pass: account.password }, logger: false });
+  await client.connect();
+  try {
+    const boxes = await client.list();
+    const draftsBox = findBox(boxes, "\\Drafts", /^(\[gmail\]\/)?drafts$/i);
+    const sentBox = findBox(boxes, "\\Sent", /^(\[gmail\]\/)?sent( mail| items| messages)?$/i);
+    /** The UIDs in the open mailbox of the copy of a draft, best match first. */
+    const find = async (draft: PendingDraft): Promise<number[]> => {
+      const byId = await client.search({ header: { "message-id": draft.messageId } }, { uid: true });
+      if (byId && byId.length > 0) return byId;
+      const candidates = await client.search({ subject: draft.subject, to: draft.to[0], since: new Date(draft.savedAt - 24 * 60 * 60_000) }, { uid: true });
+      if (!candidates || candidates.length === 0) return [];
+      const matching: number[] = [];
+      for (const uid of candidates) {
+        const m = await client.fetchOne(String(uid), { envelope: true, internalDate: true }, { uid: true });
+        // A minute's grace for clocks that differ.
+        if (m && m.envelope?.subject === draft.subject && new Date(m.internalDate ?? 0).getTime() >= draft.savedAt - 60_000) matching.push(uid);
+      }
+      return matching;
+    };
+    const fates: DraftFate[] = drafts.map(() => ({ kind: "waiting" }));
+    if (draftsBox) {
+      await client.mailboxOpen(draftsBox.path, { readOnly: true });
+      for (const [i, draft] of drafts.entries()) if ((await find(draft)).length === 0) fates[i] = { kind: "gone" };
+    }
+    if (!draftsBox || !sentBox) return fates;
+    await client.mailboxOpen(sentBox.path, { readOnly: true });
+    for (const [i, draft] of drafts.entries()) {
+      if (fates[i].kind === "waiting") continue;
+      const [uid] = await find(draft);
+      const copy = uid === undefined ? undefined : await client.fetchOne(String(uid), { source: true, internalDate: true }, { uid: true });
+      if (!copy || !copy.source) {
+        fates[i] = { kind: "deleted" };
+        continue;
+      }
+      const mail = fromParsed(await simpleParser(copy.source));
+      fates[i] = { kind: "sent", at: mail.date ?? new Date(copy.internalDate ?? Date.now()), text: trimQuoted(mail.text) };
+    }
+    return fates;
   } finally {
     await client.logout().catch(() => undefined);
   }
