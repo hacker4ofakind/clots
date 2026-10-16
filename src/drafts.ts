@@ -9,6 +9,8 @@ export interface PendingDraft {
   to: string[];
   text: string;
   savedAt: number;
+  /** When the daemon first found it in neither Drafts nor Sent. */
+  missingSince?: number;
 }
 
 /** What became of a draft: still in Drafts, sent (when, and with what text), gone without a copy in Sent, or gone from Drafts where there is no Sent folder to look in. */
@@ -19,6 +21,9 @@ export type DraftLookup = (account: EmailAccount, drafts: PendingDraft[]) => Pro
 
 /** A draft nobody has sent or deleted after this long is no longer followed. */
 const FOLLOW_MS = 30 * 24 * 60 * 60_000;
+
+/** A draft missing from both Drafts and Sent is called deleted only when it is still missing this long after: a mail program may take it out of Drafts before its Sent copy is there. */
+const MISSING_MS = 10 * 60_000;
 
 const keyOf = (clot: string) => `pending-drafts:${clot}`;
 
@@ -82,12 +87,14 @@ export class DraftTracker {
     if (drafts.length === 0) return;
     const now = this.d.now();
     const when = userTime(this.d.timeZone);
-    const settled = new Set<PendingDraft>();
+    const settled = new Set<string>();
+    /** When each draft was first found missing, as it now stands. */
+    const missing = new Map<string, number | undefined>();
     for (const name of new Set(drafts.map((draft) => draft.account))) {
       const mine = drafts.filter((draft) => draft.account === name);
       const account = this.d.accounts.find((candidate) => candidate.account === name);
       if (!account) {
-        for (const draft of mine) settled.add(draft);
+        for (const draft of mine) settled.add(draft.messageId);
         continue;
       }
       let fates: DraftFate[];
@@ -100,15 +107,23 @@ export class DraftTracker {
       mine.forEach((draft, i) => {
         const fate = fates[i];
         if (fate === undefined || fate.kind === "waiting") {
-          if (now - draft.savedAt > FOLLOW_MS) settled.add(draft);
+          if (now - draft.savedAt > FOLLOW_MS) settled.add(draft.messageId);
+          else if (draft.missingSince !== undefined) missing.set(draft.messageId, undefined);
+          return;
+        }
+        if (fate.kind !== "sent" && (draft.missingSince === undefined || now - draft.missingSince < MISSING_MS)) {
+          if (draft.missingSince === undefined) missing.set(draft.messageId, now);
           return;
         }
         store.addNote(clot, draftNote(draft, fate, when, new Date(now)));
-        settled.add(draft);
+        settled.add(draft.messageId);
       });
     }
-    if (settled.size === 0) return;
+    if (settled.size === 0 && missing.size === 0) return;
     // Read again: a draft saved while the lookup ran is kept.
-    store.setState(keyOf(clot), JSON.stringify(pending(store, clot).filter((draft) => ![...settled].some((done) => done.messageId === draft.messageId))));
+    const kept = pending(store, clot)
+      .filter((draft) => !settled.has(draft.messageId))
+      .map((draft) => (missing.has(draft.messageId) ? { ...draft, missingSince: missing.get(draft.messageId) } : draft));
+    store.setState(keyOf(clot), JSON.stringify(kept));
   }
 }

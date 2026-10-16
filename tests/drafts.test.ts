@@ -56,10 +56,13 @@ describe("DraftTracker", () => {
     expect(notes()[0]).toContain("> Best, L");
   });
 
-  it("notes a deleted draft and tells the Clot not to write it again", async () => {
+  it("notes a deleted draft only once it stays missing for ten minutes, and tells the Clot not to write it again", async () => {
     recordDraft(store, "graphite", draft("a"));
     fates = [{ kind: "deleted" }];
     await tracker().check("graphite");
+    await tracker(Date.UTC(2026, 9, 16, 12, 9)).check("graphite");
+    expect(notes()).toEqual([]);
+    await tracker(Date.UTC(2026, 9, 16, 12, 10)).check("graphite");
     expect(notes()[0]).toContain("deleted your email draft");
     expect(notes()[0]).toContain("Do not write it again");
   });
@@ -69,12 +72,24 @@ describe("DraftTracker", () => {
     recordDraft(store, "graphite", draft("b"));
     fates = [{ kind: "waiting" }, { kind: "gone" }];
     await tracker().check("graphite");
+    await tracker(Date.UTC(2026, 9, 16, 12, 10)).check("graphite");
     expect(notes()).toHaveLength(1);
     expect(notes()[0]).toContain("no longer in Drafts");
     fail = true;
     await tracker().check("graphite");
-    expect(looked[1].map((d) => d.messageId)).toEqual(["<a@gmail.com>"]);
+    expect(looked[2].map((d) => d.messageId)).toEqual(["<a@gmail.com>"]);
     expect(notes()).toHaveLength(1);
+  });
+
+  it("starts the ten minutes again when a missing draft turns up", async () => {
+    recordDraft(store, "graphite", draft("a"));
+    fates = [{ kind: "deleted" }];
+    await tracker().check("graphite");
+    fates = [{ kind: "waiting" }];
+    await tracker(Date.UTC(2026, 9, 16, 12, 5)).check("graphite");
+    fates = [{ kind: "deleted" }];
+    await tracker(Date.UTC(2026, 9, 16, 12, 11)).check("graphite");
+    expect(notes()).toEqual([]);
   });
 
   it("stops following a draft nobody touched for a month", async () => {

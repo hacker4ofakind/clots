@@ -151,9 +151,9 @@ await chat.start((m) => {
 // A question about a global memory whose channel was removed while the daemon was down can no longer
 // be answered. Closed before the home Clot's startup check, which then asks it again.
 await memory.closeOrphans();
-
+/** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check. */
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Set up with the email sources. */
-let drafts: DraftTracker | undefined;
+const drafts = config.sources.email.length === 0 ? undefined : new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
 
 /** The Clots share one GitHub account; its login is what marks an event as caused by a Clot. */
 let clotLogin = "";
@@ -246,7 +246,6 @@ for (const account of config.sources.email) {
 }
 if (config.sources.email.length > 0) {
   toolDeps.email = { accounts: config.sources.email, save: saveDraft };
-  drafts = new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
   toolDeps.senders.email_reply = emailReplySender({ accounts: config.sources.email, store, transport: smtpTransport });
 }
 

@@ -53,30 +53,52 @@ export async function draftFates(account: EmailAccount, drafts: PendingDraft[]):
     const boxes = await client.list();
     const draftsBox = findBox(boxes, "\\Drafts", /^(\[gmail\]\/)?drafts$/i);
     const sentBox = findBox(boxes, "\\Sent", /^(\[gmail\]\/)?sent( mail| items| messages)?$/i);
-    /** The UIDs in the open mailbox of the copy of a draft, best match first. */
-    const find = async (draft: PendingDraft): Promise<number[]> => {
-      const byId = await client.search({ header: { "message-id": draft.messageId } }, { uid: true });
-      if (byId && byId.length > 0) return byId;
-      const candidates = await client.search({ subject: draft.subject, to: draft.to[0], since: new Date(draft.savedAt - 24 * 60 * 60_000) }, { uid: true });
-      if (!candidates || candidates.length === 0) return [];
-      const matching: number[] = [];
-      for (const uid of candidates) {
-        const m = await client.fetchOne(String(uid), { envelope: true, internalDate: true }, { uid: true });
-        // A minute's grace for clocks that differ.
-        if (m && m.envelope?.subject === draft.subject && new Date(m.internalDate ?? 0).getTime() >= draft.savedAt - 60_000) matching.push(uid);
+    /**
+     * Finds the drafts' copies in the open mailbox: by Message-ID for all of them first, then by
+     * subject and recipient among the messages no other draft has taken. A copy matched that way
+     * is taken only when it is the one candidate; null marks a draft with several candidates.
+     */
+    const locate = async (which: number[]): Promise<Map<number, number | null>> => {
+      const found = new Map<number, number | null>();
+      const taken = new Set<number>();
+      for (const i of which) {
+        const byId = await client.search({ header: { "message-id": drafts[i].messageId } }, { uid: true });
+        if (byId && byId.length > 0) {
+          found.set(i, byId[0]);
+          taken.add(byId[0]);
+        }
       }
-      return matching;
+      for (const i of which.filter((i) => !found.has(i))) {
+        const draft = drafts[i];
+        const candidates = (await client.search({ subject: draft.subject, to: draft.to[0], since: new Date(draft.savedAt - 24 * 60 * 60_000) }, { uid: true })) || [];
+        const matching: number[] = [];
+        for (const uid of candidates.filter((uid) => !taken.has(uid))) {
+          const m = await client.fetchOne(String(uid), { envelope: true, internalDate: true }, { uid: true });
+          // A minute's grace for clocks that differ.
+          if (m && m.envelope?.subject === draft.subject && new Date(m.internalDate ?? 0).getTime() >= draft.savedAt - 60_000) matching.push(uid);
+        }
+        if (matching.length === 1) taken.add(matching[0]);
+        if (matching.length > 0) found.set(i, matching.length === 1 ? matching[0] : null);
+      }
+      return found;
     };
     const fates: DraftFate[] = drafts.map(() => ({ kind: "waiting" }));
     if (draftsBox) {
       await client.mailboxOpen(draftsBox.path, { readOnly: true });
-      for (const [i, draft] of drafts.entries()) if ((await find(draft)).length === 0) fates[i] = { kind: "gone" };
+      const inDrafts = await locate([...drafts.keys()]);
+      for (const i of drafts.keys()) if (!inDrafts.has(i)) fates[i] = { kind: "gone" };
     }
     if (!draftsBox || !sentBox) return fates;
     await client.mailboxOpen(sentBox.path, { readOnly: true });
-    for (const [i, draft] of drafts.entries()) {
-      if (fates[i].kind === "waiting") continue;
-      const [uid] = await find(draft);
+    const left = [...drafts.keys()].filter((i) => fates[i].kind === "gone");
+    const inSent = await locate(left);
+    for (const i of left) {
+      const uid = inSent.get(i);
+      // Several copies that could be this draft's: it waits rather than be given the wrong one.
+      if (uid === null) {
+        fates[i] = { kind: "waiting" };
+        continue;
+      }
       const copy = uid === undefined ? undefined : await client.fetchOne(String(uid), { source: true, internalDate: true }, { uid: true });
       if (!copy || !copy.source) {
         fates[i] = { kind: "deleted" };
