@@ -54,11 +54,12 @@ export async function draftFates(account: EmailAccount, drafts: PendingDraft[]):
     const draftsBox = findBox(boxes, "\\Drafts", /^(\[gmail\]\/)?drafts$/i);
     const sentBox = findBox(boxes, "\\Sent", /^(\[gmail\]\/)?sent( mail| items| messages)?$/i);
     /**
-     * Finds the drafts' copies in the open mailbox: by Message-ID for all of them first, then by
-     * subject and recipient among the messages no other draft has taken. A copy matched that way
-     * is taken only when it is the one candidate; null marks a draft with several candidates.
+     * Finds the drafts' copies in the open mailbox: by Message-ID for all of them first, then, among
+     * the messages none of those took, by subject and first recipient (in Drafts, by either one, so a
+     * draft the user edited is still found). A copy is given to a draft only when it is that draft's
+     * one candidate and no other draft's; null marks a draft whose copy cannot be told for sure.
      */
-    const locate = async (which: number[]): Promise<Map<number, number | null>> => {
+    const locate = async (which: number[], loose: boolean): Promise<Map<number, number | null>> => {
       const found = new Map<number, number | null>();
       const taken = new Set<number>();
       for (const i of which) {
@@ -68,30 +69,34 @@ export async function draftFates(account: EmailAccount, drafts: PendingDraft[]):
           taken.add(byId[0]);
         }
       }
+      const matches = new Map<number, number[]>();
       for (const i of which.filter((i) => !found.has(i))) {
         const draft = drafts[i];
-        const candidates = (await client.search({ subject: draft.subject, to: draft.to[0], since: new Date(draft.savedAt - 24 * 60 * 60_000) }, { uid: true })) || [];
+        const since = new Date(draft.savedAt - 24 * 60 * 60_000);
+        const query = loose ? { or: [{ subject: draft.subject }, { to: draft.to[0] }], since } : { subject: draft.subject, to: draft.to[0], since };
+        const candidates = (await client.search(query, { uid: true })) || [];
         const matching: number[] = [];
         for (const uid of candidates.filter((uid) => !taken.has(uid))) {
           const m = await client.fetchOne(String(uid), { envelope: true, internalDate: true }, { uid: true });
           // A minute's grace for clocks that differ.
-          if (m && m.envelope?.subject === draft.subject && new Date(m.internalDate ?? 0).getTime() >= draft.savedAt - 60_000) matching.push(uid);
+          if (m && (loose || m.envelope?.subject === draft.subject) && new Date(m.internalDate ?? 0).getTime() >= draft.savedAt - 60_000) matching.push(uid);
         }
-        if (matching.length === 1) taken.add(matching[0]);
-        if (matching.length > 0) found.set(i, matching.length === 1 ? matching[0] : null);
+        if (matching.length > 0) matches.set(i, matching);
       }
+      const claims = (uid: number) => [...matches.values()].filter((matching) => matching.includes(uid)).length;
+      for (const [i, matching] of matches) found.set(i, matching.length === 1 && claims(matching[0]) === 1 ? matching[0] : null);
       return found;
     };
     const fates: DraftFate[] = drafts.map(() => ({ kind: "waiting" }));
     if (draftsBox) {
       await client.mailboxOpen(draftsBox.path, { readOnly: true });
-      const inDrafts = await locate([...drafts.keys()]);
+      const inDrafts = await locate([...drafts.keys()], true);
       for (const i of drafts.keys()) if (!inDrafts.has(i)) fates[i] = { kind: "gone" };
     }
     if (!draftsBox || !sentBox) return fates;
     await client.mailboxOpen(sentBox.path, { readOnly: true });
     const left = [...drafts.keys()].filter((i) => fates[i].kind === "gone");
-    const inSent = await locate(left);
+    const inSent = await locate(left, false);
     for (const i of left) {
       const uid = inSent.get(i);
       // Several copies that could be this draft's: it waits rather than be given the wrong one.
@@ -105,7 +110,8 @@ export async function draftFates(account: EmailAccount, drafts: PendingDraft[]):
         continue;
       }
       const mail = fromParsed(await simpleParser(copy.source));
-      fates[i] = { kind: "sent", at: mail.date ?? new Date(copy.internalDate ?? Date.now()), text: trimQuoted(mail.text) };
+      // When the copy reached Sent: a mail program may keep the Date the draft was written with.
+      fates[i] = { kind: "sent", at: copy.internalDate ? new Date(copy.internalDate) : (mail.date ?? new Date()), text: trimQuoted(mail.text) };
     }
     return fates;
   } finally {

@@ -90,6 +90,7 @@ export class DraftTracker {
     const settled = new Set<string>();
     /** When each draft was first found missing, as it now stands. */
     const missing = new Map<string, number | undefined>();
+    const notes: string[] = [];
     for (const name of new Set(drafts.map((draft) => draft.account))) {
       const mine = drafts.filter((draft) => draft.account === name);
       const account = this.d.accounts.find((candidate) => candidate.account === name);
@@ -115,7 +116,7 @@ export class DraftTracker {
           if (draft.missingSince === undefined) missing.set(draft.messageId, now);
           return;
         }
-        store.addNote(clot, draftNote(draft, fate, when, new Date(now)));
+        notes.push(draftNote(draft, fate, when, new Date(now)));
         settled.add(draft.messageId);
       });
     }
@@ -124,6 +125,7 @@ export class DraftTracker {
     const kept = pending(store, clot)
       .filter((draft) => !settled.has(draft.messageId))
       .map((draft) => (missing.has(draft.messageId) ? { ...draft, missingSince: missing.get(draft.messageId) } : draft));
-    store.setState(keyOf(clot), JSON.stringify(kept));
+    // The notes and the drafts they settle are written together: a stop in between cannot repeat a note.
+    store.addNotesWithState(clot, notes, keyOf(clot), JSON.stringify(kept));
   }
 }

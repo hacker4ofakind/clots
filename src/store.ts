@@ -558,6 +558,14 @@ export class Store {
     this.db.prepare("INSERT INTO notes (clot, text) VALUES (?, ?)").run(clot, text);
   }
 
+  /** Leaves a Clot notes and sets a state value with them, all or nothing. */
+  addNotesWithState(clot: string, texts: string[], key: string, value: string): void {
+    this.db.transaction(() => {
+      for (const text of texts) this.addNote(clot, text);
+      this.setState(key, value);
+    })();
+  }
+
   /** The notes waiting for a Clot, oldest first. */
   notes(clot: string): NoteRow[] {
     const rows: any[] = this.db.prepare("SELECT seq, text FROM notes WHERE clot = ? ORDER BY seq").all(clot);
