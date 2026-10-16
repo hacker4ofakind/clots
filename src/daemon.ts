@@ -21,7 +21,8 @@ import { recipeHandler } from "./webhook-recipe.js";
 import { StoredOAuth } from "./mcp/oauth.js";
 import { CalendarFeed } from "./sources/calendar.js";
 import { calendarScript, describeScriptEvent } from "./sources/calendar-script.js";
-import { imapflowClient, MailboxListener, saveDraft } from "./sources/imap.js";
+import { draftFates, imapflowClient, MailboxListener, saveDraft } from "./sources/imap.js";
+import { DraftTracker } from "./drafts.js";
 import { linearCommentSender, linearEnricher, linearHandler, linearMember } from "./sources/linear.js";
 import { notionBot, notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
 import { emailReplySender, smtpTransport } from "./sources/smtp.js";
@@ -150,6 +151,9 @@ await chat.start((m) => {
 // A question about a global memory whose channel was removed while the daemon was down can no longer
 // be answered. Closed before the home Clot's startup check, which then asks it again.
 await memory.closeOrphans();
+/** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check. */
+/** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Set up with the email sources. */
+const drafts = config.sources.email.length === 0 ? undefined : new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
 
 /** The Clots share one GitHub account; its login is what marks an event as caused by a Clot. */
 let clotLogin = "";
@@ -186,7 +190,10 @@ for (const c of definitions) {
       await steering.lapse(name);
       if (name === HOME_CLOT) await memory.afterHomeTurn();
     },
-    beforeTurn: (name) => memory.beforeTurn(name),
+    beforeTurn: async (name) => {
+      await drafts?.check(name);
+      await memory.beforeTurn(name);
+    },
     memory: { list: () => memory.list(), undo: () => memory.undo() },
     makeTools: (ctx) => makeTools(toolDeps, ctx),
     standingFor: (name, event) => matchStanding(rulebook.standingFor(name), event, event.kind === "batch" ? store.eventsMergedInto(event.id) : []),

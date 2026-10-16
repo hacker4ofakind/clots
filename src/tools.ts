@@ -1,5 +1,6 @@
 import type { CalendarAccount, EmailAccount } from "./config.js";
 import type { CalendarRemoval } from "./proposals.js";
+import { recordDraft } from "./drafts.js";
 import { describeSpan, parseWhen, type Occurrence } from "./sources/calendar.js";
 import { describeScriptEvent, type ScriptRequest, type ScriptResult } from "./sources/calendar-script.js";
 import type { Sender } from "./events/github-comment.js";
@@ -325,6 +326,7 @@ async function emailDraft(d: ToolDeps, ctx: TurnContext, a: { event?: string; ac
   } catch (error) {
     return `Not saved: ${error instanceof Error ? error.message : String(error)}. Give the draft in your reply instead.`;
   }
+  recordDraft(d.store, ctx.clot, { account: account.account, messageId: mail.messageId, subject: mail.subject, to: mail.to, text: mail.text, savedAt: Date.now() });
   await d.say(ctx.clot, `Draft saved in ${account.account} (${mailbox}): to ${mail.to.join(", ")}, "${mail.subject}"\n> ${mail.text.split("\n").join("\n> ")}`);
   return `Saved in ${mailbox}. Nothing was sent: the user sends it from their mail.`;
 }

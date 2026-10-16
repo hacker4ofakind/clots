@@ -5640,9 +5640,9 @@ Expected: no errors.
 ### Task 13: Email: drafts and standing replies
 
 **Files:**
-- Create: `src/sources/smtp.ts`
-- Modify: `src/sources/imap.ts`, `src/tools.ts`, `src/agent/tool-server.ts`, `src/agent/prompts.ts`, `src/daemon.ts`
-- Test: `tests/smtp.test.ts`, `tests/tools.test.ts`, `tests/prompts.test.ts`
+- Create: `src/sources/smtp.ts`, `src/drafts.ts`
+- Modify: `src/sources/imap.ts`, `src/tools.ts`, `src/store.ts`, `src/agent/tool-server.ts`, `src/agent/prompts.ts`, `src/daemon.ts`
+- Test: `tests/smtp.test.ts`, `tests/tools.test.ts`, `tests/prompts.test.ts`, `tests/drafts.test.ts`
 
 **Interfaces:**
 - Consumes: `OutgoingMail`, `replyMail`, `newMail`, `newMessageId`, `ownMessageKey`, `emailMetaKey`, `EmailMeta` from `src/sources/email.ts`; `Sender`, `SendResult` from `src/events/github-comment.ts`.
@@ -5651,6 +5651,7 @@ Expected: no errors.
   - `src/sources/smtp.ts`: `emailReplySender(o: { accounts: EmailAccount[]; store: Store; transport: (account: EmailAccount) => { sendMail(mail: object): Promise<unknown> } }): Sender`; `smtpTransport(account: EmailAccount)`.
   - `ToolDeps` gains `email?: { accounts: EmailAccount[]; save(account: EmailAccount, mail: OutgoingMail): Promise<{ mailbox: string }> }`; `DaemonTools` gains `emailDraft?(a: { event?: string; account?: string; to?: string[]; subject?: string; text: string }): Promise<string>`.
   - A send's line in the channel leaves out the link when the send has none.
+  - `src/drafts.ts`: `PendingDraft`, `DraftFate`, `DraftLookup`, `recordDraft(store, clot, draft)`, `draftNote(...)`, `userTime(timeZone)`, and `DraftTracker` with `check(clot): Promise<void>`; `src/sources/imap.ts`: `draftFates(account: EmailAccount, drafts: PendingDraft[]): Promise<DraftFate[]>`; `Store.addNotesWithState(clot, texts, key, value)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6100,7 +6101,447 @@ if (config.sources.email.length > 0) {
 // End of sources.
 ```
 
-- [ ] **Step 8: Run all the tests and the type check**
+- [ ] **Step 8: Tell a Clot what became of its drafts**
+
+A Clot that saved a draft does not see the user send it, and would go on saying the draft is in Drafts. Before each of a Clot's turns, the daemon looks for that Clot's saved drafts in Drafts and Sent, and leaves a note for each draft that was sent or deleted. The note is added to the start of the turn, never as a turn of its own: it is only an update. Events that triage drops never start a turn, so they never carry it.
+
+In `src/store.ts`, before `notes(clot: string)`, add:
+
+```ts
+  /** Leaves a Clot notes and sets a state value with them, all or nothing. */
+  addNotesWithState(clot: string, texts: string[], key: string, value: string): void {
+    this.db.transaction(() => {
+      for (const text of texts) this.addNote(clot, text);
+      this.setState(key, value);
+    })();
+  }
+
+```
+
+Create `src/drafts.ts`:
+
+```ts
+import type { EmailAccount } from "./config.js";
+import type { Store } from "./store.js";
+
+/** An email draft a Clot saved, kept until the daemon has seen what the user did with it. */
+export interface PendingDraft {
+  account: string;
+  messageId: string;
+  subject: string;
+  to: string[];
+  text: string;
+  savedAt: number;
+  /** When the daemon first found it in neither Drafts nor Sent. */
+  missingSince?: number;
+}
+
+/** What became of a draft: still in Drafts, sent (when, and with what text), gone without a copy in Sent, or gone from Drafts where there is no Sent folder to look in. */
+export type DraftFate = { kind: "waiting" } | { kind: "sent"; at: Date; text: string } | { kind: "deleted" } | { kind: "gone" };
+
+/** Looks up what became of an account's drafts, one fate per draft, in order. */
+export type DraftLookup = (account: EmailAccount, drafts: PendingDraft[]) => Promise<DraftFate[]>;
+
+/** A draft nobody has sent or deleted after this long is no longer followed. */
+const FOLLOW_MS = 30 * 24 * 60 * 60_000;
+
+/** A draft missing from both Drafts and Sent is called deleted only when it is still missing this long after: a mail program may take it out of Drafts before its Sent copy is there. */
+const MISSING_MS = 10 * 60_000;
+
+const keyOf = (clot: string) => `pending-drafts:${clot}`;
+
+function pending(store: Store, clot: string): PendingDraft[] {
+  const saved = store.getState(keyOf(clot));
+  return saved === undefined ? [] : (JSON.parse(saved) as PendingDraft[]);
+}
+
+/** Remembers a draft the Clot saved, so that the Clot hears whether the user sent it. */
+export function recordDraft(store: Store, clot: string, draft: PendingDraft): void {
+  store.setState(keyOf(clot), JSON.stringify([...pending(store, clot), draft]));
+}
+
+/** Text compared as words: line breaks and spacing that mail programs change do not count. */
+const words = (text: string) => text.replace(/\s+/g, " ").trim();
+
+const quote = (text: string) => `> ${text.split("\n").join("\n> ")}`;
+
+/** The note that tells the Clot what became of its draft. */
+export function draftNote(draft: PendingDraft, fate: Exclude<DraftFate, { kind: "waiting" }>, when: (date: Date) => string, now: Date): string {
+  const what = `your email draft "${draft.subject}" to ${draft.to.join(", ")} (${draft.account})`;
+  switch (fate.kind) {
+    case "sent": {
+      const sent = `The user sent ${what} at ${when(fate.at)}. It is in their Sent folder, no longer in Drafts.`;
+      if (words(fate.text) === words(draft.text)) return `${sent} It went as you wrote it. This is only to keep you up to date; nothing needs doing about it.`;
+      return `${sent} The text that went out differs from your draft (the user may have changed it):\n${quote(fate.text)}\nThis is only to keep you up to date; nothing needs doing about it.`;
+    }
+    case "deleted":
+      return `The user deleted ${what} without sending it; the daemon noticed at ${when(now)}. Do not write it again or save a new draft of it: it was most likely deleted on purpose. Only if it answered something urgent, you may ask the user once what made them drop it.`;
+    case "gone":
+      return `${what[0].toUpperCase()}${what.slice(1)} is no longer in Drafts as of ${when(now)}: the user sent it or deleted it (the account has no Sent folder to tell which). Do not save it again unless the user asks.`;
+  }
+}
+
+/** A time as the user reads it: date, time and zone. */
+export function userTime(timeZone: string): (date: Date) => string {
+  const format = new Intl.DateTimeFormat("en-GB", { timeZone, day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short" });
+  return (date) => format.format(date);
+}
+
+export interface DraftTrackerDeps {
+  store: Store;
+  accounts: EmailAccount[];
+  lookup: DraftLookup;
+  timeZone: string;
+  now: () => number;
+  log: (text: string, error?: unknown) => void;
+}
+
+/**
+ * Follows the drafts the Clots saved. Before a Clot's turn, it looks at what the user did with them
+ * and leaves the Clot a note for each one sent or deleted, so the turn starts knowing.
+ */
+export class DraftTracker {
+  constructor(private d: DraftTrackerDeps) {}
+
+  /** Never throws: a lookup that fails leaves its drafts to the next turn. */
+  async check(clot: string): Promise<void> {
+    const { store } = this.d;
+    const drafts = pending(store, clot);
+    if (drafts.length === 0) return;
+    const now = this.d.now();
+    const when = userTime(this.d.timeZone);
+    const settled = new Set<string>();
+    /** When each draft was first found missing, as it now stands. */
+    const missing = new Map<string, number | undefined>();
+    const notes: string[] = [];
+    for (const name of new Set(drafts.map((draft) => draft.account))) {
+      const mine = drafts.filter((draft) => draft.account === name);
+      const account = this.d.accounts.find((candidate) => candidate.account === name);
+      if (!account) {
+        for (const draft of mine) settled.add(draft.messageId);
+        continue;
+      }
+      let fates: DraftFate[];
+      try {
+        fates = await this.d.lookup(account, mine);
+      } catch (error) {
+        this.d.log(`[${clot}] could not look at the drafts in ${name}; trying again before the next turn:`, error);
+        continue;
+      }
+      mine.forEach((draft, i) => {
+        const fate = fates[i];
+        if (fate === undefined || fate.kind === "waiting") {
+          if (now - draft.savedAt > FOLLOW_MS) settled.add(draft.messageId);
+          else if (draft.missingSince !== undefined) missing.set(draft.messageId, undefined);
+          return;
+        }
+        if (fate.kind !== "sent" && (draft.missingSince === undefined || now - draft.missingSince < MISSING_MS)) {
+          if (draft.missingSince === undefined) missing.set(draft.messageId, now);
+          return;
+        }
+        notes.push(draftNote(draft, fate, when, new Date(now)));
+        settled.add(draft.messageId);
+      });
+    }
+    if (settled.size === 0 && missing.size === 0) return;
+    // Read again: a draft saved while the lookup ran is kept.
+    const kept = pending(store, clot)
+      .filter((draft) => !settled.has(draft.messageId))
+      .map((draft) => (missing.has(draft.messageId) ? { ...draft, missingSince: missing.get(draft.messageId) } : draft));
+    // The notes and the drafts they settle are written together: a stop in between cannot repeat a note.
+    store.addNotesWithState(clot, notes, keyOf(clot), JSON.stringify(kept));
+  }
+}
+```
+
+In `src/sources/imap.ts`:
+
+**Replace**
+
+```ts
+import { emailEvent, emailMetaKey, fromParsed, metaOf, ownMessageKey, type OutgoingMail } from "./email.js";
+```
+
+**With**
+
+```ts
+import type { DraftFate, PendingDraft } from "../drafts.js";
+import { emailEvent, emailMetaKey, fromParsed, metaOf, ownMessageKey, trimQuoted, type OutgoingMail } from "./email.js";
+```
+
+**Replace**
+
+```ts
+    const drafts = boxes.find((box) => box.specialUse === "\\Drafts") ?? boxes.find((box) => /^(\[gmail\]\/)?drafts$/i.test(box.path));
+```
+
+**With**
+
+```ts
+    const drafts = findBox(boxes, "\\Drafts", /^(\[gmail\]\/)?drafts$/i);
+```
+
+and after `saveDraft`, add:
+
+```ts
+const findBox = (boxes: { path: string; specialUse?: string }[], use: string, name: RegExp) => boxes.find((box) => box.specialUse === use) ?? boxes.find((box) => name.test(box.path));
+
+/**
+ * What became of drafts the daemon saved: each is looked for in Drafts, then in Sent. A draft is
+ * found by its Message-ID, or else by its subject and first recipient after it was saved, since a
+ * mail program may give an edited draft, or the copy it sends, a new Message-ID.
+ */
+export async function draftFates(account: EmailAccount, drafts: PendingDraft[]): Promise<DraftFate[]> {
+  const client = new ImapFlow({ host: account.imap.host, port: account.imap.port, secure: account.imap.port === 993, auth: { user: account.address, pass: account.password }, logger: false });
+  await client.connect();
+  try {
+    const boxes = await client.list();
+    const draftsBox = findBox(boxes, "\\Drafts", /^(\[gmail\]\/)?drafts$/i);
+    const sentBox = findBox(boxes, "\\Sent", /^(\[gmail\]\/)?sent( mail| items| messages)?$/i);
+    /**
+     * Finds the drafts' copies in the open mailbox: by Message-ID for all of them first, then, among
+     * the messages none of those took, by subject and first recipient (in Drafts, by either one, so a
+     * draft the user edited is still found). A copy is given to a draft only when it is that draft's
+     * one candidate and no other draft's; null marks a draft whose copy cannot be told for sure.
+     */
+    const locate = async (which: number[], loose: boolean): Promise<Map<number, number | null>> => {
+      const found = new Map<number, number | null>();
+      const taken = new Set<number>();
+      for (const i of which) {
+        const byId = await client.search({ header: { "message-id": drafts[i].messageId } }, { uid: true });
+        if (byId && byId.length > 0) {
+          found.set(i, byId[0]);
+          taken.add(byId[0]);
+        }
+      }
+      const matches = new Map<number, number[]>();
+      for (const i of which.filter((i) => !found.has(i))) {
+        const draft = drafts[i];
+        const since = new Date(draft.savedAt - 24 * 60 * 60_000);
+        const query = loose ? { or: [{ subject: draft.subject }, { to: draft.to[0] }], since } : { subject: draft.subject, to: draft.to[0], since };
+        const candidates = (await client.search(query, { uid: true })) || [];
+        const matching: number[] = [];
+        for (const uid of candidates.filter((uid) => !taken.has(uid))) {
+          const m = await client.fetchOne(String(uid), { envelope: true, internalDate: true }, { uid: true });
+          // A minute's grace for clocks that differ.
+          if (m && (loose || m.envelope?.subject === draft.subject) && new Date(m.internalDate ?? 0).getTime() >= draft.savedAt - 60_000) matching.push(uid);
+        }
+        if (matching.length > 0) matches.set(i, matching);
+      }
+      const claims = (uid: number) => [...matches.values()].filter((matching) => matching.includes(uid)).length;
+      for (const [i, matching] of matches) found.set(i, matching.length === 1 && claims(matching[0]) === 1 ? matching[0] : null);
+      return found;
+    };
+    const fates: DraftFate[] = drafts.map(() => ({ kind: "waiting" }));
+    if (draftsBox) {
+      await client.mailboxOpen(draftsBox.path, { readOnly: true });
+      const inDrafts = await locate([...drafts.keys()], true);
+      for (const i of drafts.keys()) if (!inDrafts.has(i)) fates[i] = { kind: "gone" };
+    }
+    if (!draftsBox || !sentBox) return fates;
+    await client.mailboxOpen(sentBox.path, { readOnly: true });
+    const left = [...drafts.keys()].filter((i) => fates[i].kind === "gone");
+    const inSent = await locate(left, false);
+    for (const i of left) {
+      const uid = inSent.get(i);
+      // Several copies that could be this draft's: it waits rather than be given the wrong one.
+      if (uid === null) {
+        fates[i] = { kind: "waiting" };
+        continue;
+      }
+      const copy = uid === undefined ? undefined : await client.fetchOne(String(uid), { source: true, internalDate: true }, { uid: true });
+      if (!copy || !copy.source) {
+        fates[i] = { kind: "deleted" };
+        continue;
+      }
+      const mail = fromParsed(await simpleParser(copy.source));
+      // When the copy reached Sent: a mail program may keep the Date the draft was written with.
+      fates[i] = { kind: "sent", at: copy.internalDate ? new Date(copy.internalDate) : (mail.date ?? new Date()), text: trimQuoted(mail.text) };
+    }
+    return fates;
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+}
+```
+
+In `src/tools.ts`, add `import { recordDraft } from "./drafts.js";` to the imports, and in `emailDraft`:
+
+**Replace**
+
+```ts
+    return `Not saved: ${error instanceof Error ? error.message : String(error)}. Give the draft in your reply instead.`;
+  }
+```
+
+**With**
+
+```ts
+    return `Not saved: ${error instanceof Error ? error.message : String(error)}. Give the draft in your reply instead.`;
+  }
+  recordDraft(d.store, ctx.clot, { account: account.account, messageId: mail.messageId, subject: mail.subject, to: mail.to, text: mail.text, savedAt: Date.now() });
+```
+
+In `src/daemon.ts`:
+
+**Replace**
+
+```ts
+import { imapflowClient, MailboxListener, saveDraft } from "./sources/imap.js";
+```
+
+**With**
+
+```ts
+import { draftFates, imapflowClient, MailboxListener, saveDraft } from "./sources/imap.js";
+import { DraftTracker } from "./drafts.js";
+```
+
+**Replace**
+
+```ts
+/** The Clots share one GitHub account; its login is what marks an event as caused by a Clot. */
+```
+
+**With**
+
+```ts
+/** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check. */
+const drafts = config.sources.email.length === 0 ? undefined : new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
+
+/** The Clots share one GitHub account; its login is what marks an event as caused by a Clot. */
+```
+
+**Replace**
+
+```ts
+    beforeTurn: (name) => memory.beforeTurn(name),
+```
+
+**With**
+
+```ts
+    beforeTurn: async (name) => {
+      await drafts?.check(name);
+      await memory.beforeTurn(name);
+    },
+```
+
+In `tests/tools.test.ts`, in "saves a reply to an email event in the Drafts folder and shows it in the channel", after `expect(said[0]).toContain("We are checking.");` add:
+
+```ts
+    expect(JSON.parse(store.getState("pending-drafts:graphite")!)).toMatchObject([{ account: "gmail", messageId: saved[0].messageId, subject: "Re: Order 7", to: ["jane@x.com"] }]);
+```
+
+Create `tests/drafts.test.ts`:
+
+```ts
+import { beforeEach, describe, expect, it } from "vitest";
+import { DraftTracker, recordDraft, type DraftFate, type PendingDraft } from "../src/drafts.js";
+import { Store } from "../src/store.js";
+
+const account = { account: "gmail", shared: true, address: "me@gmail.com", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["INBOX"] };
+const draft = (id: string, text = "We are checking."): PendingDraft => ({ account: "gmail", messageId: `<${id}@gmail.com>`, subject: "Re: Order 7", to: ["jane@x.com"], text, savedAt: Date.UTC(2026, 9, 16, 9) });
+
+describe("DraftTracker", () => {
+  let store: Store;
+  let fates: DraftFate[];
+  let looked: PendingDraft[][];
+  let fail: boolean;
+  const tracker = (now = Date.UTC(2026, 9, 16, 12)) =>
+    new DraftTracker({
+      store,
+      accounts: [account],
+      lookup: async (_account, drafts) => {
+        looked.push(drafts);
+        if (fail) throw new Error("offline");
+        return fates;
+      },
+      timeZone: "Europe/Zurich",
+      now: () => now,
+      log: () => undefined,
+    });
+  const notes = () => store.notes("graphite").map((note) => note.text);
+
+  beforeEach(() => {
+    store = new Store(":memory:");
+    looked = [];
+    fail = false;
+  });
+
+  it("does not look when there are no drafts", async () => {
+    await tracker().check("graphite");
+    expect(looked).toEqual([]);
+  });
+
+  it("notes a draft sent as written, with its time, and stops following it", async () => {
+    recordDraft(store, "graphite", draft("a"));
+    fates = [{ kind: "sent", at: new Date(Date.UTC(2026, 9, 16, 10, 5)), text: "We are\nchecking." }];
+    await tracker().check("graphite");
+    expect(notes()).toHaveLength(1);
+    expect(notes()[0]).toContain('The user sent your email draft "Re: Order 7" to jane@x.com (gmail) at 16 Oct 2026, 12:05');
+    expect(notes()[0]).toContain("as you wrote it");
+    expect(notes()[0]).toContain("nothing needs doing");
+    await tracker().check("graphite");
+    expect(looked).toHaveLength(1);
+  });
+
+  it("quotes what was sent when it differs from the draft", async () => {
+    recordDraft(store, "graphite", draft("a"));
+    fates = [{ kind: "sent", at: new Date(), text: "We are checking.\nBest, L" }];
+    await tracker().check("graphite");
+    expect(notes()[0]).toContain("differs from your draft");
+    expect(notes()[0]).toContain("> Best, L");
+  });
+
+  it("notes a deleted draft only once it stays missing for ten minutes, and tells the Clot not to write it again", async () => {
+    recordDraft(store, "graphite", draft("a"));
+    fates = [{ kind: "deleted" }];
+    await tracker().check("graphite");
+    await tracker(Date.UTC(2026, 9, 16, 12, 9)).check("graphite");
+    expect(notes()).toEqual([]);
+    await tracker(Date.UTC(2026, 9, 16, 12, 10)).check("graphite");
+    expect(notes()[0]).toContain("deleted your email draft");
+    expect(notes()[0]).toContain("Do not write it again");
+  });
+
+  it("keeps a draft still waiting, and one whose lookup failed, for the next turn", async () => {
+    recordDraft(store, "graphite", draft("a"));
+    recordDraft(store, "graphite", draft("b"));
+    fates = [{ kind: "waiting" }, { kind: "gone" }];
+    await tracker().check("graphite");
+    await tracker(Date.UTC(2026, 9, 16, 12, 10)).check("graphite");
+    expect(notes()).toHaveLength(1);
+    expect(notes()[0]).toContain("no longer in Drafts");
+    fail = true;
+    await tracker().check("graphite");
+    expect(looked[2].map((d) => d.messageId)).toEqual(["<a@gmail.com>"]);
+    expect(notes()).toHaveLength(1);
+  });
+
+  it("starts the ten minutes again when a missing draft turns up", async () => {
+    recordDraft(store, "graphite", draft("a"));
+    fates = [{ kind: "deleted" }];
+    await tracker().check("graphite");
+    fates = [{ kind: "waiting" }];
+    await tracker(Date.UTC(2026, 9, 16, 12, 5)).check("graphite");
+    fates = [{ kind: "deleted" }];
+    await tracker(Date.UTC(2026, 9, 16, 12, 11)).check("graphite");
+    expect(notes()).toEqual([]);
+  });
+
+  it("stops following a draft nobody touched for a month", async () => {
+    recordDraft(store, "graphite", draft("a"));
+    fates = [{ kind: "waiting" }];
+    await tracker(Date.UTC(2026, 10, 20)).check("graphite");
+    await tracker(Date.UTC(2026, 10, 20)).check("graphite");
+    expect(looked).toHaveLength(1);
+    expect(notes()).toEqual([]);
+  });
+});
+```
+
+- [ ] **Step 9: Run all the tests and the type check**
 
 Run: `npx vitest run`
 Expected: PASS.
