@@ -101,6 +101,20 @@ describe("McpHub", () => {
     expect(opener.closed).toBe(1);
   });
 
+  it("shares one connection attempt between calls made at once, and tries again after it fails", async () => {
+    const h = hub();
+    await Promise.all([h.start(), h.callTool("notion", "search", {}), h.listTools("notion")]);
+    expect(opener.opened.filter((name) => name === "notion")).toEqual(["notion"]);
+    opener.opened = [];
+    opener.fail.tracker = new Error("ECONNREFUSED");
+    const fresh = hub();
+    await Promise.all([fresh.listTools("tracker").catch(() => undefined), fresh.listTools("tracker").catch(() => undefined)]);
+    expect(opener.opened).toEqual(["tracker"]);
+    opener.fail.tracker = undefined;
+    await fresh.listTools("tracker");
+    expect(opener.opened).toEqual(["tracker", "tracker"]);
+  });
+
   it("finishes a login, connects, and says so", async () => {
     opener.fail.notion = new LoginNeeded("x");
     const h = hub();

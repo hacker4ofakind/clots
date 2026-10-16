@@ -78,6 +78,18 @@ describe("MailboxListener", () => {
     await run;
   });
 
+  it("ends the run when a read of new mail fails, so the supervisor connects again", async () => {
+    let ready = false;
+    const run = listener().run(() => void (ready = true));
+    await until(() => expect(ready).toBe(true));
+    client.fetchAfter = async function* () {
+      throw new Error("connection reset");
+    };
+    client.arrive({ uid: 1, size: 100, source: message(1) });
+    // The connection stays open: the run must end on the failed read, not wait for it to close.
+    await expect(run).rejects.toThrow("connection reset");
+  });
+
   it("catches up on what arrived while it was away, after a restart", async () => {
     store.setState("imap:gmail:Clots", JSON.stringify({ uidValidity: "9", lastUid: 1 }));
     client.mail = [1, 2, 3].map((uid) => ({ uid, size: 100, source: message(uid) }));

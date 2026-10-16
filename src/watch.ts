@@ -144,10 +144,13 @@ export class Watcher {
   }
 }
 
-/** Runs a draft recipe once and says what it would see. Records nothing. */
+/**
+ * Runs a draft recipe once and says what it would see. Records nothing. Only a tool that declares
+ * itself read-only is tried: `notReadOnly` is the user's yes to a saved recipe, which a draft has not had.
+ */
 export async function tryRecipe(hub: Hub, recipe: WatchRecipe): Promise<string> {
   try {
-    const refusal = await checkTool(hub, recipe);
+    const refusal = await checkTool(hub, { ...recipe, notReadOnly: undefined });
     if (refusal !== undefined) return `Refused: ${refusal}.`;
     const entries = itemsOf(recipe, await hub.callTool(recipe.server, recipe.tool, recipe.arguments));
     const shown = entries.slice(0, 5).map((entry) => `- ${entry.id}: ${JSON.stringify(entry.item).slice(0, 400)}`);

@@ -20,6 +20,8 @@ export async function handOver(d: HandOverDeps, from: string, eventId: string, t
   const port = d.clots.get(to);
   if (!port) return `Refused: there is no Clot named ${to}. The Clots are: ${[...d.clots.keys()].join(", ")}.`;
   d.store.setEventClot(event.id, to);
+  // Still waiting in this Clot's queue, it would be looked into here as well. One already running is left to its turn.
+  d.store.withdrawPendingEvent(from, event.id);
   await d.say(from, `Moved to ${to} at your request: ${event.title}`);
   await port.queueEvent(event, `Moved here from ${from} at the user's request: ${event.triageMessage ?? event.title}`);
   return `Handed to ${to}. If this shows a pattern (every mail to one address, a word in every title), propose a routing rule with rulebook_routing.`;

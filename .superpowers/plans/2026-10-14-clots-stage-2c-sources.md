@@ -3281,6 +3281,20 @@ describe("handOver", () => {
     expect(said).toEqual([{ clot: "graphite", text: "Moved to shop at your request: Refund for order 7" }]);
   });
 
+  it("takes the event out of the first Clot's queue when it has not started there, and leaves one that has", async () => {
+    store.enqueue({ id: "event:graphite:e-1", clot: "graphite", channelId: "c-1", text: "e-1", receivedAt: 0, kind: "event", eventId: "e-1" });
+    await handOver(deps(), "graphite", "e-1", "shop");
+    expect(store.nextPending("graphite")).toBeUndefined();
+
+    store.insertEvent({ ...store.getEvent("e-1")!, id: "e-2" });
+    store.setEventClot("e-2", "graphite");
+    store.enqueue({ id: "event:graphite:e-2", clot: "graphite", channelId: "c-1", text: "e-2", receivedAt: 0, kind: "event", eventId: "e-2" });
+    store.setInboxStatus("event:graphite:e-2", "running");
+    await handOver(deps(), "graphite", "e-2", "shop");
+    // A running entry is the turn's own: it is finished or picked up again as usual.
+    expect(store.requeueRunning("graphite")).toBe(1);
+  });
+
   it("refuses an unknown event, one that is not this Clot's, a Clot that does not exist, and the same Clot", async () => {
     expect(await handOver(deps(), "graphite", "nope", "shop")).toContain("no event");
     expect(await handOver(deps(), "shop", "e-1", "graphite")).toContain("not routed to you");
@@ -3463,10 +3477,21 @@ export async function handOver(d: HandOverDeps, from: string, eventId: string, t
   const port = d.clots.get(to);
   if (!port) return `Refused: there is no Clot named ${to}. The Clots are: ${[...d.clots.keys()].join(", ")}.`;
   d.store.setEventClot(event.id, to);
+  // Still waiting in this Clot's queue, it would be looked into here as well. One already running is left to its turn.
+  d.store.withdrawPendingEvent(from, event.id);
   await d.say(from, `Moved to ${to} at your request: ${event.title}`);
   await port.queueEvent(event, `Moved here from ${from} at the user's request: ${event.triageMessage ?? event.title}`);
   return `Handed to ${to}. If this shows a pattern (every mail to one address, a word in every title), propose a routing rule with rulebook_routing.`;
 }
+```
+
+In `src/store.ts`, before `finishRunning`, add:
+
+```ts
+  /** Takes an event out of a Clot's queue if its turn has not started. Returns whether it was waiting there. */
+  withdrawPendingEvent(clot: string, eventId: string): boolean {
+    return this.db.prepare("UPDATE inbox SET status = 'done' WHERE clot = ? AND event_id = ? AND status = 'pending'").run(clot, eventId).changes > 0;
+  }
 ```
 
 In `src/tools.ts`:
@@ -5333,6 +5358,18 @@ describe("MailboxListener", () => {
     await run;
   });
 
+  it("ends the run when a read of new mail fails, so the supervisor connects again", async () => {
+    let ready = false;
+    const run = listener().run(() => void (ready = true));
+    await until(() => expect(ready).toBe(true));
+    client.fetchAfter = async function* () {
+      throw new Error("connection reset");
+    };
+    client.arrive({ uid: 1, size: 100, source: message(1) });
+    // The connection stays open: the run must end on the failed read, not wait for it to close.
+    await expect(run).rejects.toThrow("connection reset");
+  });
+
   it("catches up on what arrived while it was away, after a restart", async () => {
     store.setState("imap:gmail:Clots", JSON.stringify({ uidValidity: "9", lastUid: 1 }));
     client.mail = [1, 2, 3].map((uid) => ({ uid, size: 100, source: message(uid) }));
@@ -5507,13 +5544,18 @@ export class MailboxListener {
       const position = startPosition(saved === undefined ? undefined : (JSON.parse(saved) as MailboxPosition), status);
       this.d.store.setState(this.key, JSON.stringify(position));
       // One read at a time, in order: new mail that arrives during a read is read after it.
+      // A read that fails ends the run at once, so the supervisor connects again and reads from the saved UID.
+      let fail!: (error: unknown) => void;
+      const failed = new Promise<never>((_resolve, reject) => (fail = reject));
+      failed.catch(() => undefined);
       let reading = this.read(client, position);
       client.onNewMail(() => {
         reading = reading.then(() => this.read(client, position));
+        reading.catch(fail);
       });
       await reading;
       ready();
-      await client.closed();
+      await Promise.race([client.closed(), failed]);
       await reading;
     } finally {
       await client.logout().catch(() => undefined);
@@ -9000,6 +9042,20 @@ describe("McpHub", () => {
     expect(opener.closed).toBe(1);
   });
 
+  it("shares one connection attempt between calls made at once, and tries again after it fails", async () => {
+    const h = hub();
+    await Promise.all([h.start(), h.callTool("notion", "search", {}), h.listTools("notion")]);
+    expect(opener.opened.filter((name) => name === "notion")).toEqual(["notion"]);
+    opener.opened = [];
+    opener.fail.tracker = new Error("ECONNREFUSED");
+    const fresh = hub();
+    await Promise.all([fresh.listTools("tracker").catch(() => undefined), fresh.listTools("tracker").catch(() => undefined)]);
+    expect(opener.opened).toEqual(["tracker"]);
+    opener.fail.tracker = undefined;
+    await fresh.listTools("tracker");
+    expect(opener.opened).toEqual(["tracker", "tracker"]);
+  });
+
   it("finishes a login, connects, and says so", async () => {
     opener.fail.notion = new LoginNeeded("x");
     const h = hub();
@@ -9258,6 +9314,7 @@ type Status = { status: "connected" | "needs login" | "failing" | "not connected
 /** The daemon's MCP servers: one session each, opened when first needed and again after it fails. */
 export class McpHub {
   private sessions = new Map<string, McpSession>();
+  private opening = new Map<string, Promise<McpSession>>();
   private states = new Map<string, Status>();
 
   constructor(private d: { names: string[]; opener: Opener; tell: (server: string, text: string) => Promise<void> }) {}
@@ -9304,18 +9361,30 @@ export class McpHub {
     return parts.join("\n\n");
   }
 
-  private async session(name: string): Promise<McpSession> {
+  /**
+   * The server's session, opened when there is none. Calls made while it is being opened share
+   * that attempt, so a server never gets two transports and a login link stays with the one that asked.
+   */
+  private session(name: string): Promise<McpSession> {
     const open = this.sessions.get(name);
-    if (open) return open;
-    try {
-      const session = await this.d.opener.open(name);
-      this.sessions.set(name, session);
-      this.states.set(name, { status: "connected" });
-      return session;
-    } catch (error) {
-      this.states.set(name, error instanceof LoginNeeded ? { status: "needs login" } : { status: "failing", reason: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
+    if (open) return Promise.resolve(open);
+    const pending = this.opening.get(name);
+    if (pending) return pending;
+    const attempt = (async () => {
+      try {
+        const session = await this.d.opener.open(name);
+        this.sessions.set(name, session);
+        this.states.set(name, { status: "connected" });
+        return session;
+      } catch (error) {
+        this.states.set(name, error instanceof LoginNeeded ? { status: "needs login" } : { status: "failing", reason: error instanceof Error ? error.message : String(error) });
+        throw error;
+      } finally {
+        this.opening.delete(name);
+      }
+    })();
+    this.opening.set(name, attempt);
+    return attempt;
   }
 
   /** Runs a call on the server's session. A call that fails drops the session, so the next one connects afresh. */
@@ -9708,6 +9777,8 @@ describe("Watcher", () => {
     expect(store.statesWithPrefix("watch:")).toEqual([]);
     tools = [{ name: "search", description: "", readOnly: false }];
     expect(await tryRecipe(hub, recipe)).toContain("Refused");
+    // notReadOnly is the user's yes to a saved recipe; a draft that says it is still refused.
+    expect(await tryRecipe(hub, { ...recipe, notReadOnly: true })).toContain("Refused");
   });
 });
 ```
@@ -10322,10 +10393,13 @@ export class Watcher {
   }
 }
 
-/** Runs a draft recipe once and says what it would see. Records nothing. */
+/**
+ * Runs a draft recipe once and says what it would see. Records nothing. Only a tool that declares
+ * itself read-only is tried: `notReadOnly` is the user's yes to a saved recipe, which a draft has not had.
+ */
 export async function tryRecipe(hub: Hub, recipe: WatchRecipe): Promise<string> {
   try {
-    const refusal = await checkTool(hub, recipe);
+    const refusal = await checkTool(hub, { ...recipe, notReadOnly: undefined });
     if (refusal !== undefined) return `Refused: ${refusal}.`;
     const entries = itemsOf(recipe, await hub.callTool(recipe.server, recipe.tool, recipe.arguments));
     const shown = entries.slice(0, 5).map((entry) => `- ${entry.id}: ${JSON.stringify(entry.item).slice(0, 400)}`);

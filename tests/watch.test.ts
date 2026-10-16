@@ -129,5 +129,7 @@ describe("Watcher", () => {
     expect(store.statesWithPrefix("watch:")).toEqual([]);
     tools = [{ name: "search", description: "", readOnly: false }];
     expect(await tryRecipe(hub, recipe)).toContain("Refused");
+    // notReadOnly is the user's yes to a saved recipe; a draft that says it is still refused.
+    expect(await tryRecipe(hub, { ...recipe, notReadOnly: true })).toContain("Refused");
   });
 });

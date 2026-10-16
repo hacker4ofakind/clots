@@ -98,6 +98,7 @@ type Status = { status: "connected" | "needs login" | "failing" | "not connected
 /** The daemon's MCP servers: one session each, opened when first needed and again after it fails. */
 export class McpHub {
   private sessions = new Map<string, McpSession>();
+  private opening = new Map<string, Promise<McpSession>>();
   private states = new Map<string, Status>();
 
   constructor(private d: { names: string[]; opener: Opener; tell: (server: string, text: string) => Promise<void> }) {}
@@ -144,18 +145,30 @@ export class McpHub {
     return parts.join("\n\n");
   }
 
-  private async session(name: string): Promise<McpSession> {
+  /**
+   * The server's session, opened when there is none. Calls made while it is being opened share
+   * that attempt, so a server never gets two transports and a login link stays with the one that asked.
+   */
+  private session(name: string): Promise<McpSession> {
     const open = this.sessions.get(name);
-    if (open) return open;
-    try {
-      const session = await this.d.opener.open(name);
-      this.sessions.set(name, session);
-      this.states.set(name, { status: "connected" });
-      return session;
-    } catch (error) {
-      this.states.set(name, error instanceof LoginNeeded ? { status: "needs login" } : { status: "failing", reason: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
+    if (open) return Promise.resolve(open);
+    const pending = this.opening.get(name);
+    if (pending) return pending;
+    const attempt = (async () => {
+      try {
+        const session = await this.d.opener.open(name);
+        this.sessions.set(name, session);
+        this.states.set(name, { status: "connected" });
+        return session;
+      } catch (error) {
+        this.states.set(name, error instanceof LoginNeeded ? { status: "needs login" } : { status: "failing", reason: error instanceof Error ? error.message : String(error) });
+        throw error;
+      } finally {
+        this.opening.delete(name);
+      }
+    })();
+    this.opening.set(name, attempt);
+    return attempt;
   }
 
   /** Runs a call on the server's session. A call that fails drops the session, so the next one connects afresh. */

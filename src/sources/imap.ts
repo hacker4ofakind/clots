@@ -164,13 +164,18 @@ export class MailboxListener {
       const position = startPosition(saved === undefined ? undefined : (JSON.parse(saved) as MailboxPosition), status);
       this.d.store.setState(this.key, JSON.stringify(position));
       // One read at a time, in order: new mail that arrives during a read is read after it.
+      // A read that fails ends the run at once, so the supervisor connects again and reads from the saved UID.
+      let fail!: (error: unknown) => void;
+      const failed = new Promise<never>((_resolve, reject) => (fail = reject));
+      failed.catch(() => undefined);
       let reading = this.read(client, position);
       client.onNewMail(() => {
         reading = reading.then(() => this.read(client, position));
+        reading.catch(fail);
       });
       await reading;
       ready();
-      await client.closed();
+      await Promise.race([client.closed(), failed]);
       await reading;
     } finally {
       await client.logout().catch(() => undefined);

@@ -39,6 +39,20 @@ describe("handOver", () => {
     expect(said).toEqual([{ clot: "graphite", text: "Moved to shop at your request: Refund for order 7" }]);
   });
 
+  it("takes the event out of the first Clot's queue when it has not started there, and leaves one that has", async () => {
+    store.enqueue({ id: "event:graphite:e-1", clot: "graphite", channelId: "c-1", text: "e-1", receivedAt: 0, kind: "event", eventId: "e-1" });
+    await handOver(deps(), "graphite", "e-1", "shop");
+    expect(store.nextPending("graphite")).toBeUndefined();
+
+    store.insertEvent({ ...store.getEvent("e-1")!, id: "e-2" });
+    store.setEventClot("e-2", "graphite");
+    store.enqueue({ id: "event:graphite:e-2", clot: "graphite", channelId: "c-1", text: "e-2", receivedAt: 0, kind: "event", eventId: "e-2" });
+    store.setInboxStatus("event:graphite:e-2", "running");
+    await handOver(deps(), "graphite", "e-2", "shop");
+    // A running entry is the turn's own: it is finished or picked up again as usual.
+    expect(store.requeueRunning("graphite")).toBe(1);
+  });
+
   it("refuses an unknown event, one that is not this Clot's, a Clot that does not exist, and the same Clot", async () => {
     expect(await handOver(deps(), "graphite", "nope", "shop")).toContain("no event");
     expect(await handOver(deps(), "shop", "e-1", "graphite")).toContain("not routed to you");

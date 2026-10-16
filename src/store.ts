@@ -490,6 +490,11 @@ export class Store {
     this.db.prepare("UPDATE inbox SET status = ? WHERE id = ?").run(status, id);
   }
 
+  /** Takes an event out of a Clot's queue if its turn has not started. Returns whether it was waiting there. */
+  withdrawPendingEvent(clot: string, eventId: string): boolean {
+    return this.db.prepare("UPDATE inbox SET status = 'done' WHERE clot = ? AND event_id = ? AND status = 'pending'").run(clot, eventId).changes > 0;
+  }
+
   finishRunning(clot: string): void {
     this.db.prepare("UPDATE inbox SET status = 'done' WHERE clot = ? AND status = 'running'").run(clot);
   }

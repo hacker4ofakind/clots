@@ -279,7 +279,8 @@ graphite"). The Clot calls `route_correct` with the event's ID and the right Clo
   another Clot that exists, the home Clot included.
 - The event is handed over: its Clot is changed, a line in each channel says it
   moved, and it joins the other Clot's queue as an event of its own, with the
-  one-line message triage wrote. Triage does not run again.
+  one-line message triage wrote. Triage does not run again. If it was still
+  waiting in this Clot's queue, it leaves it, so only one Clot looks into it.
 - Allowed in a working turn only. Under the lock it is refused.
 - When the correction shows a pattern (every mail to one alias, every event with a
   word in its title), the Clot proposes a routing rule with `rulebook_routing`.
