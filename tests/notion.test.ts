@@ -156,10 +156,15 @@ describe("Notion's API", () => {
 
   it("comments on the page an event is about, as the integration", async () => {
     const { calls, fetchFn } = api({ "/comments": { id: "comment-9" } });
-    const sender = notionCommentSender([account], fetchFn);
+    let bot = "bot-1";
+    const sender = notionCommentSender([account], () => bot, fetchFn);
     const { event } = normalizeNotion(account, pageCreated, NOW)!;
     expect(sender.reach(event)).toBeUndefined();
     expect(sender.reach({ ...event, source: "email" })).toContain("Notion");
+    // Until the integration's bot is known, its own comment would come back looking like anyone's.
+    bot = "";
+    expect(sender.reach(event)).toContain("not known yet");
+    bot = "bot-1";
     expect(await sender.send(event, "Thanks, noted.")).toEqual({ ok: true, url: event.url });
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ parent: { page_id: PAGE }, rich_text: [{ type: "text", text: { content: "Thanks, noted." } }] });
     expect((calls[0].init.headers as Record<string, string>)["notion-version"]).toBe("2022-06-28");

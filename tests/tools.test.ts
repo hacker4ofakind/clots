@@ -370,8 +370,15 @@ describe("calendar_list", () => {
     expect(said.at(-1)).toContain("every occurrence");
   });
 
-  it("refuses to write under the lock", async () => {
+  it("refuses to write under the lock, and once a steered event has joined the turn", async () => {
     for (const kind of ["investigation", "brainstorm"] as const) expect(await allCalendarTools(kind).calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Refused");
+    expect(await allCalendarTools("work", true).calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Refused");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses to make an event all-day, or not, without its new start and end", async () => {
+    scriptAnswers.check = { ok: true, event: scriptEvent };
+    expect(await allCalendarTools("work").calendarWrite!({ action: "update", uid: "demo@google.com", allDay: true })).toContain("start and end");
     expect(calls).toEqual([]);
   });
 

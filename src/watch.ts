@@ -77,16 +77,22 @@ export function itemsOf(recipe: WatchRecipe, result: ToolResult): { id: string; 
 export function compare(previous: Record<string, string> | undefined, current: { id: string; hash: string }[], report: WatchRecipe["report"]): { added: string[]; changed: string[]; snapshot: Record<string, string> } {
   const snapshot = Object.fromEntries(current.map((entry) => [entry.id, entry.hash]));
   if (previous === undefined) return { added: [], changed: [], snapshot };
-  const added = current.filter((entry) => previous[entry.id] === undefined).map((entry) => entry.id);
-  const changed = report === "added_and_changed" ? current.filter((entry) => previous[entry.id] !== undefined && previous[entry.id] !== entry.hash).map((entry) => entry.id) : [];
+  // Own keys only: an item named "constructor" is not one the object inherits.
+  const seen = (id: string) => Object.hasOwn(previous, id);
+  const added = current.filter((entry) => !seen(entry.id)).map((entry) => entry.id);
+  const changed = report === "added_and_changed" ? current.filter((entry) => seen(entry.id) && previous[entry.id] !== entry.hash).map((entry) => entry.id) : [];
   return { added, changed, snapshot };
 }
 
-/** An item as the common event. The recipe's name is its source and its account. */
-export function watchEvent(recipe: WatchRecipe, entry: { id: string; item: unknown; hash: string }, kind: "item_added" | "item_changed", receivedAt: number): ClotEvent {
+/**
+ * An item as the common event. The recipe's name is its source and its account. `run` counts the
+ * recipe's recorded runs: an item that changes back, or comes back, makes a new event, while a run
+ * repeated before it was recorded makes the same one again, which is dropped as a repeat.
+ */
+export function watchEvent(recipe: WatchRecipe, entry: { id: string; item: unknown; hash: string }, kind: "item_added" | "item_changed", receivedAt: number, run: number): ClotEvent {
   const title = recipe.title === undefined ? "" : fillPaths(recipe.title, entry.item).trim();
   return {
-    id: `${recipe.name}:${entry.id}:${entry.hash}`,
+    id: `${recipe.name}:${entry.id}:${entry.hash}:${run}`,
     source: recipe.name,
     account: recipe.name,
     kind,
@@ -132,15 +138,17 @@ export class Watcher {
     }
     const key = `watch:${recipe.name}`;
     const saved = store.getState(key);
-    const previous = saved === undefined ? undefined : (JSON.parse(saved) as { definition: string; snapshot: Record<string, string> });
+    const previous = saved === undefined ? undefined : (JSON.parse(saved) as { definition: string; snapshot: Record<string, string>; run?: number });
     const { added, changed, snapshot } = compare(previous?.definition === definition(recipe) ? previous.snapshot : undefined, entries, recipe.report);
+    // Recorded with the snapshot, after the events: a run repeated before that makes the same IDs.
+    const run = (previous?.run ?? 0) + 1;
     for (const entry of entries) {
       const kind = added.includes(entry.id) ? "item_added" : changed.includes(entry.id) ? "item_changed" : undefined;
       if (kind === undefined) continue;
-      const event = watchEvent(recipe, entry, kind, this.d.now());
+      const event = watchEvent(recipe, entry, kind, this.d.now(), run);
       if (store.insertEvent(event)) this.d.deliver(event);
     }
-    store.setState(key, JSON.stringify({ definition: definition(recipe), snapshot }));
+    store.setState(key, JSON.stringify({ definition: definition(recipe), snapshot, run }));
   }
 }
 

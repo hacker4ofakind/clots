@@ -186,14 +186,19 @@ export function notionEnricher(accounts: NotionAccount[], fetchFn: typeof fetch 
   };
 }
 
-/** Sends a standing rule's message as a comment on the Notion page the event is about, as the integration. */
-export function notionCommentSender(accounts: NotionAccount[], fetchFn: typeof fetch = fetch): Sender {
+/**
+ * Sends a standing rule's message as a comment on the Notion page the event is about, as the
+ * integration. `botId` gives the integration's bot user for an account, or "" while it is not known.
+ */
+export function notionCommentSender(accounts: NotionAccount[], botId: (account: string) => string, fetchFn: typeof fetch = fetch): Sender {
   const accountOf = (name: string) => accounts.find((candidate) => candidate.account === name);
   return {
     reach(event) {
       if (event.source !== "notion") return "this way of sending answers Notion pages, and this event is not one";
       if (!event.subject.startsWith("page:")) return "this event is not about a Notion page";
       if (!accountOf(event.account)) return `the Notion account ${event.account} is not configured`;
+      // Its own comment comes back as an event, and must be told apart from anyone else's, or a rule would answer itself.
+      if (botId(event.account) === "") return "the Notion integration's bot is not known yet, so its own comment could not be told apart; nothing is sent until the daemon has read it";
       return undefined;
     },
 

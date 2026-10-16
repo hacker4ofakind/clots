@@ -249,33 +249,42 @@ for (const account of config.sources.calendar) {
   feeds.set(account.account, feed);
   supervisor.start({ name: `calendar ${account.account}`, everyMs: account.pollMinutes * 60_000, tell: tellAccount(account), run: () => feed.poll() });
 }
+/**
+ * Learns who the Clots are at a source, to drop what they did themselves. A lookup that fails is
+ * tried again with a growing wait, up to an hour; until it works, that source's standing sends are refused.
+ */
+function learnIdentity(what: string, lookup: () => Promise<string>, learnt: (id: string) => void, waitMs = 5_000): void {
+  lookup().then(learnt, (error) => {
+    console.warn(`[events] could not read ${what}; its standing sends wait until it is read. Trying again in ${Math.round(waitMs / 1000)} s:`, error);
+    setTimeout(() => learnIdentity(what, lookup, learnt, Math.min(waitMs * 2, 3_600_000)), waitMs).unref();
+  });
+}
+
 // Linear: one path per workspace. The Clots' member is learnt from its key, to drop what it did itself.
 const linearMembers = new Map<string, string>();
+const linearMemberOf = (account: string) => linearMembers.get(account) ?? "";
 for (const account of config.sources.linear) {
-  handlers.set(`/webhooks/linear/${account.account}`, linearHandler(account, { insertEvent, now: () => Date.now(), memberId: () => linearMembers.get(account.account) ?? "" }));
-  linearMember(account.apiKey)
-    .then((id) => {
-      linearMembers.set(account.account, id);
-      console.log(`[events] the Clots act on Linear (${account.account}) as member ${id}`);
-    })
-    .catch((error) => console.warn(`[events] could not read the Clots' Linear member for ${account.account}; their own comments will not be recognised:`, error));
+  handlers.set(`/webhooks/linear/${account.account}`, linearHandler(account, { insertEvent, now: () => Date.now(), memberId: () => linearMemberOf(account.account) }));
+  learnIdentity(`the Clots' Linear member for ${account.account}`, () => linearMember(account.apiKey), (id) => {
+    linearMembers.set(account.account, id);
+    console.log(`[events] the Clots act on Linear (${account.account}) as member ${id}`);
+  });
 }
 if (config.sources.linear.length > 0) {
   enrichers.linear = linearEnricher(config.sources.linear);
-  toolDeps.senders.linear_comment = linearCommentSender(config.sources.linear);
+  toolDeps.senders.linear_comment = linearCommentSender(config.sources.linear, linearMemberOf);
 }
 
 // Notion: one path per workspace. The integration's bot is learnt from its token, to drop what it did itself.
 const notionBots = new Map<string, string>();
+const notionBotOf = (account: string) => notionBots.get(account) ?? "";
 for (const account of config.sources.notion) {
-  handlers.set(`/webhooks/notion/${account.account}`, notionHandler(account, { store, now: () => Date.now(), botId: () => notionBots.get(account.account) ?? "", log: (text) => console.log(text) }));
-  notionBot(account.token)
-    .then((id) => notionBots.set(account.account, id))
-    .catch((error) => console.warn(`[events] could not read the Notion integration's bot for ${account.account}; its own comments will not be recognised:`, error));
+  handlers.set(`/webhooks/notion/${account.account}`, notionHandler(account, { store, now: () => Date.now(), botId: () => notionBotOf(account.account), log: (text) => console.log(text) }));
+  learnIdentity(`the Notion integration's bot for ${account.account}`, () => notionBot(account.token), (id) => notionBots.set(account.account, id));
 }
 if (config.sources.notion.length > 0) {
   enrichers.notion = notionEnricher(config.sources.notion);
-  toolDeps.senders.notion_comment = notionCommentSender(config.sources.notion);
+  toolDeps.senders.notion_comment = notionCommentSender(config.sources.notion, notionBotOf);
 }
 
 // The daemon's MCP servers. A server that needs a login gets a link in chat, at most once an hour.

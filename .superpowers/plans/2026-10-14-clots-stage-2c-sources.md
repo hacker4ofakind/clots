@@ -7278,8 +7278,15 @@ and **Replace**
     expect(said.at(-1)).toContain("every occurrence");
   });
 
-  it("refuses to write under the lock", async () => {
+  it("refuses to write under the lock, and once a steered event has joined the turn", async () => {
     for (const kind of ["investigation", "brainstorm"] as const) expect(await allCalendarTools(kind).calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Refused");
+    expect(await allCalendarTools("work", true).calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Refused");
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses to make an event all-day, or not, without its new start and end", async () => {
+    scriptAnswers.check = { ok: true, event: scriptEvent };
+    expect(await allCalendarTools("work").calendarWrite!({ action: "update", uid: "demo@google.com", allDay: true })).toContain("start and end");
     expect(calls).toEqual([]);
   });
 
@@ -7701,6 +7708,8 @@ function writableAccount(d: ToolDeps, name: string | undefined): CalendarAccount
 async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Parameters<NonNullable<DaemonTools["calendarWrite"]>>[0]>): Promise<string> {
   const calendar = d.calendar!;
   if (ctx.kind !== "work") return "Refused: the calendar is changed in a working turn. While locked, describe the change in your reply.";
+  // A steered event is outside data in the user's turn: what it asks for is not the user's request.
+  if (ctx.steered()) return "Refused: an outside event has joined this turn, so the calendar is not changed in it. Say what you would change, and the user can ask for it in their next message.";
   const account = writableAccount(d, a.account);
   if (typeof account === "string") return account;
   const zone = calendar.timeZone;
@@ -7723,6 +7732,8 @@ async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Param
   }
 
   if (!a.uid) return "Refused: give the id of the event to change, from calendar_list.";
+  // The script sets an event all-day, or not, together with its dates.
+  if (a.allDay !== undefined && when === undefined) return "Refused: to make an event all-day, or not, give its start and end as well.";
   const before = await calendar.call!(account.account, { action: "check", uid: a.uid });
   if (!before.ok) return `Not changed: ${before.reason}.`;
   if (before.event.guests > 0) return "Refused: the event has guests, and changing it would notify them. Ask the user to change it.";
@@ -7898,7 +7909,7 @@ Expected: no errors.
   - `linearApi(apiKey: string, fetchFn?: typeof fetch): (query: string, variables?: Record<string, unknown>) => Promise<any>`
   - `linearMember(apiKey: string, fetchFn?): Promise<string>`: the ID of the account the key belongs to.
   - `linearEnricher(accounts: LinearAccount[], fetchFn?): Enricher`
-  - `linearCommentSender(accounts: LinearAccount[], fetchFn?): Sender`
+  - `linearCommentSender(accounts: LinearAccount[], memberId: (account: string) => string, fetchFn?): Sender`
 
 - [ ] **Step 1: Set up Linear with the user, and record real deliveries**
 
@@ -8063,10 +8074,15 @@ describe("Linear's API", () => {
 
   it("comments on the issue an event is about, as the Clots' member", async () => {
     const { calls, fetchFn } = api({ "issue(": { issue: { id: "uuid-12" } }, commentCreate: { commentCreate: { success: true, comment: { url: "https://linear.app/tady/issue/ENC-12#comment-9" } } } });
-    const sender = linearCommentSender([account], fetchFn);
+    let member = "member-1";
+    const sender = linearCommentSender([account], () => member, fetchFn);
     const { event } = normalizeLinear(account, issueCreated, "dl-1", NOW)!;
     expect(sender.reach(event)).toBeUndefined();
     expect(sender.reach({ ...event, source: "github" })).toContain("Linear");
+    // Until the Clots' member is known, its own comment would come back looking like anyone's.
+    member = "";
+    expect(sender.reach(event)).toContain("not known yet");
+    member = "member-1";
     expect(await sender.send(event, "Thanks, looking into it.")).toEqual({ ok: true, url: "https://linear.app/tady/issue/ENC-12#comment-9" });
     expect(calls[1].body.variables).toEqual({ input: { issueId: "uuid-12", body: "Thanks, looking into it." } });
   });
@@ -8221,14 +8237,19 @@ export function linearEnricher(accounts: LinearAccount[], fetchFn: typeof fetch 
   };
 }
 
-/** Sends a standing rule's message as a comment on the Linear issue the event is about, as the Clots' member. */
-export function linearCommentSender(accounts: LinearAccount[], fetchFn: typeof fetch = fetch): Sender {
+/**
+ * Sends a standing rule's message as a comment on the Linear issue the event is about, as the Clots'
+ * member. `memberId` gives that member's ID for an account, or "" while it is not known.
+ */
+export function linearCommentSender(accounts: LinearAccount[], memberId: (account: string) => string, fetchFn: typeof fetch = fetch): Sender {
   const accountOf = (name: string) => accounts.find((candidate) => candidate.account === name);
   return {
     reach(event) {
       if (event.source !== "linear") return "this way of sending answers Linear issues, and this event is not one";
       if (!event.subject.startsWith("issue:")) return "this event is not about a Linear issue";
       if (!accountOf(event.account)) return `the Linear account ${event.account} is not configured`;
+      // Its own comment comes back as an event, and must be told apart from anyone else's, or a rule would answer itself.
+      if (memberId(event.account) === "") return "the Clots' Linear member is not known yet, so its own comment could not be told apart; nothing is sent until the daemon has read it";
       return undefined;
     },
 
@@ -8283,20 +8304,30 @@ const scripts = new Map(config.sources.calendar
 **With**
 
 ```ts
+/**
+ * Learns who the Clots are at a source, to drop what they did themselves. A lookup that fails is
+ * tried again with a growing wait, up to an hour; until it works, that source's standing sends are refused.
+ */
+function learnIdentity(what: string, lookup: () => Promise<string>, learnt: (id: string) => void, waitMs = 5_000): void {
+  lookup().then(learnt, (error) => {
+    console.warn(`[events] could not read ${what}; its standing sends wait until it is read. Trying again in ${Math.round(waitMs / 1000)} s:`, error);
+    setTimeout(() => learnIdentity(what, lookup, learnt, Math.min(waitMs * 2, 3_600_000)), waitMs).unref();
+  });
+}
+
 // Linear: one path per workspace. The Clots' member is learnt from its key, to drop what it did itself.
 const linearMembers = new Map<string, string>();
+const linearMemberOf = (account: string) => linearMembers.get(account) ?? "";
 for (const account of config.sources.linear) {
-  handlers.set(`/webhooks/linear/${account.account}`, linearHandler(account, { insertEvent, now: () => Date.now(), memberId: () => linearMembers.get(account.account) ?? "" }));
-  linearMember(account.apiKey)
-    .then((id) => {
-      linearMembers.set(account.account, id);
-      console.log(`[events] the Clots act on Linear (${account.account}) as member ${id}`);
-    })
-    .catch((error) => console.warn(`[events] could not read the Clots' Linear member for ${account.account}; their own comments will not be recognised:`, error));
+  handlers.set(`/webhooks/linear/${account.account}`, linearHandler(account, { insertEvent, now: () => Date.now(), memberId: () => linearMemberOf(account.account) }));
+  learnIdentity(`the Clots' Linear member for ${account.account}`, () => linearMember(account.apiKey), (id) => {
+    linearMembers.set(account.account, id);
+    console.log(`[events] the Clots act on Linear (${account.account}) as member ${id}`);
+  });
 }
 if (config.sources.linear.length > 0) {
   enrichers.linear = linearEnricher(config.sources.linear);
-  toolDeps.senders.linear_comment = linearCommentSender(config.sources.linear);
+  toolDeps.senders.linear_comment = linearCommentSender(config.sources.linear, linearMemberOf);
 }
 
 const scripts = new Map(config.sources.calendar
@@ -8323,7 +8354,7 @@ Expected: no errors.
 - Consumes: `NotionAccount`; `Store` state; `storeEvent`, `jsonBody`, `Handler`; `appendBody`; `Sender`.
 - Produces:
   - `Store.setEventTitle(id: string, title: string): void` and `Store.setEventActor(id: string, actor: string): void`; the pipeline enriches an event before the pre-filters and routing, and keeps a title and an actor that enrichment changed.
-  - From `src/sources/notion.ts`: `NOTION_VERSION = "2022-06-28"`; `verificationKey(account: string): string`; `verifyNotion(token: string, rawBody: Buffer, header: string | undefined): boolean`; `normalizeNotion(account: NotionAccount, payload: unknown, receivedAt: number): { event: ClotEvent; authorIds: string[] } | undefined`; `notionHandler(account: NotionAccount, deps: { store: Store; now(): number; botId(): string; log(text: string): void }): Handler`; `notionApi(token: string, fetchFn?)`; `notionBot(token: string, fetchFn?): Promise<string>`; `notionEnricher(accounts: NotionAccount[], fetchFn?): Enricher`; `notionCommentSender(accounts: NotionAccount[], fetchFn?): Sender`; `pageUrl(pageId: string): string`.
+  - From `src/sources/notion.ts`: `NOTION_VERSION = "2022-06-28"`; `verificationKey(account: string): string`; `verifyNotion(token: string, rawBody: Buffer, header: string | undefined): boolean`; `normalizeNotion(account: NotionAccount, payload: unknown, receivedAt: number): { event: ClotEvent; authorIds: string[] } | undefined`; `notionHandler(account: NotionAccount, deps: { store: Store; now(): number; botId(): string; log(text: string): void }): Handler`; `notionApi(token: string, fetchFn?)`; `notionBot(token: string, fetchFn?): Promise<string>`; `notionEnricher(accounts: NotionAccount[], fetchFn?): Enricher`; `notionCommentSender(accounts: NotionAccount[], botId: (account: string) => string, fetchFn?): Sender`; `pageUrl(pageId: string): string`.
 
 - [ ] **Step 1: Set up the Notion integration with the user**
 
@@ -8507,10 +8538,15 @@ describe("Notion's API", () => {
 
   it("comments on the page an event is about, as the integration", async () => {
     const { calls, fetchFn } = api({ "/comments": { id: "comment-9" } });
-    const sender = notionCommentSender([account], fetchFn);
+    let bot = "bot-1";
+    const sender = notionCommentSender([account], () => bot, fetchFn);
     const { event } = normalizeNotion(account, pageCreated, NOW)!;
     expect(sender.reach(event)).toBeUndefined();
     expect(sender.reach({ ...event, source: "email" })).toContain("Notion");
+    // Until the integration's bot is known, its own comment would come back looking like anyone's.
+    bot = "";
+    expect(sender.reach(event)).toContain("not known yet");
+    bot = "bot-1";
     expect(await sender.send(event, "Thanks, noted.")).toEqual({ ok: true, url: event.url });
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ parent: { page_id: PAGE }, rich_text: [{ type: "text", text: { content: "Thanks, noted." } }] });
     expect((calls[0].init.headers as Record<string, string>)["notion-version"]).toBe("2022-06-28");
@@ -8833,14 +8869,19 @@ export function notionEnricher(accounts: NotionAccount[], fetchFn: typeof fetch 
   };
 }
 
-/** Sends a standing rule's message as a comment on the Notion page the event is about, as the integration. */
-export function notionCommentSender(accounts: NotionAccount[], fetchFn: typeof fetch = fetch): Sender {
+/**
+ * Sends a standing rule's message as a comment on the Notion page the event is about, as the
+ * integration. `botId` gives the integration's bot user for an account, or "" while it is not known.
+ */
+export function notionCommentSender(accounts: NotionAccount[], botId: (account: string) => string, fetchFn: typeof fetch = fetch): Sender {
   const accountOf = (name: string) => accounts.find((candidate) => candidate.account === name);
   return {
     reach(event) {
       if (event.source !== "notion") return "this way of sending answers Notion pages, and this event is not one";
       if (!event.subject.startsWith("page:")) return "this event is not about a Notion page";
       if (!accountOf(event.account)) return `the Notion account ${event.account} is not configured`;
+      // Its own comment comes back as an event, and must be told apart from anyone else's, or a rule would answer itself.
+      if (botId(event.account) === "") return "the Notion integration's bot is not known yet, so its own comment could not be told apart; nothing is sent until the daemon has read it";
       return undefined;
     },
 
@@ -8892,15 +8933,14 @@ const scripts = new Map(config.sources.calendar
 ```ts
 // Notion: one path per workspace. The integration's bot is learnt from its token, to drop what it did itself.
 const notionBots = new Map<string, string>();
+const notionBotOf = (account: string) => notionBots.get(account) ?? "";
 for (const account of config.sources.notion) {
-  handlers.set(`/webhooks/notion/${account.account}`, notionHandler(account, { store, now: () => Date.now(), botId: () => notionBots.get(account.account) ?? "", log: (text) => console.log(text) }));
-  notionBot(account.token)
-    .then((id) => notionBots.set(account.account, id))
-    .catch((error) => console.warn(`[events] could not read the Notion integration's bot for ${account.account}; its own comments will not be recognised:`, error));
+  handlers.set(`/webhooks/notion/${account.account}`, notionHandler(account, { store, now: () => Date.now(), botId: () => notionBotOf(account.account), log: (text) => console.log(text) }));
+  learnIdentity(`the Notion integration's bot for ${account.account}`, () => notionBot(account.token), (id) => notionBots.set(account.account, id));
 }
 if (config.sources.notion.length > 0) {
   enrichers.notion = notionEnricher(config.sources.notion);
-  toolDeps.senders.notion_comment = notionCommentSender(config.sources.notion);
+  toolDeps.senders.notion_comment = notionCommentSender(config.sources.notion, notionBotOf);
 }
 
 const scripts = new Map(config.sources.calendar
@@ -9593,7 +9633,7 @@ If the link never comes, the login page shows an error about the redirect addres
   - `src/rulebook.ts`: `type WatchRecipe = { name: string; server: string; tool: string; arguments: Record<string, unknown>; items: string; id: string; title?: string; body?: string; url?: string; actor?: string; ignore: string[]; every: number; report: "added" | "added_and_changed"; notReadOnly?: true }`; `parseWatch(value: unknown): WatchRecipe`; `RuleFile.watches`; `LIST_KEYS` gains `"watches"`; `Rulebook.watches(): { recipe: WatchRecipe; file: string }[]`; `Rulebook.recipeBinding(name: string): Binding | undefined`; `Rulebook.onLoad(fn: () => void): void`.
   - `src/rulebook-edit.ts`: `RuleEdit` gains `{ op: "set_watch"; recipe: WatchRecipe; was?: WatchRecipe | null }` and `{ op: "remove_watch"; name: string; was?: WatchRecipe }`; `describeWatch(recipe: WatchRecipe): string`.
   - `src/listeners.ts`: `Supervisor.start` returns a function that stops that listener.
-  - `src/watch.ts`: `MAX_ITEMS = 500`; `pathGet(value: unknown, path: string): unknown`; `fillPaths(template: string, value: unknown): string`; `readResult(result: ToolResult): unknown`; `itemsOf(recipe: WatchRecipe, result: ToolResult): { id: string; item: unknown; hash: string }[]`; `compare(previous: Record<string, string> | undefined, current: { id: string; hash: string }[], report: WatchRecipe["report"]): { added: string[]; changed: string[]; snapshot: Record<string, string> }`; `watchEvent(recipe: WatchRecipe, entry: { id: string; item: unknown; hash: string }, kind: "item_added" | "item_changed", receivedAt: number): ClotEvent`; `class Watcher { constructor(d: { recipe: WatchRecipe; hub: { listTools(name): Promise<ToolInfo[]>; callTool(name, tool, args): Promise<ToolResult> }; store: Store; deliver: (event: ClotEvent) => void; now: () => number }); run(): Promise<void> }`; `tryRecipe(hub, recipe): Promise<string>`.
+  - `src/watch.ts`: `MAX_ITEMS = 500`; `pathGet(value: unknown, path: string): unknown`; `fillPaths(template: string, value: unknown): string`; `readResult(result: ToolResult): unknown`; `itemsOf(recipe: WatchRecipe, result: ToolResult): { id: string; item: unknown; hash: string }[]`; `compare(previous: Record<string, string> | undefined, current: { id: string; hash: string }[], report: WatchRecipe["report"]): { added: string[]; changed: string[]; snapshot: Record<string, string> }`; `watchEvent(recipe: WatchRecipe, entry: { id: string; item: unknown; hash: string }, kind: "item_added" | "item_changed", receivedAt: number, run: number): ClotEvent`; `class Watcher { constructor(d: { recipe: WatchRecipe; hub: { listTools(name): Promise<ToolInfo[]>; callTool(name, tool, args): Promise<ToolResult> }; store: Store; deliver: (event: ClotEvent) => void; now: () => number }); run(): Promise<void> }`; `tryRecipe(hub, recipe): Promise<string>`.
   - `DaemonTools` gains `watchTry?(a: WatchRecipe-like)` and `watch(a: { action: "set" | "remove"; file: RuleScope; recipe?: WatchRecipe; name?: string })`; `ToolDeps.mcp` gains `listTools` and `callTool`.
 
 - [ ] **Step 1: Check what Notion's read-only tools return**
@@ -9697,13 +9737,17 @@ describe("compare", () => {
     expect(compare({ a: "1" }, [{ id: "a", hash: "2" }, { id: "b", hash: "1" }], "added")).toEqual({ added: ["b"], changed: [], snapshot: { a: "2", b: "1" } });
     expect(compare({ a: "1" }, [{ id: "a", hash: "2" }], "added_and_changed").changed).toEqual(["a"]);
   });
+
+  it("reports an item whose ID is also the name of an object's own property", () => {
+    expect(compare({ a: "1" }, [{ id: "constructor", hash: "1" }, { id: "toString", hash: "2" }], "added").added).toEqual(["constructor", "toString"]);
+  });
 });
 
 describe("watchEvent", () => {
   it("makes an automated event named by the recipe, about the recipe", () => {
     const [entry] = itemsOf(recipe, result([page("p1", "Export is slow")]));
-    expect(watchEvent(recipe, entry, "item_added", 1000)).toMatchObject({
-      id: `notion-feedback:p1:${entry.hash}`,
+    expect(watchEvent(recipe, entry, "item_added", 1000, 3)).toMatchObject({
+      id: `notion-feedback:p1:${entry.hash}:3`,
       source: "notion-feedback",
       account: "notion-feedback",
       kind: "item_added",
@@ -9715,7 +9759,7 @@ describe("watchEvent", () => {
       subject: "notion-feedback",
       automated: true,
     });
-    expect(watchEvent({ ...recipe, title: undefined }, entry, "item_changed", 1000).title).toBe("Changed in notion-feedback: p1");
+    expect(watchEvent({ ...recipe, title: undefined }, entry, "item_changed", 1000, 3).title).toBe("Changed in notion-feedback: p1");
   });
 });
 
@@ -9742,6 +9786,31 @@ describe("Watcher", () => {
     expect(delivered).toEqual([]);
     items = [page("p1", "A"), page("p2", "B")];
     await watcher().run();
+    await watcher().run();
+    expect(delivered.map((e) => e.title)).toEqual(["B"]);
+  });
+
+  it("reports a change back to an earlier state, and an item that comes back, each time", async () => {
+    const changes = { ...recipe, report: "added_and_changed" as const };
+    await watcher(changes).run();
+    for (const title of ["B", "A", "B"]) {
+      items = [page("p1", title)];
+      await watcher(changes).run();
+    }
+    items = [];
+    await watcher(changes).run();
+    items = [page("p1", "B")];
+    await watcher(changes).run();
+    expect(delivered.map((e) => `${e.kind} ${e.title}`)).toEqual(["item_changed B", "item_changed A", "item_changed B", "item_added B"]);
+  });
+
+  it("makes the same event again when a run is repeated before it was recorded, so the repeat is dropped", async () => {
+    await watcher().run();
+    const saved = store.getState("watch:notion-feedback")!;
+    items = [page("p1", "A"), page("p2", "B")];
+    await watcher().run();
+    // As if the daemon stopped after storing the event and before recording the run.
+    store.setState("watch:notion-feedback", saved);
     await watcher().run();
     expect(delivered.map((e) => e.title)).toEqual(["B"]);
   });
@@ -10326,16 +10395,22 @@ export function itemsOf(recipe: WatchRecipe, result: ToolResult): { id: string; 
 export function compare(previous: Record<string, string> | undefined, current: { id: string; hash: string }[], report: WatchRecipe["report"]): { added: string[]; changed: string[]; snapshot: Record<string, string> } {
   const snapshot = Object.fromEntries(current.map((entry) => [entry.id, entry.hash]));
   if (previous === undefined) return { added: [], changed: [], snapshot };
-  const added = current.filter((entry) => previous[entry.id] === undefined).map((entry) => entry.id);
-  const changed = report === "added_and_changed" ? current.filter((entry) => previous[entry.id] !== undefined && previous[entry.id] !== entry.hash).map((entry) => entry.id) : [];
+  // Own keys only: an item named "constructor" is not one the object inherits.
+  const seen = (id: string) => Object.hasOwn(previous, id);
+  const added = current.filter((entry) => !seen(entry.id)).map((entry) => entry.id);
+  const changed = report === "added_and_changed" ? current.filter((entry) => seen(entry.id) && previous[entry.id] !== entry.hash).map((entry) => entry.id) : [];
   return { added, changed, snapshot };
 }
 
-/** An item as the common event. The recipe's name is its source and its account. */
-export function watchEvent(recipe: WatchRecipe, entry: { id: string; item: unknown; hash: string }, kind: "item_added" | "item_changed", receivedAt: number): ClotEvent {
+/**
+ * An item as the common event. The recipe's name is its source and its account. `run` counts the
+ * recipe's recorded runs: an item that changes back, or comes back, makes a new event, while a run
+ * repeated before it was recorded makes the same one again, which is dropped as a repeat.
+ */
+export function watchEvent(recipe: WatchRecipe, entry: { id: string; item: unknown; hash: string }, kind: "item_added" | "item_changed", receivedAt: number, run: number): ClotEvent {
   const title = recipe.title === undefined ? "" : fillPaths(recipe.title, entry.item).trim();
   return {
-    id: `${recipe.name}:${entry.id}:${entry.hash}`,
+    id: `${recipe.name}:${entry.id}:${entry.hash}:${run}`,
     source: recipe.name,
     account: recipe.name,
     kind,
@@ -10381,15 +10456,17 @@ export class Watcher {
     }
     const key = `watch:${recipe.name}`;
     const saved = store.getState(key);
-    const previous = saved === undefined ? undefined : (JSON.parse(saved) as { definition: string; snapshot: Record<string, string> });
+    const previous = saved === undefined ? undefined : (JSON.parse(saved) as { definition: string; snapshot: Record<string, string>; run?: number });
     const { added, changed, snapshot } = compare(previous?.definition === definition(recipe) ? previous.snapshot : undefined, entries, recipe.report);
+    // Recorded with the snapshot, after the events: a run repeated before that makes the same IDs.
+    const run = (previous?.run ?? 0) + 1;
     for (const entry of entries) {
       const kind = added.includes(entry.id) ? "item_added" : changed.includes(entry.id) ? "item_changed" : undefined;
       if (kind === undefined) continue;
-      const event = watchEvent(recipe, entry, kind, this.d.now());
+      const event = watchEvent(recipe, entry, kind, this.d.now(), run);
       if (store.insertEvent(event)) this.d.deliver(event);
     }
-    store.setState(key, JSON.stringify({ definition: definition(recipe), snapshot }));
+    store.setState(key, JSON.stringify({ definition: definition(recipe), snapshot, run }));
   }
 }
 

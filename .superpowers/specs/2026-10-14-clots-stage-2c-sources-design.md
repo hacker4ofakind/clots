@@ -195,7 +195,7 @@ them. Each makes an event ID from what the source gives it:
 |---|---|
 | Email | `email:<account>:<Message-ID>` |
 | Calendar | `calendar:<account>:<event UID>:<occurrence start>:<lead time>` |
-| A watch recipe | `<recipe>:<item ID>:<hash of the item>` |
+| A watch recipe | `<recipe>:<item ID>:<hash of the item>:<run>` |
 
 So a message, a reminder or an item that is seen twice is dropped as a repeat,
 exactly as a GitHub delivery is. Each listener stores how far it has read (an IMAP
@@ -477,7 +477,8 @@ It only reads, so it is approved under the lock.
 ### `calendar_write`
 
 Creates an event, or changes one: its time, title, description or location.
-Through the Apps Script; refused for a calendar without one.
+Through the Apps Script; refused for a calendar without one. Making an event
+all-day, or not, needs its start and end too, since the script sets them together.
 
 - The daemon posts each change in the Clot's live channel, with the event as it was
   and as it is.
@@ -486,7 +487,9 @@ Through the Apps Script; refused for a calendar without one.
 - A repeating event without guests can be changed, and the change applies to the
   whole series: Apps Script fetches an event by its iCal UID as the series. Only
   guests make an event the user's alone to change, since a mistake would reach them.
-- Allowed in a working turn only. Under the lock it is refused.
+- Allowed in a working turn with no steered event in it (2b section 5). Under the
+  lock it is refused, and so it is once an outside event has joined the turn: what
+  that event asks for is not the user's request.
 
 ### `calendar_remove`
 
@@ -551,7 +554,9 @@ priority, labels, assignee and its last ten comments. If the read fails, the eve
 goes on with a line saying so.
 
 **Self-caused:** the actor is the Clots' member, whose ID the daemon reads from the
-key at startup. That drops a standing comment's own event.
+key at startup. That drops a standing comment's own event. A read that fails is
+tried again with a growing wait, up to an hour, and until it works no
+`linear_comment` is sent, so a rule can never answer its own comment.
 
 **Sending:** `via: linear_comment` comments on the issue the event is about, as
 the Clots' member.
@@ -610,7 +615,8 @@ to; and the author's name. So a routing rule on `titleContains` works for Notion
 saying so.
 
 **Self-caused:** the author is the integration's own bot user, whose ID the daemon
-reads at startup.
+reads at startup. As for Linear, a read that fails is tried again, and no
+`notion_comment` is sent until it works.
 
 **Sending:** `via: notion_comment` adds a comment to the page the event is about,
 as the integration.
@@ -710,9 +716,12 @@ watches:
 - Each later call compares by `id`: an item not seen before is `item_added`; with
   `added_and_changed`, an item whose content (less `ignore`) changed is
   `item_changed`. Items that went away are not reported.
-- An item's event has `id` `<recipe>:<item ID>:<hash>`, `place` the server's name,
-  `subject` `<recipe>`, and is automated: several new items at once arrive as one
-  batch.
+- An item's event has `id` `<recipe>:<item ID>:<hash>:<run>`, `place` the server's
+  name, `subject` `<recipe>`, and is automated: several new items at once arrive as
+  one batch. `<run>` counts the recipe's recorded runs and is stored with the last
+  result, after the events: an item that changes back to an earlier state, or goes
+  and comes back, makes a new event, and a run repeated before it was recorded
+  makes the same events again, which are dropped as repeats.
 - At most 500 items are compared per call. Beyond that the rest are left out and
   the user is told once.
 - A failing call is retried with a growing wait, and reported, as any listener
@@ -915,7 +924,7 @@ The tools 2c adds, and where they may run:
 | `rulebook_routing` | Adds or removes a routing rule | proposal | proposal |
 | `email_draft` | Saves a draft (section 9) | yes | refused |
 | `calendar_list` | Reads the schedule (section 10) | yes | yes |
-| `calendar_write` | Creates or changes an event (section 10) | yes | refused |
+| `calendar_write` | Creates or changes an event (section 10) | with no steered event | refused |
 | `calendar_remove` | Puts a removal to the user (section 10) | only in a turn the user started with no steered event | refused |
 | `mcp_list` | Lists the MCP servers and their tools (section 13) | yes | yes |
 | `watch_try` | Runs a draft watch recipe once (section 14) | yes | yes, read-only tools only |

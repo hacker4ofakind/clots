@@ -119,14 +119,19 @@ export function linearEnricher(accounts: LinearAccount[], fetchFn: typeof fetch 
   };
 }
 
-/** Sends a standing rule's message as a comment on the Linear issue the event is about, as the Clots' member. */
-export function linearCommentSender(accounts: LinearAccount[], fetchFn: typeof fetch = fetch): Sender {
+/**
+ * Sends a standing rule's message as a comment on the Linear issue the event is about, as the Clots'
+ * member. `memberId` gives that member's ID for an account, or "" while it is not known.
+ */
+export function linearCommentSender(accounts: LinearAccount[], memberId: (account: string) => string, fetchFn: typeof fetch = fetch): Sender {
   const accountOf = (name: string) => accounts.find((candidate) => candidate.account === name);
   return {
     reach(event) {
       if (event.source !== "linear") return "this way of sending answers Linear issues, and this event is not one";
       if (!event.subject.startsWith("issue:")) return "this event is not about a Linear issue";
       if (!accountOf(event.account)) return `the Linear account ${event.account} is not configured`;
+      // Its own comment comes back as an event, and must be told apart from anyone else's, or a rule would answer itself.
+      if (memberId(event.account) === "") return "the Clots' Linear member is not known yet, so its own comment could not be told apart; nothing is sent until the daemon has read it";
       return undefined;
     },
 

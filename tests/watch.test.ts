@@ -49,13 +49,17 @@ describe("compare", () => {
     expect(compare({ a: "1" }, [{ id: "a", hash: "2" }, { id: "b", hash: "1" }], "added")).toEqual({ added: ["b"], changed: [], snapshot: { a: "2", b: "1" } });
     expect(compare({ a: "1" }, [{ id: "a", hash: "2" }], "added_and_changed").changed).toEqual(["a"]);
   });
+
+  it("reports an item whose ID is also the name of an object's own property", () => {
+    expect(compare({ a: "1" }, [{ id: "constructor", hash: "1" }, { id: "toString", hash: "2" }], "added").added).toEqual(["constructor", "toString"]);
+  });
 });
 
 describe("watchEvent", () => {
   it("makes an automated event named by the recipe, about the recipe", () => {
     const [entry] = itemsOf(recipe, result([page("p1", "Export is slow")]));
-    expect(watchEvent(recipe, entry, "item_added", 1000)).toMatchObject({
-      id: `notion-feedback:p1:${entry.hash}`,
+    expect(watchEvent(recipe, entry, "item_added", 1000, 3)).toMatchObject({
+      id: `notion-feedback:p1:${entry.hash}:3`,
       source: "notion-feedback",
       account: "notion-feedback",
       kind: "item_added",
@@ -67,7 +71,7 @@ describe("watchEvent", () => {
       subject: "notion-feedback",
       automated: true,
     });
-    expect(watchEvent({ ...recipe, title: undefined }, entry, "item_changed", 1000).title).toBe("Changed in notion-feedback: p1");
+    expect(watchEvent({ ...recipe, title: undefined }, entry, "item_changed", 1000, 3).title).toBe("Changed in notion-feedback: p1");
   });
 });
 
@@ -94,6 +98,31 @@ describe("Watcher", () => {
     expect(delivered).toEqual([]);
     items = [page("p1", "A"), page("p2", "B")];
     await watcher().run();
+    await watcher().run();
+    expect(delivered.map((e) => e.title)).toEqual(["B"]);
+  });
+
+  it("reports a change back to an earlier state, and an item that comes back, each time", async () => {
+    const changes = { ...recipe, report: "added_and_changed" as const };
+    await watcher(changes).run();
+    for (const title of ["B", "A", "B"]) {
+      items = [page("p1", title)];
+      await watcher(changes).run();
+    }
+    items = [];
+    await watcher(changes).run();
+    items = [page("p1", "B")];
+    await watcher(changes).run();
+    expect(delivered.map((e) => `${e.kind} ${e.title}`)).toEqual(["item_changed B", "item_changed A", "item_changed B", "item_added B"]);
+  });
+
+  it("makes the same event again when a run is repeated before it was recorded, so the repeat is dropped", async () => {
+    await watcher().run();
+    const saved = store.getState("watch:notion-feedback")!;
+    items = [page("p1", "A"), page("p2", "B")];
+    await watcher().run();
+    // As if the daemon stopped after storing the event and before recording the run.
+    store.setState("watch:notion-feedback", saved);
     await watcher().run();
     expect(delivered.map((e) => e.title)).toEqual(["B"]);
   });

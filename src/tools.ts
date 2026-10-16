@@ -216,6 +216,8 @@ function writableAccount(d: ToolDeps, name: string | undefined): CalendarAccount
 async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Parameters<NonNullable<DaemonTools["calendarWrite"]>>[0]>): Promise<string> {
   const calendar = d.calendar!;
   if (ctx.kind !== "work") return "Refused: the calendar is changed in a working turn. While locked, describe the change in your reply.";
+  // A steered event is outside data in the user's turn: what it asks for is not the user's request.
+  if (ctx.steered()) return "Refused: an outside event has joined this turn, so the calendar is not changed in it. Say what you would change, and the user can ask for it in their next message.";
   const account = writableAccount(d, a.account);
   if (typeof account === "string") return account;
   const zone = calendar.timeZone;
@@ -238,6 +240,8 @@ async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Param
   }
 
   if (!a.uid) return "Refused: give the id of the event to change, from calendar_list.";
+  // The script sets an event all-day, or not, together with its dates.
+  if (a.allDay !== undefined && when === undefined) return "Refused: to make an event all-day, or not, give its start and end as well.";
   const before = await calendar.call!(account.account, { action: "check", uid: a.uid });
   if (!before.ok) return `Not changed: ${before.reason}.`;
   if (before.event.guests > 0) return "Refused: the event has guests, and changing it would notify them. Ask the user to change it.";

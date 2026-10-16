@@ -129,10 +129,15 @@ describe("Linear's API", () => {
 
   it("comments on the issue an event is about, as the Clots' member", async () => {
     const { calls, fetchFn } = api({ "issue(": { issue: { id: "uuid-12" } }, commentCreate: { commentCreate: { success: true, comment: { url: "https://linear.app/tady/issue/ENC-12#comment-9" } } } });
-    const sender = linearCommentSender([account], fetchFn);
+    let member = "member-1";
+    const sender = linearCommentSender([account], () => member, fetchFn);
     const { event } = normalizeLinear(account, issueCreated, "dl-1", NOW)!;
     expect(sender.reach(event)).toBeUndefined();
     expect(sender.reach({ ...event, source: "github" })).toContain("Linear");
+    // Until the Clots' member is known, its own comment would come back looking like anyone's.
+    member = "";
+    expect(sender.reach(event)).toContain("not known yet");
+    member = "member-1";
     expect(await sender.send(event, "Thanks, looking into it.")).toEqual({ ok: true, url: "https://linear.app/tady/issue/ENC-12#comment-9" });
     expect(calls[1].body.variables).toEqual({ input: { issueId: "uuid-12", body: "Thanks, looking into it." } });
   });
