@@ -1514,6 +1514,7 @@ const APPROVED = [
   "gh repo view owner/app --json defaultBranchRef --jq .defaultBranchRef.name",
   "gh repo list",
   "gh repo list owner --limit 50 --json name,isArchived",
+  "gh repo view --json owner -q.owner.login",
   "ls missing 2>/dev/null",
   "docker ps -a",
   "pm2 ps",
@@ -1608,6 +1609,9 @@ const REFUSED: [command: string, why: string][] = [
   ["gh pr view 9 --web", "browser"],
   ["gh repo view --web", "browser"],
   ["gh repo view owner/app -w", "browser"],
+  ["gh repo view --web=true", "browser"],
+  ["gh repo view -w=true", "browser"],
+  ["gh pr view 9 -cw", "browser"],
   ["gh repo", "gh repo"],
   ["gh repo create owner/new --private", "gh repo create"],
   ["gh repo delete owner/app --yes", "gh repo delete"],
@@ -1822,7 +1826,8 @@ function checkGit(args: string[]): Verdict {
 function checkGh(args: string[]): Verdict {
   const sub = `${args[0] ?? ""} ${args[1] ?? ""}`.trim();
   if (!GH_SUBCOMMANDS.has(sub)) return no(`\`gh ${sub}\` is not on the approved list`);
-  if (args.some((a) => a === "--web" || a === "-w")) return no("`gh --web` opens a browser");
+  // `gh` takes a value after `=` (`--web=true`, `-w=true`) and short options run together (`-cw`).
+  if (args.some((a) => a === "--web" || a.startsWith("--web=") || /^-[a-zA-Z]*w/.test(a))) return no("`gh --web` opens a browser");
   return OK;
 }
 

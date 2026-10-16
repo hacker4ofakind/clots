@@ -119,7 +119,8 @@ function checkGit(args: string[]): Verdict {
 function checkGh(args: string[]): Verdict {
   const sub = `${args[0] ?? ""} ${args[1] ?? ""}`.trim();
   if (!GH_SUBCOMMANDS.has(sub)) return no(`\`gh ${sub}\` is not on the approved list`);
-  if (args.some((a) => a === "--web" || a === "-w")) return no("`gh --web` opens a browser");
+  // `gh` takes a value after `=` (`--web=true`, `-w=true`) and short options run together (`-cw`).
+  if (args.some((a) => a === "--web" || a.startsWith("--web=") || /^-[a-zA-Z]*w/.test(a))) return no("`gh --web` opens a browser");
   return OK;
 }
 
