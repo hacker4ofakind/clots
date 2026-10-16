@@ -84,7 +84,7 @@ export function inlineCommentReader(token: string, fetchFn: typeof fetch = fetch
     const comments: unknown[] = [];
     let complete = false;
     for (let page = 1; page <= MAX_PAGES && !complete; page += 1) {
-      const batch: unknown = await fetchFn(`https://api.github.com/repos/${event.repo}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=${PER_PAGE}&page=${page}`, {
+      const batch: unknown = await fetchFn(`https://api.github.com/repos/${event.place}/pulls/${event.ref}/comments?sort=created&direction=desc&per_page=${PER_PAGE}&page=${page}`, {
         headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots" },
       })
         .then((response) => (response.ok ? response.json() : undefined))

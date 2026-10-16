@@ -9,7 +9,7 @@ function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
     id,
     source: "github",
     kind: "comment",
-    repo: "octo/widgets",
+    account: "github", place: "octo/widgets",
     actor: "vercel[bot]",
     title: "Comment on pull request #14: Add cache",
     body: "Deployment failed.",
@@ -28,6 +28,10 @@ describe("describeSubject", () => {
   it("names a pull request, an issue and a branch", () => {
     expect(describeSubject("pr:14")).toBe("pull request #14");
     expect(describeSubject("issue:7")).toBe("issue #7");
+    expect(describeSubject("issue:ENC-12")).toBe("issue ENC-12");
+    expect(describeSubject("customer:cus_123")).toBe("customer cus_123");
+    expect(describeSubject("thread:<a@b>")).toBe("thread <a@b>");
+    expect(describeSubject("notion-feedback")).toBe("notion-feedback");
     expect(describeSubject("branch:clot/add-cache")).toBe("branch clot/add-cache");
   });
 });
@@ -58,7 +62,7 @@ describe("combine", () => {
       id: "batch:d-1",
       source: "github",
       kind: "batch",
-      repo: "octo/widgets",
+      account: "github", place: "octo/widgets",
       actor: "vercel[bot], netlify[bot], widgets-clot",
       title: "3 automated reports on pull request #14",
       url: "https://github.com/octo/widgets/pull/14",
@@ -74,6 +78,12 @@ describe("combine", () => {
         "- CI failed: CI on clot/add-cache\n  by widgets-clot: https://github.com/octo/widgets/actions/runs/2\nWorkflow run ID: 2",
       ].join("\n\n"),
     );
+  });
+
+  it("links a batch to the pull request only for GitHub, and keeps the account and place", () => {
+    const stripe = (id: string) => event(id, { source: "stripe", account: "shop", place: "shop", kind: "payment_failed", subject: "customer:cus_1", url: `https://dashboard.stripe.com/invoices/${id}` });
+    const { event: batch } = combine([stripe("in_1"), stripe("in_2")]);
+    expect(batch).toMatchObject({ source: "stripe", account: "shop", place: "shop", title: "2 automated reports on customer cus_1", url: "https://dashboard.stripe.com/invoices/in_1", ref: "cus_1" });
   });
 
   it("links a batch about a branch to its first event, and keeps long bodies short", () => {

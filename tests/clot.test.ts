@@ -103,7 +103,7 @@ function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
     id,
     source: "github",
     kind: "issue_opened",
-    repo: "octo/widgets",
+    account: "github", place: "octo/widgets",
     actor: "someone",
     title: "Issue #7 opened: Login fails",
     body: "Steps to reproduce...",
@@ -911,7 +911,7 @@ describe("Clot, stage 2b", () => {
   let contexts: TurnContext[];
   let closed: { clot: string; session: string }[];
 
-  const fakeTools: DaemonTools = { show: async () => "", prefilter: async () => "", guidance: async () => "", standing: async () => "", send: async () => "" };
+  const fakeTools: DaemonTools = { show: async () => "", prefilter: async () => "", guidance: async () => "", standing: async () => "", send: async () => "", routing: async () => "", routeCorrect: async () => "", watch: async () => "", webhook: async () => "" };
 
   /** Builds the Clot again, with the daemon's tools and whatever else the test adds. */
   async function rebuild(more: Partial<ClotDeps> = {}): Promise<void> {

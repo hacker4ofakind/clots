@@ -1,6 +1,11 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { formatEvent } from "../src/events/format.js";
+import { formatEvent, linkTo } from "../src/events/format.js";
+
+it("adds an event's link to a line only when the event has one", () => {
+  expect(`Looking into it.${linkTo("https://example.com/1")}`).toBe("Looking into it. <https://example.com/1>");
+  expect(`Looking into it.${linkTo("")}`).toBe("Looking into it.");
+});
 import { isSelfCaused, MAX_BODY, normalizeGithub, repoSlug, verifySignature } from "../src/events/github.js";
 import { matchReply, matchYesNo, normalizeReply } from "../src/events/reply.js";
 import type { ClotEvent } from "../src/events/types.js";
@@ -43,7 +48,7 @@ describe("normalizeGithub", () => {
       id: "d-1",
       source: "github",
       kind: "issue_opened",
-      repo: "octo/widgets",
+      account: "github", place: "octo/widgets",
       actor: "someone",
       title: "Issue #7 opened: Login fails",
       body: "Steps...",
@@ -124,7 +129,7 @@ const event: ClotEvent = {
   id: "d-1",
   source: "github",
   kind: "comment",
-  repo: "octo/widgets",
+  account: "github", place: "octo/widgets",
   actor: "widgets-clot",
   title: "Comment on issue #7: Login fails",
   body: "Fixed in the linked pull request.",
@@ -157,8 +162,8 @@ describe("isSelfCaused", () => {
 describe("formatEvent", () => {
   it("wraps the fields and body in one block, with the arrival time in the given zone", () => {
     const text = formatEvent(event, "Africa/Johannesburg");
-    expect(text.startsWith('<event source="github" received="16:05">')).toBe(true);
-    expect(text).toContain("kind: comment\nrepo: octo/widgets\nactor: widgets-clot\ntitle: Comment on issue #7: Login fails");
+    expect(text.startsWith('<event source="github" received="16:05">\nid: d-1\naccount: github\n')).toBe(true);
+    expect(text).toContain("kind: comment\nplace: octo/widgets\nactor: widgets-clot\ntitle: Comment on issue #7: Login fails");
     expect(text.endsWith("\n\nFixed in the linked pull request.\n</event>")).toBe(true);
   });
 

@@ -8,7 +8,7 @@ let released: { clot: string; ids: string[] }[];
 let hold: Hold;
 
 function event(id: string, subject = "pr:14"): ClotEvent {
-  return { id, source: "github", kind: "ci_failed", repo: "octo/widgets", actor: "widgets-clot", title: "CI failed: CI on main", body: "", url: "u", ref: "main", subject, automated: true, receivedAt: 0 };
+  return { id, source: "github", kind: "ci_failed", account: "github", place: "octo/widgets", actor: "widgets-clot", title: "CI failed: CI on main", body: "", url: "u", ref: "main", subject, automated: true, receivedAt: 0 };
 }
 
 /** Moves the clock on and runs the waits that have run out. */
@@ -85,7 +85,7 @@ describe("Hold", () => {
 
   it("keeps the same subject in two repositories apart", () => {
     hold.add("home", event("d-1"));
-    hold.add("home", { ...event("d-2"), repo: "octo/gadgets" });
+    hold.add("home", { ...event("d-2"), place: "octo/gadgets" });
     advance(60_000);
     expect(released).toEqual([
       { clot: "home", ids: ["d-1"] },

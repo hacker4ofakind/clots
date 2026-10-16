@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { githubCommentSender, threadNumber } from "../src/events/github-comment.js";
 import type { ClotEvent } from "../src/events/types.js";
 
-const event: ClotEvent = { id: "d-1", source: "github", kind: "issue_opened", repo: "octo/widgets", actor: "alice", title: "Issue #7 opened: Login fails", body: "", url: "https://github.com/octo/widgets/issues/7", ref: "7", subject: "issue:7", automated: false, receivedAt: 0 };
+const event: ClotEvent = { id: "d-1", source: "github", kind: "issue_opened", account: "github", place: "octo/widgets", actor: "alice", title: "Issue #7 opened: Login fails", body: "", url: "https://github.com/octo/widgets/issues/7", ref: "7", subject: "issue:7", automated: false, receivedAt: 0 };
 
 /** A fetch that records what it was asked and answers as told. */
 function fakeFetch(answer: { status: number; body?: unknown } | Error) {
@@ -56,4 +56,10 @@ describe("githubCommentSender", () => {
     const down = fakeFetch(new Error("socket hang up"));
     expect(await githubCommentSender("tok", down.fetchFn).send(event, "x")).toEqual({ ok: false, refused: false, reason: "GitHub could not be reached (socket hang up)" });
   });
+});
+
+it("knows it cannot answer an event about a branch", () => {
+  const sender = githubCommentSender("t", async () => new Response("{}"));
+  expect(sender.reach(event)).toBeUndefined();
+  expect(sender.reach({ ...event, subject: "branch:main" })).toContain("branch");
 });

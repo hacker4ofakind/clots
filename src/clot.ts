@@ -3,7 +3,7 @@ import { buildPrompt, CONTINUE_TEXT, MIDTURN_PREFIX, recapPrompt } from "./agent
 import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
 import { sessionChannelName } from "./chat/names.js";
 import { COMMAND_USAGE, parseCommand, type Command } from "./commands.js";
-import { formatEvent } from "./events/format.js";
+import { formatEvent, linkTo } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
 import { nextMode, type Router } from "./router.js";
 import type { InboxRow, SessionRow, Store } from "./store.js";
@@ -182,9 +182,10 @@ export class Clot {
   async queueEvent(event: ClotEvent, notice: string, kick = true): Promise<void> {
     const { store, chat, name } = this.d;
     const session = store.activeSession(name)!;
-    store.enqueue({ id: `event:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event", eventId: event.id });
+    // Named by the Clot as well, so an event handed to another Clot is queued there too.
+    store.enqueue({ id: `event:${name}:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event", eventId: event.id });
     store.setEventStatus(event.id, "queued");
-    await chat.post(session.channelId, `${notice} <${event.url}>`).catch(() => undefined);
+    await chat.post(session.channelId, `${notice}${linkTo(event.url)}`).catch(() => undefined);
     if (kick) void this.drain().catch((error) => console.error(`[${name}]`, error));
   }
 

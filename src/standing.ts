@@ -1,5 +1,10 @@
 import type { ClotEvent } from "./events/types.js";
-import { matchesPrefilter, type StandingRule, type TemplateField } from "./rulebook.js";
+import { matchesPrefilter, type StandingRule, type TemplateField, type Via } from "./rulebook.js";
+
+/** Whether an "@" written in plain text notifies someone where a way of sending posts. Only GitHub reads it so. */
+export function mentionsNotify(via: Via): boolean {
+  return via === "github_comment";
+}
 
 /** A send may differ from its filled-in template by this many words. */
 export const MAX_CHANGED_WORDS = 5;
@@ -16,8 +21,11 @@ export function defuse(text: string): string {
  * The template with its fields filled from the event. An "@" the template wrote stays a
  * mention; one that comes in with a value (a title is the reporter's text) does not.
  */
-export function fillTemplate(template: string, event: ClotEvent): string {
-  return template.replace(/\{(actor|title|ref|repo|url)\}/g, (_whole, field: TemplateField) => defuse(event[field]));
+export function fillTemplate(template: string, event: ClotEvent, mentions = true): string {
+  return template.replace(/\{(actor|title|ref|place|repo|url)\}/g, (_whole, field: TemplateField) => {
+    const value = field === "repo" || field === "place" ? event.place : event[field];
+    return mentions ? defuse(value) : value;
+  });
 }
 
 /** A standing rule that applies to an event, with its text ready to send. */
@@ -30,14 +38,16 @@ export interface StandingMatch {
 
 /**
  * The standing rules that apply to an event. A batch matches a rule when any of the reports it
- * was made from does; the template is then filled from the earliest of them.
+ * was made from does; the template is then filled from the earliest of them. A trigger that names
+ * no source is GitHub's, as every rule written before other sources existed is.
  */
 export function matchStanding(rules: StandingRule[], event: ClotEvent, parts: ClotEvent[]): StandingMatch[] {
   const candidates = event.kind === "batch" ? [...parts].sort((a, b) => a.receivedAt - b.receivedAt) : [event];
   const matches: StandingMatch[] = [];
   for (const rule of rules) {
-    const from = candidates.find((candidate) => matchesPrefilter(rule.trigger, candidate));
-    if (from) matches.push({ rule, from, filled: fillTemplate(rule.template, from) });
+    const trigger = { ...rule.trigger, source: rule.trigger.source ?? "github" };
+    const from = candidates.find((candidate) => matchesPrefilter(trigger, candidate));
+    if (from) matches.push({ rule, from, filled: fillTemplate(rule.template, from, mentionsNotify(rule.via)) });
   }
   return matches;
 }
@@ -91,7 +101,7 @@ export function wordEdits(from: string[], to: string[]): { count: number; kept: 
  * With it, the text may differ by at most five words. A word the template has is written as
  * the template has it; a word the Clot brought cannot mention anyone.
  */
-export function checkSend(filled: string, text: string | undefined): { ok: true; text: string } | { ok: false; count: number } {
+export function checkSend(filled: string, text: string | undefined, mentions = true): { ok: true; text: string } | { ok: false; count: number } {
   if (text === undefined || text.trim() === "") return { ok: true, text: filled };
   const from = filled.trim().split(/\s+/);
   // Words at the even places, the white space between them at the odd ones.
@@ -102,7 +112,8 @@ export function checkSend(filled: string, text: string | undefined): { ok: true;
   const out = tokens.map((token, at) => {
     if (at % 2 === 1) return token;
     const source = kept[at / 2];
-    return source === undefined ? defuse(token) : from[source];
+    if (source !== undefined) return from[source];
+    return mentions ? defuse(token) : token;
   });
   return { ok: true, text: out.join("") };
 }

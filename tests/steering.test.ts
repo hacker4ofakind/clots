@@ -41,7 +41,7 @@ function event(id: string): ClotEvent {
     id,
     source: "github",
     kind: "ci_failed",
-    repo: "octo/widgets",
+    account: "github", place: "octo/widgets",
     actor: "widgets-clot",
     title: "CI failed: CI on clot/fix-login",
     body: "Workflow run ID: 4242",

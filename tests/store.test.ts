@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Store } from "../src/store.js";
 
@@ -95,7 +99,7 @@ describe("Store", () => {
       id: "d-1",
       source: "github" as const,
       kind: "issue_opened" as const,
-      repo: "octo/widgets",
+      account: "github", place: "octo/widgets",
       actor: "someone",
       title: "Issue #7 opened: Login fails",
       body: "Steps...",
@@ -111,6 +115,21 @@ describe("Store", () => {
       expect(store.insertEvent(event)).toBe(false);
       expect(store.getEvent("d-1")).toEqual({ ...event, clot: null, status: "received", note: null, triageMessage: null, urgent: false });
       expect(store.getEvent("missing")).toBeUndefined();
+    });
+
+    it("changes an event's title", () => {
+      store.insertEvent(event);
+      store.setEventTitle("d-1", "Page created in Notion: \"Export\"");
+      expect(store.getEvent("d-1")!.title).toBe('Page created in Notion: "Export"');
+    });
+
+    it("fills the place of events stored before it existed from their repository", () => {
+      const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clots-store-")), "old.db");
+      const old = new Database(file);
+      old.exec("CREATE TABLE events (id TEXT PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL, repo TEXT NOT NULL, actor TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, url TEXT NOT NULL, ref TEXT NOT NULL, received_at INTEGER NOT NULL, clot TEXT, status TEXT NOT NULL DEFAULT 'received', note TEXT, triage_message TEXT, urgent INTEGER NOT NULL DEFAULT 0)");
+      old.prepare("INSERT INTO events (id, source, kind, repo, actor, title, body, url, ref, received_at) VALUES ('d-9', 'github', 'comment', 'octo/widgets', 'a', 't', '', 'u', '7', 1)").run();
+      old.close();
+      expect(new Store(file).getEvent("d-9")).toMatchObject({ account: "github", place: "octo/widgets" });
     });
 
     it("records the Clot, the triage answer and the status with its reason", () => {
@@ -185,6 +204,19 @@ describe("Store", () => {
     for (const n of [1, 2, 3, 4, 5]) store.appendTail("graphite", n % 2 ? "user" : "clot", `t${n}`);
     expect(store.tail("graphite", 4).map((m) => m.text)).toEqual(["t2", "t3", "t4", "t5"]);
   });
+
+  describe("state", () => {
+    it("keeps values by key, lists them by prefix, and forgets them", () => {
+      store.setState("imap:gmail:Clots", '{"uid":5}');
+      store.setState("imap:gmail:Work", '{"uid":9}');
+      store.setState("oauth:notion:tokens", "{}");
+      store.setState("imap:gmail:Clots", '{"uid":6}');
+      expect(store.getState("imap:gmail:Clots")).toBe('{"uid":6}');
+      expect(store.statesWithPrefix("imap:gmail:").map((s) => s.key)).toEqual(["imap:gmail:Clots", "imap:gmail:Work"]);
+      store.deleteState("imap:gmail:Work");
+      expect(store.getState("imap:gmail:Work")).toBeUndefined();
+    });
+  });
 });
 
 describe("Store, stage 2b", () => {
@@ -246,7 +278,7 @@ describe("Store, stage 2b", () => {
 
   it("lists the events a batch was made from, oldest first", () => {
     const store = new Store(":memory:");
-    const event = (id: string) => ({ id, source: "github" as const, kind: "comment" as const, repo: "octo/widgets", actor: "vercel[bot]", title: "t", body: "", url: "u", ref: "14", subject: "pr:14", automated: true, receivedAt: 0 });
+    const event = (id: string) => ({ id, source: "github" as const, kind: "comment" as const, account: "github", place: "octo/widgets", actor: "vercel[bot]", title: "t", body: "", url: "u", ref: "14", subject: "pr:14", automated: true, receivedAt: 0 });
     store.insertEvent(event("d-1"));
     store.insertEvent(event("d-2"));
     store.insertEvent(event("d-3"));

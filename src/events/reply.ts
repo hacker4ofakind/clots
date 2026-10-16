@@ -55,3 +55,7 @@ export const MEMORY_REPLIES = [
 ].join("\n");
 
 export const MEMORY_RETRY = `I couldn't match that reply.\n\n${MEMORY_REPLIES}`;
+
+export const CAL_REPLIES = ["Reply with one of:", "- `yes`, `sure`, `do that` or `yeah` to remove it from your calendar", "- `no`, `dont` or `not at all` to keep it"].join("\n");
+
+export const CAL_RETRY = `I couldn't match that reply.\n\n${CAL_REPLIES}`;

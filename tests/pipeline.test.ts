@@ -2,8 +2,9 @@ import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeChat } from "../src/chat/fake.js";
 import type { ClotEvent, TriageResult } from "../src/events/types.js";
-import { acceptGithub, startIntake } from "../src/intake.js";
-import { Pipeline, routeByRepo } from "../src/pipeline.js";
+import { acceptGithub, githubHandler, startIntake } from "../src/intake.js";
+import { isSelfCaused } from "../src/events/github.js";
+import { Pipeline } from "../src/pipeline.js";
 import type { ClotPort } from "../src/steering.js";
 import { Store } from "../src/store.js";
 import type { Triage, TriageInput } from "../src/triage.js";
@@ -40,6 +41,7 @@ let triage: FakeTriage;
 let asked: { clot: string; id: string; message: string }[];
 let canAsk: boolean;
 let dropRule: (event: ClotEvent) => boolean;
+let ownDropRule: (event: ClotEvent) => boolean;
 let pipeline: Pipeline;
 let live: string;
 let clock: number;
@@ -63,7 +65,7 @@ function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
     id,
     source: "github",
     kind: "issue_opened",
-    repo: "octo/widgets",
+    account: "github", place: "octo/widgets",
     actor: "someone",
     title: "Issue #7 opened: Login fails",
     body: "Steps...",
@@ -86,6 +88,7 @@ beforeEach(async () => {
   asked = [];
   canAsk = true;
   dropRule = () => false;
+  ownDropRule = () => false;
   clock = 0;
   timers = [];
   inline = async (e) => e;
@@ -97,7 +100,7 @@ beforeEach(async () => {
   pipeline = new Pipeline({
     store,
     chat,
-    rulebook: { isDropped: (_clot, e) => dropRule(e), guidance: () => "Ignore typo reports." },
+    rulebook: { dropsIn: (name, e) => (name === "global" ? dropRule(e) : ownDropRule(e)), guidance: () => "Ignore typo reports." },
     triage,
     steering: {
       ask: async (clot, e, message) => {
@@ -106,9 +109,9 @@ beforeEach(async () => {
       },
     },
     clots: new Map([["graphite", port]]),
-    clotForRepo: (repo) => (repo === "octo/widgets" ? "graphite" : undefined),
-    clotLogin: "widgets-clot",
-    readInline: (e) => inline(e),
+    route: async (e) => (e.place === "octo/widgets" ? { clot: "graphite", how: "bound" } : { how: "no Clot is bound to this repository" }),
+    selfCaused: (e) => e.source === "github" && isSelfCaused(e, "widgets-clot"),
+    enrich: (e) => inline(e),
     hold: { quietMs: 60_000, capMs: 120_000 },
     now: () => clock,
     schedule: (ms, fn) => {
@@ -141,7 +144,7 @@ describe("Pipeline", () => {
   });
 
   it("drops an event for a repository no Clot is bound to", async () => {
-    await pipeline.handle(event("d-1", { repo: "octo/other" }));
+    await pipeline.handle(event("d-1", { place: "octo/other" }));
     expect(store.getEvent("d-1")).toMatchObject({ status: "dropped", note: "no Clot is bound to this repository" });
     expect(triage.inputs).toEqual([]);
   });
@@ -151,6 +154,56 @@ describe("Pipeline", () => {
     await pipeline.handle(event("d-1"));
     expect(store.getEvent("d-1")).toMatchObject({ status: "dropped", note: "matched a pre-filter" });
     expect(triage.inputs).toEqual([]);
+  });
+
+  it("checks the global pre-filters before routing, and the Clot's own after", async () => {
+    let routed = 0;
+    pipeline = new Pipeline({ ...(pipeline as any).d, route: async () => ((routed += 1), { clot: "graphite", how: "bound" }) });
+    dropRule = (e) => e.id === "d-1";
+    ownDropRule = (e) => e.id === "d-2";
+    await pipeline.handle(event("d-1"));
+    expect(routed).toBe(0);
+    await pipeline.handle(event("d-2"));
+    expect(routed).toBe(1);
+    expect(store.getEvent("d-2")).toMatchObject({ status: "dropped", note: "matched a pre-filter", clot: "graphite" });
+  });
+
+  it("drops an event that no Clot takes, with the router's reason", async () => {
+    pipeline = new Pipeline({ ...(pipeline as any).d, route: async () => ({ how: "no routing rule matched and the routing call was not sure, and there is no home Clot" }) });
+    await pipeline.handle(event("d-1", { source: "email", account: "gmail", kind: "email" }));
+    expect(store.getEvent("d-1")).toMatchObject({ status: "dropped", note: "no routing rule matched and the routing call was not sure, and there is no home Clot" });
+  });
+
+  it("keeps a title and an actor that enrichment gave the event", async () => {
+    inline = async (e) => ({ ...e, title: 'Page created in Notion: "Export"', actor: "Ann" });
+    await pipeline.handle(event("d-1", { source: "notion", account: "tady", kind: "page_created", actor: "person-1" }));
+    expect(store.getEvent("d-1")).toMatchObject({ title: 'Page created in Notion: "Export"', actor: "Ann" });
+    expect(triage.inputs[0].event).toMatchObject({ title: 'Page created in Notion: "Export"', actor: "Ann" });
+  });
+
+  it("enriches before the pre-filters and routing, which see what was read", async () => {
+    const seen: string[] = [];
+    pipeline = new Pipeline({ ...(pipeline as any).d, route: async (e: ClotEvent) => (seen.push(`route ${e.title}`), { clot: "graphite", how: "rule" }) });
+    dropRule = (e) => (seen.push(`global ${e.title}`), false);
+    inline = async (e) => ({ ...e, title: 'Page created in Notion: "Decrypt fails"' });
+    await pipeline.handle(event("d-1", { source: "notion", account: "tady", kind: "page_created", title: "A page was created in Notion" }));
+    expect(seen).toEqual(['global Page created in Notion: "Decrypt fails"', 'route Page created in Notion: "Decrypt fails"']);
+  });
+
+  it("enriches nothing the Clot caused itself", async () => {
+    let reads = 0;
+    inline = async (e) => ((reads += 1), e);
+    await pipeline.handle(event("d-1", { actor: "widgets-clot", kind: "comment" }));
+    expect(reads).toBe(0);
+  });
+
+  it("enriches an event from any source once, before triage", async () => {
+    let reads = 0;
+    inline = async (e) => ((reads += 1), { ...e, body: `${e.body}\nCustomer: Jane` });
+    await pipeline.handle(event("d-1", { source: "stripe", account: "shop", kind: "payment_failed" }));
+    expect(triage.inputs[0].event.body).toBe("Steps...\nCustomer: Jane");
+    expect(store.isEnriched("d-1")).toBe(true);
+    expect(reads).toBe(1);
   });
 
   it("stops silently when triage says no action is needed", async () => {
@@ -368,19 +421,12 @@ describe("Pipeline", () => {
   });
 
   it("releases events held for the same subject in two repositories separately, after a restart", async () => {
-    for (const held of [report("d-1"), report("d-2", { repo: "octo/gadgets" })]) {
+    for (const held of [report("d-1"), report("d-2", { place: "octo/gadgets" })]) {
       store.setEventClot(held.id, "graphite");
       store.setEventStatus(held.id, "held");
     }
     await pipeline.resume();
     expect(port.queued.map((q) => q.id).sort()).toEqual(["d-1", "d-2"]);
-  });
-
-  it("routes a repository to its Clot, and one that has none to the home Clot when there is one", () => {
-    const bound = new Map([["octo/widgets", "graphite"]]);
-    expect(routeByRepo(bound, "home")("octo/widgets")).toBe("graphite");
-    expect(routeByRepo(bound, "home")("octo/other")).toBe("home");
-    expect(routeByRepo(bound, undefined)("octo/other")).toBeUndefined();
   });
 });
 
@@ -421,7 +467,8 @@ describe("acceptGithub", () => {
 
   it("serves the same answers over HTTP and hands a new event on once", async () => {
     const seen: string[] = [];
-    const server = startIntake({ ...deps(), port: 0, onEvent: (e) => seen.push(e.id) });
+    const handler = githubHandler(deps());
+    const server = startIntake({ port: 0, handlerFor: (path) => (path === "/webhooks/github" ? handler : undefined), onAnswer: (answer) => seen.push(answer.event!.id) });
     await new Promise((resolve) => server.once("listening", resolve));
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : 0;

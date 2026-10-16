@@ -16,7 +16,7 @@
 - **Tasks 24, 25 and 26 (Sentry, Vercel, PostHog) are not required immediately.** Skip them now. 2c is merged after Task 23 without them; each is built later, on a branch of its own, when the user has a project that uses it.
 - Never ask the user to run a live check that involves Vercel or Netlify. Task 25's live check runs only when the user asks for it.
 - The calendar uses only the user's own Google account: the secret iCal address to read, and an Apps Script the user deploys to write. No Google Cloud project, no OAuth client, no service account.
-- Nothing a Clot does is sent to a person except a standing rule. Email drafts go into the account's Drafts folder and are never sent. The calendar script refuses events with guests and repeating events, and never adds a guest.
+- Nothing a Clot does is sent to a person except a standing rule. Email drafts go into the account's Drafts folder and are never sent. The calendar script refuses events with guests, and never adds a guest; a change to a repeating event applies to the whole series.
 - `calendar_remove` works only in a working turn the user started with no steered event in it. It is put to the user in a temporary channel `<clot>-cal` (`-cal-2`, ...) with the replies of a rule proposal, and counts towards `CLOTS_MAX_PROPOSALS`.
 - Under the lock: `calendar_list`, `mcp_list`, `watch_try` (read-only tools only) and the rulebook tools (which only propose) work; `route_correct`, `email_draft`, `calendar_write` and `calendar_remove` refuse with a reason.
 - Routing rules live only in `global.yaml`. Every edit to routing rules, watch recipes and webhook recipes is a proposal.
@@ -573,6 +573,18 @@ In `src/pipeline.ts`:
     const clotName = this.d.clotForRepo(event.place);
 ```
 
+**Replace**
+
+```ts
+      console.warn(`[pipeline] no Clot is bound to ${event.repo}; event ${event.id} discarded`);
+```
+
+**With**
+
+```ts
+      console.warn(`[pipeline] no Clot is bound to ${event.place}; event ${event.id} discarded`);
+```
+
 - [ ] **Step 11: GitHub's addresses use the place**
 
 In `src/events/review-comments.ts`:
@@ -770,6 +782,32 @@ import { matchesPrefilter, parsePrefilter, parseRouting, parseRuleFile, parseSta
   });
 ```
 
+A pre-filter may now name any kind when it names no source, and `routing` is now a key of the file, so two older checks of what is refused change:
+
+**Replace**
+
+```ts
+    expect(() => parseRuleFile("prefilters:\n  - kind: push\n")).toThrow();
+```
+
+**With**
+
+```ts
+    expect(() => parseRuleFile("prefilters:\n  - source: github\n    kind: push\n")).toThrow();
+```
+
+**Replace**
+
+```ts
+    expect(() => parseRuleFile("routing: []\n")).toThrow();
+```
+
+**With**
+
+```ts
+    expect(() => parseRuleFile("schedules: []\n")).toThrow();
+```
+
 **Replace**
 
 ```ts
@@ -859,6 +897,29 @@ import { checkSend, defuse, fillTemplate, matchStanding, mentionsNotify, wordEdi
     expect(mentionsNotify("github_comment")).toBe(true);
     for (const via of ["email_reply", "linear_comment", "notion_comment", "sentry_comment"] as const) expect(mentionsNotify(via)).toBe(false);
   });
+```
+
+**Replace**
+
+```ts
+    expect(matchStanding([rule], batch, [])).toEqual([]);
+  });
+});
+```
+
+**With**
+
+```ts
+    expect(matchStanding([rule], batch, [])).toEqual([]);
+  });
+
+  it("reads a trigger that names no source as GitHub's", () => {
+    const linearIssue = event({ id: "linear:tady:d-5", source: "linear", account: "tady", place: "ENC", ref: "ENC-12", subject: "issue:ENC-12" });
+    expect(matchStanding([ack], linearIssue, [])).toEqual([]);
+    const linearAck: StandingRule = { ...ack, name: "ack-linear", trigger: { source: "linear", kind: "issue_opened" }, via: "linear_comment" };
+    expect(matchStanding([linearAck], linearIssue, []).map((m) => m.rule.name)).toEqual(["ack-linear"]);
+  });
+});
 ```
 
 - [ ] **Step 2: Run the tests to see them fail**
@@ -1302,12 +1363,28 @@ export function fillTemplate(template: string, event: ClotEvent, mentions = true
 **Replace**
 
 ```ts
+ * was made from does; the template is then filled from the earliest of them.
+ */
+export function matchStanding(rules: StandingRule[], event: ClotEvent, parts: ClotEvent[]): StandingMatch[] {
+  const candidates = event.kind === "batch" ? [...parts].sort((a, b) => a.receivedAt - b.receivedAt) : [event];
+  const matches: StandingMatch[] = [];
+  for (const rule of rules) {
+    const from = candidates.find((candidate) => matchesPrefilter(rule.trigger, candidate));
     if (from) matches.push({ rule, from, filled: fillTemplate(rule.template, from) });
 ```
 
 **With**
 
 ```ts
+ * was made from does; the template is then filled from the earliest of them. A trigger that names
+ * no source is GitHub's, as every rule written before other sources existed is.
+ */
+export function matchStanding(rules: StandingRule[], event: ClotEvent, parts: ClotEvent[]): StandingMatch[] {
+  const candidates = event.kind === "batch" ? [...parts].sort((a, b) => a.receivedAt - b.receivedAt) : [event];
+  const matches: StandingMatch[] = [];
+  for (const rule of rules) {
+    const trigger = { ...rule.trigger, source: rule.trigger.source ?? "github" };
+    const from = candidates.find((candidate) => matchesPrefilter(trigger, candidate));
     if (from) matches.push({ rule, from, filled: fillTemplate(rule.template, from, mentionsNotify(rule.via)) });
 ```
 
@@ -2180,6 +2257,7 @@ export function startIntake(o: { port: number; handlerFor: (path: string) => Han
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_REQUEST_BYTES) {
+        console.log(`[intake] ${req.method} ${url.pathname}: 413 too large`);
         res.writeHead(413).end("too large");
         req.destroy();
         return;
@@ -2823,7 +2901,7 @@ export function routeByRepo(bound: Map<string, string>, home: string | undefined
     const clotName = this.d.clotForRepo(event.place);
     const port = clotName === undefined ? undefined : this.d.clots.get(clotName);
     if (clotName === undefined || port === undefined) {
-      console.warn(`[pipeline] no Clot is bound to ${event.repo}; event ${event.id} discarded`);
+      console.warn(`[pipeline] no Clot is bound to ${event.place}; event ${event.id} discarded`);
       return drop("no Clot is bound to this repository");
     }
     store.setEventClot(event.id, clotName);
@@ -2953,6 +3031,18 @@ import { Pipeline } from "./pipeline.js";
 **Replace**
 
 ```ts
+import { HOME_CLOT, loadConfig } from "./config.js";
+```
+
+**With**
+
+```ts
+import { HOME_CLOT, loadConfig, type AccountBase } from "./config.js";
+```
+
+**Replace**
+
+```ts
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
 ```
@@ -2970,7 +3060,8 @@ const enrichers: Record<string, Enricher> = { github: inlineCommentReader(config
 const eventRouter = new EventRouter({
   bindingOf: bindingResolver({
     repos: repoToClot,
-    accounts: Object.entries(config.sources).flatMap(([source, accounts]) => accounts.map((account) => ({ ...account, source }))),
+    // Object.entries loses the account type of an interface; every source's accounts are AccountBase.
+    accounts: (Object.entries(config.sources) as [string, AccountBase[]][]).flatMap(([source, accounts]) => accounts.map((account) => ({ ...account, source }))),
   }),
   rules: () => rulebook.routing(),
   call: new SdkRoutingCall(),
@@ -3606,6 +3697,8 @@ const toolDeps: ToolDeps = {
   handOver: (from, eventId, to) => handOver({ store, clots, say }, from, eventId, to),
 };
 ```
+
+Two fakes stand in for every daemon tool, and each must have the tools `DaemonTools` requires. In `scripts/try-tools.ts`, after `send: async () => "unused",` add `routing: async () => "unused",` and `routeCorrect: async () => "unused",`. In `tests/clot.test.ts`, in `fakeTools`, after `send: async () => ""` add `, routing: async () => "", routeCorrect: async () => ""`. (Tasks 20 and 21 add `watch` and `webhook` to both in the same way.)
 
 - [ ] **Step 8: Run the tests and the type check**
 
@@ -4252,7 +4345,7 @@ describe("stripeHandler", () => {
     const seen = new Set<string>();
     const handler = stripeHandler(account, { insertEvent: (e: ClotEvent) => (seen.has(e.id) ? false : (seen.add(e.id), true)), now: () => NOW });
     const body = JSON.stringify(failedInvoice);
-    const req = (raw: string, signature?: string) => ({ method: "POST", headers: signature ? { "stripe-signature": signature } : {}, query: new URLSearchParams(), rawBody: Buffer.from(raw) });
+    const req = (raw: string, signature?: string) => ({ method: "POST", headers: (signature ? { "stripe-signature": signature } : {}) as Record<string, string>, query: new URLSearchParams(), rawBody: Buffer.from(raw) });
     expect((await handler(req(body))).status).toBe(400);
     expect(await handler(req(body, signed(body)))).toMatchObject({ status: 202, event: { id: "stripe:shop:evt_1" } });
     expect((await handler(req(body, signed(body)))).text).toBe("duplicate");
@@ -4598,7 +4691,7 @@ Nothing is built for email until this task passes.
 Say to the user:
 
 1. "For Gmail: turn on 2-Step Verification if it is not on, then create an app password at myaccount.google.com/apppasswords. Put it in `.env` as `EMAIL_GMAIL_PASSWORD`. In Gmail's settings, under Forwarding and POP/IMAP, make sure IMAP is on."
-2. "Make a Gmail label for the mail the Clots should see (I suggest `Clots`), and a filter that puts mail into it: for example every message sent to `you+encryptify@gmail.com`. The daemon reads nothing outside that label."
+2. "Make a Gmail label for the mail the Clots should see (I suggest `Clots`), and a filter that puts mail into it: for example every message sent to `you+encryptify@gmail.com`. The daemon reads nothing outside that label. Add each such alias under Settings → Accounts → Send mail as, and confirm it from the email Gmail sends to your inbox: Gmail sends from no other address, so a standing reply could not come from the alias otherwise."
 3. "For tady.ch: the IMAP and SMTP server names and ports your provider gives, and the password of `nicholas@tady.ch` in `.env` as `EMAIL_TADY_PASSWORD`. Tell me which folder the daemon should watch (INBOX, or a folder your provider's filters fill)."
 
 Then add to `sources` in `clots.config.json` (the hosts for tady.ch as the user gives them):
@@ -4626,7 +4719,7 @@ Create `scripts/spike-2c-email.ts`:
 ```ts
 // Stage 2c email assumption checks: IDLE on each watched mailbox (a Gmail label included), Gmail's
 // thread IDs, the Drafts folder, SMTP sign-in, and Gmail keeping a +alias as the sender.
-// Run: node --env-file=.env --import tsx scripts/spike-2c-email.ts [--send-alias]
+// Run: node --env-file=.env --import tsx scripts/spike-2c-email.ts [--send-alias you+tag@gmail.com]
 import fs from "node:fs";
 import { ImapFlow } from "imapflow";
 import nodemailer from "nodemailer";
@@ -4651,8 +4744,9 @@ for (const account of config.sources.email) {
   check(`${account.account}: a Drafts folder is marked (${drafts?.path ?? "none"})`, drafts !== undefined);
 
   for (const mailbox of account.mailboxes) {
-    const lock = await client.getMailboxLock(mailbox, { readOnly: true });
-    try {
+    // Opened without a lock: imapflow starts IDLE by itself only while no lock is held.
+    await client.mailboxOpen(mailbox, { readOnly: true });
+    {
       const box = client.mailbox;
       check(`${account.account}/${mailbox}: opens read-only (UIDVALIDITY ${box ? box.uidValidity : "?"}, next UID ${box ? box.uidNext : "?"})`, box !== false && box !== undefined);
       if (box && box.exists > 0) {
@@ -4663,17 +4757,16 @@ for (const account of config.sources.email) {
           if (last.threadId) console.log(`   open this to check the link works: https://mail.google.com/mail/u/0/#all/${BigInt(last.threadId).toString(16)}`);
         }
       }
-      console.log(`   Send an email that lands in ${mailbox} now. Waiting up to 3 minutes...`);
+      // A server that greylists can take several minutes to accept a new sender's mail.
+      console.log(`   Send an email that lands in ${mailbox} now. Waiting up to 10 minutes...`);
       const arrived = await new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(false), 180_000);
+        const timer = setTimeout(() => resolve(false), 600_000);
         client.once("exists", () => {
           clearTimeout(timer);
           resolve(true);
         });
       });
       check(`${account.account}/${mailbox}: IDLE reports new mail`, arrived);
-    } finally {
-      lock.release();
     }
   }
   await client.logout();
@@ -4681,10 +4774,10 @@ for (const account of config.sources.email) {
   const smtp = nodemailer.createTransport({ host: account.smtp.host, port: account.smtp.port, secure: account.smtp.port === 465, auth: { user: account.address, pass: account.password } });
   check(`${account.account}: signs in to SMTP`, await smtp.verify().then(() => true, () => false));
 
-  if (process.argv.includes("--send-alias") && gmail) {
-    const [local, domain] = account.address.split("@");
-    const alias = `${local}+clots-check@${domain}`;
-    const info = await smtp.sendMail({ from: alias, to: account.address, subject: "Clots check: sent from an alias", text: "If this arrived from the +clots-check address, a standing reply can come from an alias." });
+  // An alias added under Gmail's "Send mail as"; Gmail rewrites any other sender to the account's address.
+  const alias = process.argv[process.argv.indexOf("--send-alias") + 1];
+  if (process.argv.includes("--send-alias") && gmail && alias?.toLowerCase().endsWith(`@${account.address.split("@")[1]}`)) {
+    const info = await smtp.sendMail({ from: alias, to: account.address, subject: "Clots check: sent from an alias", text: `If this arrived from ${alias}, a standing reply can come from an alias.` });
     console.log(`   sent ${info.messageId} from ${alias} to ${account.address}. Look at its From line in Gmail.`);
   }
 }
@@ -4697,10 +4790,10 @@ console.log(results.every(([, passed]) => passed) ? "\nSPIKE OK" : "\nSPIKE FAIL
 Run: `node --env-file=.env --import tsx scripts/spike-2c-email.ts`
 Expected: every line `PASS`, and `SPIKE OK`. When asked, the user sends an email to each watched mailbox (for the Gmail label, to the alias its filter catches). Ask the user to open the printed Gmail link: it must show the thread.
 
-Then ask the user: "May I send one test email from your Gmail to itself, from `+clots-check`, to check that Gmail keeps the alias as the sender?" Only on a yes:
+Then ask the user: "May I send one test email from your Gmail to itself, from the alias you added under Send mail as, to check that Gmail keeps it as the sender?" Only on a yes:
 
-Run: `node --env-file=.env --import tsx scripts/spike-2c-email.ts --send-alias`
-Expected: the user sees the message in Gmail with `From: …+clots-check@gmail.com`. If Gmail shows the plain address instead, stop and report: a standing `email_reply` would not come from the alias, and the user decides whether that is acceptable before going on.
+Run: `node --env-file=.env --import tsx scripts/spike-2c-email.ts --send-alias YOU+encryptify@gmail.com`
+Expected: the message's stored copy has `From: YOU+encryptify@gmail.com` (the user looks in Gmail, or its From line is read over IMAP from All Mail by its Message-ID). If Gmail shows the plain address instead, stop and report: the alias is not registered under Send mail as, and a standing `email_reply` would not come from it.
 
 If any check fails, stop and report the output.
 
@@ -5160,7 +5253,7 @@ Expected: PASS.
 Create `tests/imap.test.ts`:
 
 ```ts
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EmailAccount } from "../src/config.js";
 import type { ClotEvent } from "../src/events/types.js";
 import { emailMetaKey, ownMessageKey } from "../src/sources/email.js";
@@ -5205,7 +5298,8 @@ let store: Store;
 let client: FakeClient;
 let delivered: { id: string; dropped?: string }[];
 const listener = () => new MailboxListener({ account, mailbox: "Clots", client: () => client, store, deliver: (event: ClotEvent, dropped?: string) => void delivered.push({ id: event.id, dropped }), now: () => 1000 });
-const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+/** Waits until what a read should have done is done: parsing takes longer while the whole suite runs. */
+const until = (check: () => void) => vi.waitFor(check, { timeout: 2000, interval: 10 });
 
 beforeEach(() => {
   store = new Store(":memory:");
@@ -5227,13 +5321,12 @@ describe("MailboxListener", () => {
     client.status = { uidValidity: "9", uidNext: 2 };
     let ready = false;
     const run = listener().run(() => void (ready = true));
-    await settle();
-    expect(ready).toBe(true);
+    // Ready is called once the first read is done, so nothing more can be reported for what was there.
+    await until(() => expect(ready).toBe(true));
     expect(delivered).toEqual([]);
 
     client.arrive({ uid: 2, size: 100, source: message(2) });
-    await settle();
-    expect(delivered).toEqual([{ id: "email:gmail:<m2@x.com>", dropped: undefined }]);
+    await until(() => expect(delivered).toEqual([{ id: "email:gmail:<m2@x.com>", dropped: undefined }]));
     expect(store.getEvent("email:gmail:<m2@x.com>")).toMatchObject({ place: "me+shop@gmail.com", title: "Message 2" });
     expect(JSON.parse(store.getState(emailMetaKey("email:gmail:<m2@x.com>"))!)).toMatchObject({ messageId: "<m2@x.com>" });
     client.end();
@@ -5244,8 +5337,9 @@ describe("MailboxListener", () => {
     store.setState("imap:gmail:Clots", JSON.stringify({ uidValidity: "9", lastUid: 1 }));
     client.mail = [1, 2, 3].map((uid) => ({ uid, size: 100, source: message(uid) }));
     client.status = { uidValidity: "9", uidNext: 4 };
-    const run = listener().run(() => undefined);
-    await settle();
+    let ready = false;
+    const run = listener().run(() => void (ready = true));
+    await until(() => expect(ready).toBe(true));
     expect(delivered.map((d) => d.id)).toEqual(["email:gmail:<m2@x.com>", "email:gmail:<m3@x.com>"]);
     expect(JSON.parse(store.getState("imap:gmail:Clots")!)).toEqual({ uidValidity: "9", lastUid: 3 });
     client.end();
@@ -5254,15 +5348,17 @@ describe("MailboxListener", () => {
 
   it("drops mail the daemon wrote itself, and reads only the headers of a message that is too large", async () => {
     store.setState(ownMessageKey("<m2@x.com>"), "1");
-    const run = listener().run(() => undefined);
-    await settle();
+    let ready = false;
+    const run = listener().run(() => void (ready = true));
+    await until(() => expect(ready).toBe(true));
     client.arrive({ uid: 2, size: 100, source: message(2) });
     client.arrive({ uid: 3, size: 9_000_000, headers: message(3) });
-    await settle();
-    expect(delivered).toEqual([
-      { id: "email:gmail:<m2@x.com>", dropped: "caused by the Clot itself" },
-      { id: "email:gmail:<m3@x.com>", dropped: undefined },
-    ]);
+    await until(() =>
+      expect(delivered).toEqual([
+        { id: "email:gmail:<m2@x.com>", dropped: "caused by the Clot itself" },
+        { id: "email:gmail:<m3@x.com>", dropped: undefined },
+      ]),
+    );
     expect(store.getEvent("email:gmail:<m3@x.com>")!.body).toContain("larger than 5 MB");
     client.end();
     await run;
@@ -5335,7 +5431,9 @@ export function imapflowClient(account: EmailAccount): ImapClient {
   return {
     connect: () => client.connect(),
     async open(path) {
-      await client.getMailboxLock(path, { readOnly: true });
+      // Opened without a lock: imapflow starts IDLE by itself only while no lock is held, and
+      // without IDLE new mail would be seen only when the connection is opened again.
+      await client.mailboxOpen(path, { readOnly: true });
       const box = client.mailbox;
       if (!box) throw new Error(`${path} could not be opened`);
       return { uidValidity: String(box.uidValidity), uidNext: box.uidNext };
@@ -5990,8 +6088,9 @@ Create `setup/calendar.gs`:
 
 ```js
 // Clots calendar script. It lets the Clots daemon add, change and remove events in one of your
-// calendars, and nothing else. It refuses to change or remove an event that has guests or that
-// repeats, and never adds a guest, so nothing it does notifies another person.
+// calendars, and nothing else. It refuses to change or remove an event that has guests, and never
+// adds a guest, so nothing it does notifies another person. A change to a repeating event applies
+// to the whole series.
 //
 // Set up, once:
 // 1. On script.google.com, make a new project. Replace the empty file with this one, and save.
@@ -6037,7 +6136,6 @@ function handle(req) {
   if (!event) return { ok: false, reason: "there is no event with that ID in this calendar" };
   if (req.action === "check") return { ok: true, event: describe(event) };
   if (event.getGuestList().length > 0) return { ok: false, reason: "the event has guests, and changing it would notify them" };
-  if (event.isRecurringEvent()) return { ok: false, reason: "the event repeats; changing it is left to you" };
 
   if (req.action === "update") {
     if (typeof req.title === "string" && req.title !== "") event.setTitle(req.title);
@@ -7124,7 +7222,7 @@ and **Replace**
     expect(said.at(-1)).toContain('Calendar (me): added "Demo with ACME", Fri 16 Oct 2026, 14:00–15:00');
   });
 
-  it("moves an event after checking it, and refuses one with guests or that repeats", async () => {
+  it("moves an event after checking it, refuses one with guests, and changes a repeating one as a series", async () => {
     scriptAnswers.check = { ok: true, event: scriptEvent };
     scriptAnswers.update = { ok: true, event: { ...scriptEvent, start: "2026-10-16T13:00:00.000Z", end: "2026-10-16T14:00:00.000Z" } };
     await allCalendarTools("work").calendarWrite!({ action: "update", uid: "demo@google.com", start: "2026-10-16T15:00", end: "2026-10-16T16:00" });
@@ -7133,7 +7231,9 @@ and **Replace**
     scriptAnswers.check = { ok: true, event: { ...scriptEvent, guests: 2 } };
     expect(await allCalendarTools("work").calendarWrite!({ action: "update", uid: "demo@google.com", title: "x" })).toContain("guests");
     scriptAnswers.check = { ok: true, event: { ...scriptEvent, repeats: true } };
-    expect(await allCalendarTools("work").calendarWrite!({ action: "update", uid: "demo@google.com", title: "x" })).toContain("repeats");
+    scriptAnswers.update = { ok: true, event: { ...scriptEvent, title: "x", repeats: true } };
+    expect(await allCalendarTools("work").calendarWrite!({ action: "update", uid: "demo@google.com", title: "x" })).toContain("Changed");
+    expect(said.at(-1)).toContain("every occurrence");
   });
 
   it("refuses to write under the lock", async () => {
@@ -7584,11 +7684,12 @@ async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Param
   const before = await calendar.call!(account.account, { action: "check", uid: a.uid });
   if (!before.ok) return `Not changed: ${before.reason}.`;
   if (before.event.guests > 0) return "Refused: the event has guests, and changing it would notify them. Ask the user to change it.";
-  if (before.event.repeats) return "Refused: the event repeats; changing it is left to the user.";
   const changed = await calendar.call!(account.account, { action: "update", uid: a.uid, ...(a.title ? { title: a.title } : {}), ...(when ?? {}), ...(a.allDay !== undefined ? { allDay: a.allDay } : {}), ...(a.description !== undefined ? { description: a.description } : {}), ...(a.location !== undefined ? { location: a.location } : {}) });
   if (!changed.ok) return `Not changed: ${changed.reason}.`;
-  await d.say(ctx.clot, `Calendar (${account.account}): changed ${describeScriptEvent(before.event, zone)}\nto ${describeScriptEvent(changed.event, zone)}.`);
-  return `Changed: ${describeScriptEvent(changed.event, zone)}`;
+  // A repeating event is changed as a series: every occurrence takes the change.
+  const series = before.event.repeats ? " (every occurrence of this repeating event)" : "";
+  await d.say(ctx.clot, `Calendar (${account.account}): changed ${describeScriptEvent(before.event, zone)}\nto ${describeScriptEvent(changed.event, zone)}${series}.`);
+  return `Changed: ${describeScriptEvent(changed.event, zone)}${series}`;
 }
 
 /**
@@ -7614,7 +7715,7 @@ In `src/agent/tool-server.ts`, after the `calendar_list` block, add:
         : [
             tool(
               "calendar_write",
-              "Adds an event to the user's calendar, or changes one (its title, time, description or location). Events with guests and repeating events cannot be changed, and no guest can be added, so nothing notifies another person. Works in a working turn only. The daemon tells the user each change.",
+              "Adds an event to the user's calendar, or changes one (its title, time, description or location). Events with guests cannot be changed, and no guest can be added, so nothing notifies another person. A change to a repeating event applies to every occurrence. Works in a working turn only. The daemon tells the user each change.",
               {
                 action: z.enum(["create", "update"]),
                 account: z.string().optional().describe("Which calendar, when there are several."),
@@ -7710,7 +7811,6 @@ if (scripts.size > 0) {
       const found = await scripts.get(account)!.call({ action: "check", uid });
       if (!found.ok) return { ok: false, reason: found.reason };
       if (found.event.guests > 0) return { ok: false, reason: "the event has guests, and removing it would notify them; ask the user to remove it" };
-      if (found.event.repeats) return { ok: false, reason: "the event repeats; removing it is left to the user" };
       return { ok: true, summary: `Remove from the calendar (${account}): ${describeScriptEvent(found.event, config.timeZone)}` };
     },
     remove: async ({ account, uid }) => {
@@ -8180,7 +8280,7 @@ Expected: no errors.
 **Interfaces:**
 - Consumes: `NotionAccount`; `Store` state; `storeEvent`, `jsonBody`, `Handler`; `appendBody`; `Sender`.
 - Produces:
-  - `Store.setEventTitle(id: string, title: string): void`; the pipeline keeps a title that enrichment changed.
+  - `Store.setEventTitle(id: string, title: string): void` and `Store.setEventActor(id: string, actor: string): void`; the pipeline enriches an event before the pre-filters and routing, and keeps a title and an actor that enrichment changed.
   - From `src/sources/notion.ts`: `NOTION_VERSION = "2022-06-28"`; `verificationKey(account: string): string`; `verifyNotion(token: string, rawBody: Buffer, header: string | undefined): boolean`; `normalizeNotion(account: NotionAccount, payload: unknown, receivedAt: number): { event: ClotEvent; authorIds: string[] } | undefined`; `notionHandler(account: NotionAccount, deps: { store: Store; now(): number; botId(): string; log(text: string): void }): Handler`; `notionApi(token: string, fetchFn?)`; `notionBot(token: string, fetchFn?): Promise<string>`; `notionEnricher(accounts: NotionAccount[], fetchFn?): Enricher`; `notionCommentSender(accounts: NotionAccount[], fetchFn?): Sender`; `pageUrl(pageId: string): string`.
 
 - [ ] **Step 1: Set up the Notion integration with the user**
@@ -8298,6 +8398,12 @@ describe("notionHandler", () => {
     expect(logged.at(-1)).toContain("ignored");
   });
 
+  it("takes the handshake when Notion signs it too, since the signature cannot be checked before the token is known", async () => {
+    const body = JSON.stringify({ verification_token: "secret_abc" });
+    expect((await handler()(req(body, { "x-notion-signature": sign(body, "secret_abc") }))).status).toBe(200);
+    expect(store.getState(verificationKey("tady"))).toBe("secret_abc");
+  });
+
   it("refuses events until it has a token, then checks each one against it", async () => {
     const body = JSON.stringify(pageCreated);
     expect((await handler()(req(body, { "x-notion-signature": sign(body, "secret_abc") }))).status).toBe(401);
@@ -8338,6 +8444,7 @@ describe("Notion's API", () => {
     expect(read.title).toBe('Page created in Notion: "Export is slow"');
     expect(read.url).toBe(event.url);
     expect(read.body).toContain("By: Ann");
+    expect(read.actor).toBe("Ann");
     expect(read.body).toContain("Status: New");
     expect(read.body).toContain("Tags: perf, export");
     expect(read.body).toContain("Exporting 2 GB takes ten minutes.\ncheck worker");
@@ -8351,6 +8458,7 @@ describe("Notion's API", () => {
     });
     const read = await notionEnricher([account], fetchFn)({ ...normalizeNotion(account, commentCreated, NOW)!.event, automated: false });
     expect(read.title).toBe('Comment on "Export is slow" in Notion');
+    expect(read.actor).toBe("Ann");
     expect(read.body).toContain("Comment: Yes, since Monday.");
     expect(read.body).toContain("Earlier in the discussion:\n- Is this still slow?");
   });
@@ -8381,20 +8489,38 @@ In `tests/store.test.ts`, inside `describe("events", ...)`, add:
 In `tests/pipeline.test.ts`, inside `describe("Pipeline", ...)`, add:
 
 ```ts
-  it("keeps a title that enrichment gave the event", async () => {
-    inline = async (e) => ({ ...e, title: 'Page created in Notion: "Export"' });
-    await pipeline.handle(event("d-1", { source: "notion", account: "tady", kind: "page_created" }));
-    expect(store.getEvent("d-1")!.title).toBe('Page created in Notion: "Export"');
-    expect(triage.inputs[0].event.title).toBe('Page created in Notion: "Export"');
+  it("keeps a title and an actor that enrichment gave the event", async () => {
+    inline = async (e) => ({ ...e, title: 'Page created in Notion: "Export"', actor: "Ann" });
+    await pipeline.handle(event("d-1", { source: "notion", account: "tady", kind: "page_created", actor: "person-1" }));
+    expect(store.getEvent("d-1")).toMatchObject({ title: 'Page created in Notion: "Export"', actor: "Ann" });
+    expect(triage.inputs[0].event).toMatchObject({ title: 'Page created in Notion: "Export"', actor: "Ann" });
+  });
+
+  it("enriches before the pre-filters and routing, which see what was read", async () => {
+    const seen: string[] = [];
+    pipeline = new Pipeline({ ...(pipeline as any).d, route: async (e: ClotEvent) => (seen.push(`route ${e.title}`), { clot: "graphite", how: "rule" }) });
+    dropRule = (e) => (seen.push(`global ${e.title}`), false);
+    inline = async (e) => ({ ...e, title: 'Page created in Notion: "Decrypt fails"' });
+    await pipeline.handle(event("d-1", { source: "notion", account: "tady", kind: "page_created", title: "A page was created in Notion" }));
+    expect(seen).toEqual(['global Page created in Notion: "Decrypt fails"', 'route Page created in Notion: "Decrypt fails"']);
+  });
+
+  it("enriches nothing the Clot caused itself", async () => {
+    let reads = 0;
+    inline = async (e) => ((reads += 1), e);
+    await pipeline.handle(event("d-1", { actor: "widgets-clot", kind: "comment" }));
+    expect(reads).toBe(0);
   });
 ```
 
 - [ ] **Step 3: Run the tests to see them fail**
 
 Run: `npx vitest run tests/notion.test.ts tests/store.test.ts tests/pipeline.test.ts`
-Expected: FAIL. `src/sources/notion.ts` and `setEventTitle` do not exist, and the pipeline keeps only the body.
+Expected: FAIL. `src/sources/notion.ts` and `setEventTitle` do not exist, the pipeline keeps only the body, and it routes before it enriches.
 
-- [ ] **Step 4: Keep a title that enrichment changed**
+- [ ] **Step 4: Enrich before the rules, and keep a title and an actor that enrichment changed**
+
+A Notion delivery names neither its page's title nor its author, so the rules and routing, which match on both, must see the event after enrichment.
 
 In `src/store.ts`, after `setEventBody`, add:
 
@@ -8403,6 +8529,11 @@ In `src/store.ts`, after `setEventBody`, add:
   setEventTitle(id: string, title: string): void {
     this.db.prepare("UPDATE events SET title = ? WHERE id = ?").run(title, id);
   }
+
+  /** Replaces an event's actor, when the daemon has learnt the name behind an ID: a Notion event names its author by ID. */
+  setEventActor(id: string, actor: string): void {
+    this.db.prepare("UPDATE events SET actor = ? WHERE id = ?").run(actor, id);
+  }
 ```
 
 In `src/pipeline.ts`:
@@ -8410,18 +8541,63 @@ In `src/pipeline.ts`:
 **Replace**
 
 ```ts
-    const read = await this.d.enrich(event).catch(() => event);
-    this.d.store.setEventBody(event.id, read.body);
-    return read;
+  private async run(event: ClotEvent): Promise<void> {
+    const { store } = this.d;
+    const drop = (why: string) => store.setEventStatus(event.id, "dropped", why);
+
+    if (this.d.selfCaused(event)) return drop("caused by the Clot itself");
 ```
 
 **With**
 
 ```ts
+  private async run(received: ClotEvent): Promise<void> {
+    const { store } = this.d;
+    const drop = (why: string) => store.setEventStatus(received.id, "dropped", why);
+
+    if (this.d.selfCaused(received)) return drop("caused by the Clot itself");
+    // Before the rules and routing, which match on the title: a Notion delivery has none until its page is read.
+    const event = await this.withEnrichment(received);
+```
+
+**Replace**
+
+```ts
+    await this.proceed(clotName, port, await this.withEnrichment(event));
+  }
+
+  /**
+   * Adds what the source left out of the delivery, once, and keeps it: a review's inline
+   * comments, a payment's customer, a Notion page's content. A batch is made of events that
+   * were each enriched before they were combined.
+   */
+  private async withEnrichment(event: ClotEvent): Promise<ClotEvent> {
+    if (event.kind === "batch" || this.d.store.isEnriched(event.id)) return event;
+    const read = await this.d.enrich(event).catch(() => event);
+    this.d.store.setEventBody(event.id, read.body);
+    return read;
+  }
+```
+
+**With**
+
+```ts
+    await this.proceed(clotName, port, event);
+  }
+
+  /**
+   * Adds what the source left out of the delivery, once, and keeps it: a review's inline
+   * comments, a payment's customer, a Notion page's title, content and author. A batch is made
+   * of events that were each enriched before they were combined.
+   */
+  private async withEnrichment(event: ClotEvent): Promise<ClotEvent> {
+    if (event.kind === "batch" || this.d.store.isEnriched(event.id)) return event;
     const read = await this.d.enrich(event).catch(() => event);
     this.d.store.setEventBody(event.id, read.body);
     if (read.title !== event.title) this.d.store.setEventTitle(event.id, read.title);
+    if (read.actor !== event.actor) this.d.store.setEventActor(event.id, read.actor);
     return read;
+  }
 ```
 
 - [ ] **Step 5: Write `src/sources/notion.ts`**
@@ -8505,7 +8681,9 @@ export function notionHandler(account: NotionAccount, deps: { store: Store; now:
     const payload = jsonBody(req.rawBody) as Record<string, any> | undefined;
     if (payload === undefined) return { status: 400, text: "body is not JSON" };
     const known = account.verificationToken ?? deps.store.getState(verificationKey(account.account));
-    if (typeof payload.verification_token === "string" && req.headers["x-notion-signature"] === undefined) {
+    // The handshake carries the token and no event. Notion may sign it too, but the signature cannot be
+    // checked yet: the token is its key. So only the first is kept, and it never replaces a known token.
+    if (typeof payload.verification_token === "string" && payload.type === undefined) {
       if (known !== undefined) {
         deps.log(`[notion] ${account.account}: a verification request arrived, but this account already has a token; it was ignored.`);
         return { status: 200, text: "ok" };
@@ -8586,6 +8764,8 @@ export function notionEnricher(accounts: NotionAccount[], fetchFn: typeof fetch 
       const properties = Object.entries(page.properties ?? {}) as [string, any][];
       const title = properties.map(([, property]) => (property?.type === "title" ? plain(property.title) : "")).find((value) => value !== "") || "(untitled)";
       const author = await api(`users/${event.actor}`).then((user) => text(user.name), () => "");
+      // The delivery names its author by ID only; the name, when it can be read, becomes the actor.
+      const actor = author || event.actor;
       const facts = properties.filter(([, property]) => property?.type !== "title").map(([name, property]) => [name, propertyText(property)]).filter(([, value]) => value !== "").map(([name, value]) => `${name}: ${value}`);
       const parts = [`From Notion:\nPage: "${title}"${author ? `\nBy: ${author}` : ""}`, ...(facts.length > 0 ? [facts.join("\n")] : [])];
       if (event.kind === "comment") {
@@ -8595,7 +8775,7 @@ export function notionEnricher(accounts: NotionAccount[], fetchFn: typeof fetch 
         const discussion = comments.filter((comment) => own !== undefined && comment.discussion_id === own.discussion_id && comment !== own);
         parts.push(`Comment: ${plain(own?.rich_text) || "(it could not be found; it may be on a block of the page, or resolved)"}`);
         if (discussion.length > 0) parts.push(`Earlier in the discussion:\n${discussion.map((comment) => `- ${plain(comment.rich_text)}`).join("\n")}`);
-        return { ...appendBody(event, parts.join("\n\n")), title: `Comment on "${title}" in Notion` };
+        return { ...appendBody(event, parts.join("\n\n")), title: `Comment on "${title}" in Notion`, actor };
       }
       const blocks: any[] = (await api(`blocks/${event.ref}/children?page_size=100`)).results ?? [];
       const content = blocks
@@ -8604,7 +8784,7 @@ export function notionEnricher(accounts: NotionAccount[], fetchFn: typeof fetch 
         .filter((line) => line !== "")
         .join("\n");
       if (content !== "") parts.push(`Content:\n${content.slice(0, 2000)}`);
-      return { ...appendBody(event, parts.join("\n\n")), title: `Page created in Notion: "${title}"` };
+      return { ...appendBody(event, parts.join("\n\n")), title: `Page created in Notion: "${title}"`, actor };
     } catch {
       return appendBody(event, NOTION_UNREAD);
     }
@@ -8962,7 +9142,9 @@ export class StoredOAuth implements OAuthClientProvider {
     return verifier;
   }
 
-  invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier"): void {
+  /** Forgets what the SDK says is no longer good. The daemon keeps no discovery state of its own, so "discovery" forgets nothing. */
+  invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery"): void {
+    if (scope === "discovery") return;
     for (const what of scope === "all" ? ["client", "tokens", "verifier"] : [scope]) this.o.store.deleteState(`oauth:${this.o.server}:${what}`);
   }
 
@@ -10229,7 +10411,7 @@ import { tryRecipe } from "./watch.js";
 
 and add `problemText` to the import from `./rulebook.js`.
 
-In `src/agent/tool-server.ts`, after the `mcp_list` block, add:
+In `src/agent/tool-server.ts`, add `import type { WatchRecipe } from "../rulebook.js";` to the imports, and after the `mcp_list` block, add:
 
 ```ts
       ...(() => {
@@ -10249,7 +10431,7 @@ In `src/agent/tool-server.ts`, after the `mcp_list` block, add:
           report: z.enum(["added", "added_and_changed"]).optional(),
           notReadOnly: z.literal(true).optional().describe("Only when the tool does not declare itself read-only and you know it changes nothing. The user is warned."),
         };
-        const asRecipe = (a: any): WatchRecipe => ({ ignore: [], every: 5, report: "added", arguments: {}, ...Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== "action" && key !== "file" && value !== undefined)) }) as WatchRecipe;
+        const asRecipe = (a: any): WatchRecipe => ({ ignore: [], every: 5, report: "added", arguments: {}, ...Object.fromEntries(Object.entries(a).filter(([key, value]) => key !== "action" && key !== "file" && value !== undefined)) }) as unknown as WatchRecipe;
         return [
           ...(tools.watchTry === undefined
             ? []
@@ -10364,14 +10546,14 @@ Give the router the recipes' bindings:
 **Replace**
 
 ```ts
-    accounts: Object.entries(config.sources).flatMap(([source, accounts]) => accounts.map((account) => ({ ...account, source }))),
+    accounts: (Object.entries(config.sources) as [string, AccountBase[]][]).flatMap(([source, accounts]) => accounts.map((account) => ({ ...account, source }))),
   }),
 ```
 
 **With**
 
 ```ts
-    accounts: Object.entries(config.sources).flatMap(([source, accounts]) => accounts.map((account) => ({ ...account, source }))),
+    accounts: (Object.entries(config.sources) as [string, AccountBase[]][]).flatMap(([source, accounts]) => accounts.map((account) => ({ ...account, source }))),
     recipes: (name) => rulebook.recipeBinding(name),
   }),
 ```
@@ -10383,6 +10565,8 @@ Expected: PASS.
 
 Run: `npm run typecheck`
 Expected: no errors.
+
+Before running them, add `watch: async () => "unused",` to the fake tools in `scripts/try-tools.ts` and `, watch: async () => ""` to `fakeTools` in `tests/clot.test.ts`.
 
 `scripts/spike-2c-watch.ts` stays, beside the other spikes, as the record of the check.
 
@@ -11059,6 +11243,8 @@ recipeHandlers = recipeHandler({
 });
 ```
 
+Add `webhook: async () => "unused",` to the fake tools in `scripts/try-tools.ts` and `, webhook: async () => ""` to `fakeTools` in `tests/clot.test.ts`.
+
 - [ ] **Step 8: Run all the tests and the type check**
 
 Run: `npx vitest run`
@@ -11136,7 +11322,7 @@ Every source is set up under `sources` in `clots.config.json`, one entry per acc
 | Email | An app password (Gmail) or the account's password; the folders or Gmail labels to watch. Nothing else is read. | none: IMAP |
 | Google Calendar | The calendar's secret iCal address; for changes, the Apps Script in `setup/calendar.gs`, deployed by you. No Google Cloud project. | none: polled |
 | Linear | A member for the Clots with its own API key, and a webhook for issues and comments. | `/webhooks/linear/<account>` |
-| Notion | An internal integration shared with your pages, and a webhook subscription; the daemon prints the verification token in its log. | `/webhooks/notion/<account>` |
+| Notion | A connection (an internal integration) added to your pages, and a webhook subscription; the daemon prints the verification token in its log. | `/webhooks/notion/<account>` |
 | Any MCP server | Under `mcpServers`; an OAuth server gets a login link in chat. Watch recipes in the rulebook call its read-only tools on a timer. | `/oauth/callback` |
 | Any other webhook | A webhook recipe in the rulebook; its secret is an `.env` key beginning `RECIPE_`. | `/webhooks/r/<recipe>` |
 
@@ -11158,6 +11344,63 @@ A Clot can save email drafts in your Drafts folder, read your calendar, add or m
 | `&rules`, `&rules undo` | Lists the rules in force for this Clot, routing rules included; undoes the latest edit made from chat. |
 | `&memory`, `&memory undo` | Lists the global memories; undoes the latest change. |
 ```
+
+- [ ] **Step 4: Lines in chat that name no link, and requests in the log**
+
+A reminder, and mail from a server other than Gmail, has no link: its `url` is empty, and a line in chat must not end in `<>`. In `tests/events.test.ts`, change the import from `../src/events/format.js` to `import { formatEvent, linkTo } from "../src/events/format.js";` and add below the imports:
+
+```ts
+it("adds an event's link to a line only when the event has one", () => {
+  expect(`Looking into it.${linkTo("https://example.com/1")}`).toBe("Looking into it. <https://example.com/1>");
+  expect(`Looking into it.${linkTo("")}`).toBe("Looking into it.");
+});
+```
+
+In `src/events/format.ts`, above `safe`, add:
+
+```ts
+/** " <url>" to end a line in chat with, or nothing for an event whose source gives no link (a reminder, mail from a server other than Gmail). */
+export function linkTo(url: string): string {
+  return url === "" ? "" : ` <${url}>`;
+}
+```
+
+Use it where a line ends in the event's link: in `src/clot.ts` `${notice} <${event.url}>` becomes `${notice}${linkTo(event.url)}`; in `src/steering.ts` `${notice} <${event.url}> (handling it now, as you approved)` becomes `${notice}${linkTo(event.url)} (handling it now, as you approved)`; in `src/pipeline.ts` `${verdict.message} <${event.url}>` becomes `${verdict.message}${linkTo(event.url)}`; each file imports `linkTo` from `./events/format.js`. In `src/explainer.ts`, `\n<${event.url}>` and `\n<${input.event.url}>` become `${event.url === "" ? "" : `\n<${event.url}>`}` and the same for `input.event.url`.
+
+A delivery the intake does not store leaves a line in the daemon's log, so a source that seems silent can be told apart from one that is refused or ignored. In `src/intake.ts`, in `startIntake`:
+
+**Replace**
+
+```ts
+          if (answer.event) o.onAnswer(answer);
+        });
+```
+
+**With**
+
+```ts
+          if (answer.event) o.onAnswer(answer);
+          // A delivery that is not stored leaves a line, so a source that seems silent can be told apart from one refused.
+          else if (answer.contentType === undefined) console.log(`[intake] ${req.method} ${url.pathname}: ${answer.status} ${answer.text}`);
+        });
+```
+
+**Replace**
+
+```ts
+    if (!handler) {
+      res.writeHead(req.method === "GET" && url.pathname === "/" ? 200 : 404).end("clots intake");
+```
+
+**With**
+
+```ts
+    if (!handler) {
+      if (req.method === "POST") console.log(`[intake] POST ${url.pathname}: 404, no such path`);
+      res.writeHead(req.method === "GET" && url.pathname === "/" ? 200 : 404).end("clots intake");
+```
+
+Run: `npx vitest run` and `npm run typecheck`. Expected: PASS, no errors.
 
 ---
 
@@ -11195,7 +11438,7 @@ For each, say what to do, then check the outcome in Discord, in `data/clots.db` 
 5. **Draft.** "Draft a reply to that email saying we're looking into it." Expected: the draft is in Gmail's Drafts, threaded with the original, and nothing was sent.
 6. **Standing email reply.** Ask a Clot for a standing rule that acknowledges mail to the alias (`source: email`, `via: email_reply`). Expected: a proposal; `yes`. Send a new mail to the alias. Expected: one reply, in the thread, from the alias; its copy coming back produces nothing; a newsletter delivered to the same label does not trigger it.
 7. **Reminder.** An event in the calendar starting in about 23 hours. Expected within five minutes: one reminder in the routed Clot ("… tomorrow at …"). "What's on my calendar this week?" in an investigation's follow-up: the Clot answers from `calendar_list`.
-8. **Calendar writes.** "Add a 30-minute event called Clots test tomorrow at 15:00", then "move it to 16:00". Expected: both done and posted. An event with a guest and a repeating event: "rename it" is refused.
+8. **Calendar writes.** "Add a 30-minute event called Clots test tomorrow at 15:00", then "move it to 16:00". Expected: both done and posted. An event with a guest: "rename it" is refused. A repeating event without guests: "rename it" renames every occurrence.
 9. **Removal.** "Remove Clots test." The Clot asks in chat; answer "yes". Expected: a `-cal` channel; `yes` there removes it. Repeat with `no`: it stays. During an investigation, ask the Clot to call `calendar_remove`: refused.
 10. **Linear.** An issue and a comment on it in the first workspace. Expected: each investigated with the issue's description. A standing `linear_comment` rule, approved, then a new issue: one comment by the Clots' member, and its own event produces nothing.
 11. **Notion.** A new page in a shared database and a comment on it. Expected: each investigated, titled by the page. A standing `notion_comment` rule, approved: the comment is posted and produces nothing on its way back.

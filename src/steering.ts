@@ -1,7 +1,7 @@
 import { STEERED_PREFIX } from "./agent/prompts.js";
 import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
 import { askChannelName } from "./chat/names.js";
-import { formatEvent } from "./events/format.js";
+import { formatEvent, linkTo } from "./events/format.js";
 import { ASK_REPLIES, ASK_RETRY, matchReply } from "./events/reply.js";
 import type { ClotEvent, ReplyOutcome } from "./events/types.js";
 import { fallbackExplanation, type Explainer } from "./explainer.js";
@@ -98,7 +98,7 @@ export class Steering {
       } else if (outcome === "steer" && port.steerEvent(`${STEERED_PREFIX}\n${formatEvent(event, this.d.timeZone)}`)) {
         store.setEventStatus(event.id, "steered");
         const session = store.activeSession(ask.clot);
-        if (session) await chat.post(session.channelId, `${notice} <${event.url}> (handling it now, as you approved)`).catch(() => undefined);
+        if (session) await chat.post(session.channelId, `${notice}${linkTo(event.url)} (handling it now, as you approved)`).catch(() => undefined);
       } else {
         // "After", or a yes that came too late: the turn has ended or no longer accepts input.
         await port.queueEvent(event, notice, kick);

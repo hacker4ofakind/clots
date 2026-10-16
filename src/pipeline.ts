@@ -1,8 +1,10 @@
 import type { ChatAdapter } from "./chat/adapter.js";
+import type { Enricher } from "./enrich.js";
 import { combine } from "./events/batch.js";
-import { isSelfCaused } from "./events/github.js";
+import { linkTo } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
 import { Hold } from "./hold.js";
+import type { Route } from "./routing.js";
 import type { ClotPort } from "./steering.js";
 import type { Store } from "./store.js";
 import type { Triage } from "./triage.js";
@@ -10,29 +12,22 @@ import type { Triage } from "./triage.js";
 export interface PipelineDeps {
   store: Store;
   chat: ChatAdapter;
-  rulebook: { isDropped(clot: string, event: ClotEvent): boolean; guidance(clot: string): string };
+  /** One file's pre-filters ("global", or a Clot's name), and the triage guidance for a Clot. */
+  rulebook: { dropsIn(name: string, event: ClotEvent): boolean; guidance(clot: string): string };
   triage: Triage;
   steering: { ask(clot: string, event: ClotEvent, message: string): Promise<boolean> };
   clots: Map<string, ClotPort>;
-  /** Which Clot is bound to a repository ("owner/name", lowercased), if any. */
-  clotForRepo: (repo: string) => string | undefined;
-  /** The login of the Clots' GitHub account, or "" when it is not known. */
-  clotLogin: string;
-  /** Adds a review's inline comments to its event. */
-  readInline: (event: ClotEvent) => Promise<ClotEvent>;
+  /** Picks the Clot for an event. */
+  route: (event: ClotEvent) => Promise<Route>;
+  /** Whether the Clots caused the event themselves. Sources that know it on arrival drop the event there instead. */
+  selfCaused: (event: ClotEvent) => boolean;
+  /** Adds what the source left out of the delivery: a review's inline comments, a payment's customer. */
+  enrich: Enricher;
   /** How long automated events are held to be gathered: after the last one, and at most after the first. */
   hold: { quietMs: number; capMs: number };
   now: () => number;
   /** Runs fn after ms; the returned function cancels it. */
   schedule: (ms: number, fn: () => void) => () => void;
-}
-
-/**
- * Picks the Clot for a repository: the one bound to it, or the home Clot, when there is one,
- * for a repository no Clot is bound to.
- */
-export function routeByRepo(bound: Map<string, string>, home: string | undefined): (repo: string) => string | undefined {
-  return (repo) => bound.get(repo) ?? home;
 }
 
 /** Takes a stored event from arrival to its outcome: dropped, held, asked about, or queued for the Clot. */
@@ -69,7 +64,7 @@ export class Pipeline {
     const groups = new Map<string, { clot: string; events: ClotEvent[] }>();
     for (const event of this.d.store.eventsWithStatus("held")) {
       if (event.clot === null) continue;
-      const key = `${event.clot}\n${event.repo}\n${event.subject}`;
+      const key = `${event.clot}\n${event.place}\n${event.subject}`;
       const group = groups.get(key) ?? { clot: event.clot, events: [] };
       group.events.push(event);
       groups.set(key, group);
@@ -81,21 +76,26 @@ export class Pipeline {
     }
   }
 
-  private async run(event: ClotEvent): Promise<void> {
+  private async run(received: ClotEvent): Promise<void> {
     const { store } = this.d;
-    const drop = (why: string) => store.setEventStatus(event.id, "dropped", why);
+    const drop = (why: string) => store.setEventStatus(received.id, "dropped", why);
 
-    if (isSelfCaused(event, this.d.clotLogin)) return drop("caused by the Clot itself");
+    if (this.d.selfCaused(received)) return drop("caused by the Clot itself");
+    // Before the rules and routing, which match on the title: a Notion delivery has none until its page is read.
+    const event = await this.withEnrichment(received);
+    // Before routing, so an event the global file drops costs no routing call.
+    if (this.d.rulebook.dropsIn("global", event)) return drop("matched a pre-filter");
 
-    const clotName = this.d.clotForRepo(event.repo);
+    const route = await this.d.route(event);
+    const clotName = route.clot;
     const port = clotName === undefined ? undefined : this.d.clots.get(clotName);
     if (clotName === undefined || port === undefined) {
-      console.warn(`[pipeline] no Clot is bound to ${event.repo}; event ${event.id} discarded`);
-      return drop("no Clot is bound to this repository");
+      console.warn(`[pipeline] event ${event.id} from ${event.source} (${event.place}) goes to no Clot: ${route.how}`);
+      return drop(route.how);
     }
     store.setEventClot(event.id, clotName);
 
-    if (this.d.rulebook.isDropped(clotName, event)) return drop("matched a pre-filter");
+    if (this.d.rulebook.dropsIn(clotName, event)) return drop("matched a pre-filter");
 
     // One push often sets off several automated reports. They wait a little, to be judged and looked into as one.
     // A batch is the result of that wait, so it is not held again.
@@ -105,17 +105,20 @@ export class Pipeline {
       return;
     }
 
-    await this.proceed(clotName, port, await this.withInline(event));
+    await this.proceed(clotName, port, event);
   }
 
   /**
-   * GitHub sends a review without its inline comments, which are often all it says. They are
-   * added to its body here, once, and kept.
+   * Adds what the source left out of the delivery, once, and keeps it: a review's inline
+   * comments, a payment's customer, a Notion page's title, content and author. A batch is made
+   * of events that were each enriched before they were combined.
    */
-  private async withInline(event: ClotEvent): Promise<ClotEvent> {
-    if (event.kind !== "review" || this.d.store.isEnriched(event.id)) return event;
-    const read = await this.d.readInline(event).catch(() => event);
+  private async withEnrichment(event: ClotEvent): Promise<ClotEvent> {
+    if (event.kind === "batch" || this.d.store.isEnriched(event.id)) return event;
+    const read = await this.d.enrich(event).catch(() => event);
     this.d.store.setEventBody(event.id, read.body);
+    if (read.title !== event.title) this.d.store.setEventTitle(event.id, read.title);
+    if (read.actor !== event.actor) this.d.store.setEventActor(event.id, read.actor);
     return read;
   }
 
@@ -125,9 +128,9 @@ export class Pipeline {
     try {
       const port = this.d.clots.get(clotName);
       if (port === undefined) return;
-      // A review from a bot is read before the events are combined, or a batch would leave its inline comments out.
+      // Each report is enriched before the events are combined, or a batch would leave out what was read for it.
       const read: ClotEvent[] = [];
-      for (const held of events) read.push(await this.withInline(held));
+      for (const held of events) read.push(await this.withEnrichment(held));
       const { event, absorbed } = combine(read);
       // No longer held: if what follows fails, the event that goes on runs again at the next start.
       store.recordRelease({ event, clot: clotName, isNew: event.kind === "batch", absorbed: absorbed.map((other) => other.id) });
@@ -149,7 +152,7 @@ export class Pipeline {
     if (verdict.suspicious) {
       const session = store.activeSession(clotName);
       if (session) {
-        await chat.post(session.channelId, `Suspicious event, not acted on: ${verdict.message} <${event.url}>`).catch(() => undefined);
+        await chat.post(session.channelId, `Suspicious event, not acted on: ${verdict.message}${linkTo(event.url)}`).catch(() => undefined);
       }
       return drop("triage: suspicious");
     }

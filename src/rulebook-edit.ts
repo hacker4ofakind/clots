@@ -1,5 +1,5 @@
 import { isScalar, isSeq, parseDocument, YAMLSeq, type Document } from "yaml";
-import { parsePrefilter, parseRuleFile, parseStanding, problemText, type Prefilter, type RuleFile, type StandingRule } from "./rulebook.js";
+import { LIST_KEYS, parsePrefilter, parseRouting, parseRuleFile, parseStanding, parseWatch, parseWebhook, problemText, type Prefilter, type RoutingRule, type RuleFile, type StandingRule, type WatchRecipe, type WebhookRecipe } from "./rulebook.js";
 
 /** Which file an edit is for: the Clot's own, or the one that applies to every Clot. */
 export type RuleScope = "own" | "global";
@@ -15,7 +15,13 @@ export type RuleEdit =
   | { op: "add_guidance"; line: string }
   | { op: "remove_guidance"; line: string }
   | { op: "set_standing"; rule: StandingRule; was?: StandingRule | null }
-  | { op: "remove_standing"; name: string; was?: StandingRule };
+  | { op: "remove_standing"; name: string; was?: StandingRule }
+  | { op: "add_routing"; rule: RoutingRule }
+  | { op: "remove_routing"; rule: RoutingRule }
+  | { op: "set_watch"; recipe: WatchRecipe; was?: WatchRecipe | null }
+  | { op: "remove_watch"; name: string; was?: WatchRecipe }
+  | { op: "set_webhook"; recipe: WebhookRecipe; was?: WebhookRecipe | null }
+  | { op: "remove_webhook"; name: string; was?: WebhookRecipe };
 
 /** The edit cannot be made. The message says why, in words for the Clot and the user. */
 export class EditRefused extends Error {}
@@ -32,11 +38,38 @@ export interface EditResult {
 /** "kind is `comment` and actor is `vercel[bot]`" */
 export function describeMatch(rule: Prefilter): string {
   const parts: string[] = [];
+  if (rule.source !== undefined) parts.push(`source is \`${rule.source}\``);
+  if (rule.account !== undefined) parts.push(`account is \`${rule.account}\``);
   if (rule.kind !== undefined) parts.push(`kind is \`${rule.kind}\``);
+  if (rule.place !== undefined) parts.push(`place is \`${rule.place}\``);
   if (rule.actor !== undefined) parts.push(`actor is \`${rule.actor}\``);
   if (rule.repo !== undefined) parts.push(`repository is \`${rule.repo}\``);
   if (rule.titleContains !== undefined) parts.push(`title contains "${rule.titleContains}"`);
   return parts.join(" and ");
+}
+
+/** "events where source is `email` ... to shop" */
+export function describeRouting(rule: RoutingRule): string {
+  return `events where ${describeMatch(rule)} to ${rule.clot}`;
+}
+
+/** A watch recipe in full, with a warning in bold when its tool may change things. */
+export function describeWatch(recipe: WatchRecipe): string {
+  const shown = [`\`${recipe.name}\`: every ${recipe.every} minutes, call \`${recipe.tool}\` on \`${recipe.server}\` with ${JSON.stringify(recipe.arguments)}`, `items at \`${recipe.items || "(the result)"}\`, each named by \`${recipe.id}\``, `report ${recipe.report === "added" ? "new items" : "new and changed items"}`];
+  if (recipe.ignore.length > 0) shown.push(`ignoring ${recipe.ignore.map((path) => `\`${path}\``).join(", ")}`);
+  const warning = recipe.notReadOnly ? "\n**This tool does not declare itself read-only. The daemon will call it every few minutes; say yes only if you know it changes nothing.**" : "";
+  return `${shown.join("; ")}${warning}`;
+}
+
+/** A webhook recipe in full, with where the service sends it and where its secret goes. */
+export function describeWebhook(recipe: WebhookRecipe, publicUrl = "<publicUrl>"): string {
+  const check = recipe.verify.scheme === "token" ? `the header \`${recipe.verify.header}\` holds the secret` : `\`${recipe.verify.header}\` holds ${recipe.verify.prefix ? `"${recipe.verify.prefix}" and ` : ""}an HMAC-SHA256 of the ${recipe.verify.signed === "body" ? "body" : "timestamp and the body"} in ${recipe.verify.encoding}`;
+  return [
+    `\`${recipe.name}\`: deliveries to ${publicUrl}/webhooks/r/${recipe.name}, checked as ${check}`,
+    `kinds: ${recipe.kinds.map((entry) => `${entry.kind} when ${JSON.stringify(entry.when)}`).join("; ")}`,
+    `title: ${recipe.event.title}`,
+    `The secret goes in .env as ${recipe.verify.secret}; the user sets up the webhook in the service.`,
+  ].join("\n");
 }
 
 /** A standing rule in full: its name, its trigger, how it sends, and its template as a quotation. */
@@ -58,13 +91,25 @@ export function describeEdit(edit: RuleEdit): string {
       return `Standing rule ${describeStanding(edit.rule)}`;
     case "remove_standing":
       return `Remove standing rule \`${edit.name}\``;
+    case "add_routing":
+      return `Route ${describeRouting(edit.rule)}`;
+    case "remove_routing":
+      return `Stop routing ${describeRouting(edit.rule)}`;
+    case "set_watch":
+      return `Watch recipe ${describeWatch(edit.recipe)}`;
+    case "remove_watch":
+      return `Remove watch recipe \`${edit.name}\``;
+    case "set_webhook":
+      return `Webhook recipe ${describeWebhook(edit.recipe)}`;
+    case "remove_webhook":
+      return `Remove webhook recipe \`${edit.name}\``;
   }
 }
 
 /** The fields in a fixed order and nothing undefined, so that the same rule is always written the same way. */
 function tidy<T extends Prefilter>(rule: T): T {
   const out: Record<string, string> = {};
-  for (const key of ["kind", "actor", "repo", "titleContains"] as const) {
+  for (const key of ["source", "account", "kind", "place", "repo", "actor", "titleContains"] as const) {
     const value = rule[key];
     if (value !== undefined) out[key] = value;
   }
@@ -73,7 +118,14 @@ function tidy<T extends Prefilter>(rule: T): T {
 
 function samePrefilter(a: Prefilter, b: Prefilter): boolean {
   const fold = (text: string | undefined) => text?.toLowerCase();
-  return a.kind === b.kind && fold(a.actor) === fold(b.actor) && fold(a.repo) === fold(b.repo) && fold(a.titleContains) === fold(b.titleContains);
+  return (
+    a.kind === b.kind &&
+    (["source", "account", "place", "repo", "actor", "titleContains"] as const).every((key) => fold(a[key]) === fold(b[key]))
+  );
+}
+
+function sameRouting(a: RoutingRule, b: RoutingRule): boolean {
+  return a.clot === b.clot && samePrefilter(a, b);
 }
 
 function sameStanding(a: StandingRule | null, b: StandingRule | null): boolean {
@@ -177,6 +229,72 @@ export function applyEdit(text: string, edit: RuleEdit): EditResult {
       }
       break;
     }
+    case "add_routing": {
+      const parsed = checked(() => parseRouting(edit.rule));
+      const rule: RoutingRule = { ...tidy(parsed), clot: parsed.clot };
+      if (file.routing.some((other) => sameRouting(other, rule))) throw new EditRefused("that routing rule is already in the file");
+      list(doc, "routing").add(doc.createNode(rule));
+      inverse = { op: "remove_routing", rule };
+      summary = describeEdit({ op: "add_routing", rule });
+      break;
+    }
+    case "remove_routing": {
+      const at = file.routing.findIndex((other) => sameRouting(other, edit.rule));
+      if (at < 0) throw new EditRefused(`there is no such routing rule in the file. It holds: ${file.routing.map(describeRouting).join("; ") || "none"}`);
+      const rule: RoutingRule = { ...tidy(file.routing[at]), clot: file.routing[at].clot };
+      list(doc, "routing").delete(at);
+      inverse = { op: "add_routing", rule };
+      summary = describeEdit({ op: "remove_routing", rule });
+      break;
+    }
+    case "set_watch": {
+      const recipe = checked(() => parseWatch(edit.recipe));
+      const at = file.watches.findIndex((other) => other.name === recipe.name);
+      const same = (a: WatchRecipe | null, b: WatchRecipe | null) => JSON.stringify(a) === JSON.stringify(b);
+      if (edit.was !== undefined && !same(at < 0 ? null : file.watches[at], edit.was)) throw new EditRefused(`the watch recipe "${recipe.name}" has been changed since`);
+      summary = describeEdit({ op: "set_watch", recipe });
+      if (at < 0) {
+        list(doc, "watches").add(doc.createNode(recipe));
+        inverse = { op: "remove_watch", name: recipe.name, was: recipe };
+      } else {
+        list(doc, "watches").set(at, doc.createNode(recipe));
+        inverse = { op: "set_watch", recipe: file.watches[at], was: recipe };
+        summary += `\nIt replaces the recipe as it is now:\n${describeWatch(file.watches[at])}`;
+      }
+      break;
+    }
+    case "remove_watch": {
+      const at = file.watches.findIndex((other) => other.name === edit.name);
+      if (at < 0) throw new EditRefused(`there is no watch recipe named "${edit.name}" in the file. It holds: ${file.watches.map((other) => other.name).join(", ") || "none"}`);
+      if (edit.was !== undefined && JSON.stringify(file.watches[at]) !== JSON.stringify(edit.was)) throw new EditRefused(`the watch recipe "${edit.name}" has been changed since`);
+      list(doc, "watches").delete(at);
+      inverse = { op: "set_watch", recipe: file.watches[at], was: null };
+      summary = describeEdit({ op: "remove_watch", name: edit.name });
+      break;
+    }
+    case "set_webhook": {
+      const recipe = checked(() => parseWebhook(edit.recipe));
+      const at = file.webhooks.findIndex((other) => other.name === recipe.name);
+      if (edit.was !== undefined && JSON.stringify(at < 0 ? null : file.webhooks[at]) !== JSON.stringify(edit.was)) throw new EditRefused(`the webhook recipe "${recipe.name}" has been changed since`);
+      summary = describeEdit({ op: "set_webhook", recipe });
+      if (at < 0) {
+        list(doc, "webhooks").add(doc.createNode(recipe));
+        inverse = { op: "remove_webhook", name: recipe.name, was: recipe };
+      } else {
+        list(doc, "webhooks").set(at, doc.createNode(recipe));
+        inverse = { op: "set_webhook", recipe: file.webhooks[at], was: recipe };
+      }
+      break;
+    }
+    case "remove_webhook": {
+      const at = file.webhooks.findIndex((other) => other.name === edit.name);
+      if (at < 0) throw new EditRefused(`there is no webhook recipe named "${edit.name}" in the file. It holds: ${file.webhooks.map((other) => other.name).join(", ") || "none"}`);
+      if (edit.was !== undefined && JSON.stringify(file.webhooks[at]) !== JSON.stringify(edit.was)) throw new EditRefused(`the webhook recipe "${edit.name}" has been changed since`);
+      list(doc, "webhooks").delete(at);
+      inverse = { op: "set_webhook", recipe: file.webhooks[at], was: null };
+      summary = describeEdit({ op: "remove_webhook", name: edit.name });
+      break;
+    }
     case "remove_standing": {
       const at = file.standing.findIndex((other) => other.name === edit.name);
       if (at < 0) throw new EditRefused(`there is no standing rule named "${edit.name}" in the file. It holds: ${file.standing.map((other) => other.name).join(", ") || "none"}`);
@@ -189,7 +307,7 @@ export function applyEdit(text: string, edit: RuleEdit): EditResult {
   }
 
   // A list an edit has emptied is written as `[]` on its key's line, as the starter file has it.
-  for (const key of ["prefilters", "triage", "standing"]) {
+  for (const key of LIST_KEYS) {
     const node = doc.get(key, true);
     if (isSeq(node) && node.items.length === 0) node.flow = true;
   }

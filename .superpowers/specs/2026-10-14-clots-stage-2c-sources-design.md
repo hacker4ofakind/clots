@@ -1,7 +1,7 @@
 # Clots stage 2c: more sources, recipes and routing
 
 Date: 2026-10-14
-Status: approved in brainstorming.
+Status: implemented, except Sentry, Vercel and PostHog (section 16), which are built later.
 Parent design: `.superpowers/specs/2026-10-10-clots-design.md`. This document
 specifies the third of the four parts of stage 2 (section 16 there). It builds on
 stage 2a (`.superpowers/specs/2026-10-11-clots-stage-2a-pipeline-design.md`), stage
@@ -181,7 +181,10 @@ Each path verifies the request the way its source signs it, and refuses one that
 fails. What follows is as in 2a: a delivery whose ID is already stored is
 acknowledged and ignored, a new one is stored, the source is answered, and only
 then does the pipeline take it. A delivery of a type the Clots do not react to is
-acknowledged and discarded. An unknown path is answered with 404.
+acknowledged and discarded. An unknown path is answered with 404. Every request that
+is not stored (refused, ignored, a repeat, an unknown path) leaves a line in the
+daemon's log, so a source that seems silent can be told apart from one refused. A
+line in chat about an event ends in its link only when the source gives one.
 
 ### Listeners and pollers
 
@@ -213,9 +216,12 @@ read again whenever the rulebook is reloaded (section 15).
 ### The order
 
 1. **Self-caused drop** (each source's rule is in its section).
-2. **Global pre-filters**, from `global.yaml`. They are checked before routing, so
+2. **Enrichment** (each source's is in its section). It comes before the rules,
+   which match on the title and the actor: a Notion delivery names neither until
+   its page is read. What is read is stored with the event and done once.
+3. **Global pre-filters**, from `global.yaml`. They are checked before routing, so
    an event they drop costs no routing call.
-3. **Route:**
+4. **Route:**
    - an account bound to a Clot sends its events to that Clot;
    - a GitHub repository is routed as in 2b;
    - an event from a shared account is checked against the routing rules, and the
@@ -223,9 +229,9 @@ read again whenever the rulebook is reloaded (section 15).
    - an event no rule matches goes to the routing call;
    - when the routing call is not confident, or fails, the event goes to the home
      Clot. Without a home Clot it is logged and dropped.
-4. **The Clot's own pre-filters**, from its own file.
-5. From here the pipeline of 2a: hold, enrichment, triage, steering question,
-   queue, investigation. Automated events are held in groups by Clot, `place` and
+5. **The Clot's own pre-filters**, from its own file.
+6. From here the pipeline of 2a: hold, triage, steering question, queue,
+   investigation. Automated events are held in groups by Clot, `place` and
    `subject`; for GitHub that is the repository and subject of 2b.
 
 ### Routing rules
@@ -329,7 +335,7 @@ are plain HTTPS requests.
 - Every Stripe event is automated, so events about one customer within the hold's
   window (a failed payment, then the cancellation it caused) arrive as one batch.
 
-**Enrichment:** before triage the daemon reads, with the restricted key, what the
+**Enrichment:** before the rules and routing (section 7) the daemon reads, with the restricted key, what the
 delivery leaves out: the customer's name and email, the invoice's lines with their
 products, the failure or refund reason, a dispute's reason and the date evidence is
 due. If the reads fail, the event goes on with a line saying so.
@@ -346,7 +352,9 @@ address), `addresses` (other addresses the account receives for, such as
 `@gmail.com`), and `mailboxes` (the folders or Gmail labels the daemon watches).
 
 **Setup:** for Gmail, 2-step verification and an app password; a Gmail filter that
-puts the right mail under a label, or mail sent to `+aliases`. For another server,
+puts the right mail under a label, or mail sent to `+aliases`; and each alias that
+standing replies should come from added under Settings → Accounts → "Send mail as"
+(Gmail rewrites any other sender to the account's own address). For another server,
 the account's password and the server's addresses.
 
 ### Intake
@@ -431,7 +439,7 @@ address. Google asks the user once to allow their own script.
 
 ### Reading
 
-- The daemon fetches the iCal feed every `pollMinutes`, parses it with `node-ical`,
+- The daemon fetches the iCal feed every `pollMinutes`, parses it with `ical.js`,
   and expands repeating events, their exceptions and their moved occurrences. A
   cancelled occurrence is skipped.
 - The time zone is the configuration's `timeZone`. An all-day event starts at
@@ -474,8 +482,9 @@ Through the Apps Script; refused for a calendar without one.
   and as it is.
 - The script refuses an event that has guests, and never adds one: nothing the
   Clots do in the calendar notifies another person.
-- A repeating event is refused: changing one occurrence or the series is the
-  user's to do.
+- A repeating event without guests can be changed, and the change applies to the
+  whole series: Apps Script fetches an event by its iCal UID as the series. Only
+  guests make an event the user's alone to change, since a mistake would reach them.
 - Allowed in a working turn only. Under the lock it is refused.
 
 ### `calendar_remove`
@@ -496,8 +505,9 @@ Removes one event. Two yeses are needed:
    as long as the session, it counts towards the limit on open proposals, it
    survives a restart, and an answer stands.
 
-On yes the daemon checks again that the event exists, has no guests and does not
-repeat, then the script deletes it. The removal is posted in the live channel.
+On yes the script checks again that the event exists and has no guests, then
+deletes it; a repeating event is removed as a series. The removal is posted in the
+live channel.
 
 ### The script
 
@@ -558,8 +568,10 @@ with it; and in the integration's Webhooks tab a subscription at
 
 ### The handshake
 
-When the subscription is created, Notion sends one request with a
-`verification_token` and no signature.
+When the subscription is created, and whenever the user asks Notion to resend it,
+Notion sends a request whose body holds a `verification_token` and no event. Notion
+may sign it, but the signature cannot be checked: the token is its key. So a request
+with a `verification_token` and no `type` is the handshake, signed or not.
 
 - When the account has no token yet, the daemon stores it and prints it in its log,
   with the account's name. The user copies it from there into Notion to finish the
@@ -584,13 +596,16 @@ event types are discarded.
   the page's ID.
 - `place` is the ID of the page's parent page or database. The body names its
   title.
-- `actor` is the author's name. A bot as the author makes the event automated.
+- `actor` is the author. The delivery names the author by ID only, so the
+  enrichment below puts the author's name in its place when it can read it. A bot
+  as the author makes the event automated.
 - `url` is the page.
 
-**Enrichment:** Notion's events say only that something happened. Before triage
-the daemon reads, with the integration's token, the page's title, its properties
-as text and the first 2,000 characters of its content, and for a comment its text
-and the discussion it belongs to. If the read fails, the event goes on with a line
+**Enrichment:** Notion's events say only that something happened. Before the rules
+and routing (section 7) the daemon reads, with the integration's token, the page's
+title, which becomes the event's title, its properties as text and the first 2,000
+characters of its content, and for a comment its text and the discussion it belongs
+to; and the author's name. So a routing rule on `titleContains` works for Notion. If the read fails, the event goes on with a line
 saying so.
 
 **Self-caused:** the author is the integration's own bot user, whose ID the daemon
@@ -939,7 +954,7 @@ and names email as the most common carrier of attempts to instruct the agent.
 | Source adapters | One per source: verifies a request and turns it into the common event, or nothing. Pure, apart from the Notion handshake's stored token. | None |
 | Enrichers | One per source that needs it: reads what a delivery leaves out (Stripe, Linear, Notion, GitHub reviews, Sentry, Vercel). | Each source's credentials |
 | Email listener | IMAP IDLE per mailbox; catches up by UID; turns messages into events. | `imapflow`, `mailparser`, store |
-| Calendar poller | Fetches and expands the feed; makes reminders; answers `calendar_list`. | `node-ical`, store |
+| Calendar poller | Fetches and expands the feed; makes reminders; answers `calendar_list`. | `ical.js`, store |
 | Calendar writer | Calls the Apps Script. | The script |
 | MCP client | Connects to the daemon's servers; OAuth logins and tokens. | MCP SDK, store, chat |
 | Watcher | Runs watch recipes on their timers; diffs; makes events. | MCP client, rulebook, store |
@@ -950,7 +965,7 @@ and names email as the most common carrier of attempts to instruct the agent.
 | Removals | Puts a calendar removal to the user, as a proposal. | Proposals, calendar writer |
 | Rulebook (changed) | The new fields and lists; validates routing rules against the Clots, and `via` against triggers. | Rule files |
 | Listener supervisor | Starts every listener, retries with a growing wait, reports failures and recovery. | Chat |
-| Pipeline (changed) | Global pre-filters before routing; routing; the Clot's own pre-filters; holding by Clot, place and subject. | Router |
+| Pipeline (changed) | Enrichment before the rules; global pre-filters before routing; routing; the Clot's own pre-filters; holding by Clot, place and subject. | Router, enrichers |
 | Configuration (changed) | `publicUrl`, `about`, `sources`, `mcpServers`. | None |
 | Daemon tools (changed) | The tools of section 18. | All of the above |
 
@@ -1025,8 +1040,8 @@ In the development environment:
   copy coming back produces nothing; a newsletter does not trigger it;
 - a calendar event 24 hours ahead produces one reminder in the right Clot;
   `calendar_list` answers from an investigation;
-- `calendar_write` creates an event and moves it, and refuses one with guests and
-  one that repeats;
+- `calendar_write` creates an event and moves it, renames a repeating event as a
+  whole series, and refuses one with guests;
 - `calendar_remove` after the user's yes in chat opens a `-cal` channel, and yes
   removes the event and no keeps it; under the lock it is refused;
 - a Linear issue and a comment on it are investigated with the issue's
@@ -1047,7 +1062,8 @@ In the development environment:
 - Sending email beyond standing rules. A review channel in which a Clot asks to
   send an email and the user approves or gives feedback was discussed and set
   aside for later.
-- Calendar events with guests, and changes to repeating events.
+- Calendar events with guests, and changes to a single occurrence of a repeating
+  event.
 - Writing to Stripe.
 - Credentials for Linear, Notion, Stripe or the calendar inside the Clots'
   containers: Clots see these sources through events and daemon tools only.
@@ -1067,7 +1083,8 @@ In the development environment:
 - IMAP IDLE works on the folder of a Gmail label, and Gmail gives a thread ID over
   IMAP from which a working web link can be made.
 - Gmail's SMTP server keeps a `+alias` of the account's own address as the sender
-  of a message, so a standing reply comes from the alias the mail was sent to.
+  of a message once the alias is added under "Send mail as", so a standing reply
+  comes from the alias the mail was sent to.
 - Linear's free plan allows the Clots' member as a second member, and a webhook's
   `webhookTimestamp` is a time in milliseconds.
 - Notion's hosted MCP server accepts dynamic client registration with the daemon's

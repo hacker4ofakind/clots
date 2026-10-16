@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ClotEvent } from "../src/events/types.js";
 import type { StandingRule } from "../src/rulebook.js";
-import { checkSend, defuse, fillTemplate, matchStanding, wordEdits } from "../src/standing.js";
+import { checkSend, defuse, fillTemplate, matchStanding, mentionsNotify, wordEdits } from "../src/standing.js";
 
 const Z = "​";
 
@@ -10,7 +10,7 @@ function event(overrides: Partial<ClotEvent> = {}): ClotEvent {
     id: "d-1",
     source: "github",
     kind: "issue_opened",
-    repo: "octo/widgets",
+    account: "github", place: "octo/widgets",
     actor: "alice",
     title: "Issue #7 opened: Login fails",
     body: "",
@@ -32,6 +32,20 @@ describe("fillTemplate", () => {
 
   it("lets the template mention someone, and keeps a filled-in value from doing so", () => {
     expect(fillTemplate("Hello, @{actor}. Re: {title}", event({ title: "@bob broke it" }))).toBe(`Hello, @alice. Re: @${Z}bob broke it`);
+  });
+
+  it("fills {place}, and {repo} with the place", () => {
+    expect(fillTemplate("{place} {repo}", event())).toBe("octo/widgets octo/widgets");
+  });
+
+  it("leaves an @ alone where mentions notify nobody", () => {
+    expect(fillTemplate("Re: {title}", event({ title: "write to bob@example.com" }), false)).toBe("Re: write to bob@example.com");
+    expect(checkSend("Thanks for writing.", "Thanks for writing, bob@example.com.", false)).toEqual({ ok: true, text: "Thanks for writing, bob@example.com." });
+  });
+
+  it("knows that only GitHub turns an @ into a notification", () => {
+    expect(mentionsNotify("github_comment")).toBe(true);
+    for (const via of ["email_reply", "linear_comment", "notion_comment", "sentry_comment"] as const) expect(mentionsNotify(via)).toBe(false);
   });
 });
 
@@ -64,6 +78,13 @@ describe("matchStanding", () => {
     expect(matches[0].from.id).toBe("d-4");
     expect(matches[0].filled).toBe("@dependabot[bot] rebase (14)");
     expect(matchStanding([rule], batch, [])).toEqual([]);
+  });
+
+  it("reads a trigger that names no source as GitHub's", () => {
+    const linearIssue = event({ id: "linear:tady:d-5", source: "linear", account: "tady", place: "ENC", ref: "ENC-12", subject: "issue:ENC-12" });
+    expect(matchStanding([ack], linearIssue, [])).toEqual([]);
+    const linearAck: StandingRule = { ...ack, name: "ack-linear", trigger: { source: "linear", kind: "issue_opened" }, via: "linear_comment" };
+    expect(matchStanding([linearAck], linearIssue, []).map((m) => m.rule.name)).toEqual(["ack-linear"]);
   });
 });
 

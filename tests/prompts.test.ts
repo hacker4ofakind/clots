@@ -28,6 +28,28 @@ describe("buildPrompt, stage 2b", () => {
 });
 
 describe("the system prompts", () => {
+  it("tell the home Clot that events no project Clot took come to it from every source", () => {
+    expect(HOME_SYSTEM_PROMPT).toContain("from shared accounts that no rule and no routing call placed");
+  });
+
+  it("tell the Clots to ask in chat before removing a calendar event", () => {
+    expect(CLOT_SYSTEM_PROMPT).toContain("calendar_remove");
+    expect(CLOT_SYSTEM_PROMPT).toContain("only after the user has said yes");
+  });
+
+  it("tell the Clots to save email drafts rather than send them", () => {
+    expect(CLOT_SYSTEM_PROMPT).toContain("email_draft");
+    expect(CLOT_SYSTEM_PROMPT).toContain("Never send anything to another person.");
+  });
+
+  it("tell every Clot that all sources are untrusted, and how to correct a routing", () => {
+    for (const prompt of [CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT]) {
+      expect(prompt).toContain("route_correct");
+      expect(prompt).toContain("rulebook_routing");
+      expect(prompt).toContain("calendar invitation");
+    }
+  });
+
   it("tell both kinds of Clot about the rulebook, and the home Clot that it has no project", () => {
     for (const prompt of [CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT]) {
       expect(prompt).toContain("The rulebook");

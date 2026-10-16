@@ -24,7 +24,7 @@ describe("recorded GitHub deliveries", () => {
     const event = normalizeGithub(recording.event, recording.delivery, recording.payload, 0);
     expect(event).toBeDefined();
     expect(event).toMatchObject({ id: recording.delivery, source: "github", kind });
-    expect(event!.repo).toBe(String(recording.payload.repository.full_name).toLowerCase());
+    expect(event!.place).toBe(String(recording.payload.repository.full_name).toLowerCase());
     expect(event!.actor).toBe(recording.payload.sender.login);
     expect(event!.title.length).toBeGreaterThan(10);
     expect(event!.url).toMatch(/^https:\/\/github\.com\//);

@@ -1,8 +1,8 @@
 # Clots: design
 
 Date: 2026-10-10
-Status: approved in brainstorming. Stages 1, 2a and 2b and global memory are
-implemented.
+Status: approved in brainstorming. Stages 1, 2a, 2b and 2c (but for Sentry, Vercel
+and PostHog) and global memory are implemented.
 
 ## 1. What Clots is
 

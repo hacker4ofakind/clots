@@ -8,6 +8,8 @@ export type SendResult = { ok: true; url: string } | { ok: false; refused: boole
 
 /** One way of sending a standing rule's message: given the event and the final text, send it and return a link. */
 export interface Sender {
+  /** Why this event cannot be answered this way, or undefined when it can. Asked before anything is recorded. */
+  reach(event: ClotEvent): string | undefined;
   send(event: ClotEvent, text: string): Promise<SendResult>;
 }
 
@@ -19,13 +21,15 @@ export function threadNumber(subject: string): string | undefined {
 /** Posts a comment on the issue or pull request the event is about, as the Clots' own account. */
 export function githubCommentSender(token: string, fetchFn: typeof fetch = fetch): Sender {
   return {
+    reach: (event) => (threadNumber(event.subject) === undefined ? "this event is about a branch, not an issue or a pull request, so there is nowhere to send" : undefined),
+
     async send(event, text) {
       const number = threadNumber(event.subject);
       if (number === undefined) return { ok: false, refused: true, reason: "the event is not about an issue or a pull request" };
       let response: Response;
       try {
         // GitHub takes comments on a pull request at the issues address too.
-        response = await fetchFn(`https://api.github.com/repos/${event.repo}/issues/${number}/comments`, {
+        response = await fetchFn(`https://api.github.com/repos/${event.place}/issues/${number}/comments`, {
           method: "POST",
           headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots", "content-type": "application/json" },
           body: JSON.stringify({ body: text }),
