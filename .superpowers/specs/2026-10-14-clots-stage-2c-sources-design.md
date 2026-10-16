@@ -413,6 +413,37 @@ their mail client.
   it.
 - Nothing is sent. Sending stays the user's, as the parent design says.
 
+The daemon follows each draft a Clot saves, so the Clot knows what the user did
+with it. Before any of that Clot's turns (a message from the user, or an event
+that triage let through), it signs in to the account and looks for the draft:
+
+- First in Drafts, then in Sent (the mailboxes IMAP marks `\Drafts` and `\Sent`,
+  or else the usual names, such as Gmail's `[Gmail]/Sent Mail`). This works the
+  same for Gmail and for any IMAP server.
+- It searches by the draft's Message-ID first. A mail program may give an edited
+  draft, or the copy it sends, a new Message-ID, so the daemon then searches the
+  messages that arrived after the draft was saved. In Drafts it matches on the
+  subject or the first recipient, so an edited draft is still found. In Sent it
+  matches on both. A copy is given to a draft only when no other draft could
+  claim it. Otherwise the draft stays followed and nothing is said.
+- If the draft is in Sent, the Clot gets a note: the draft was sent, with the
+  time it reached Sent in the user's time zone. If the sent text differs from
+  the draft, the note quotes it. The note says that nothing needs doing.
+- If the draft is in neither folder, it is called deleted only when it is still
+  missing at least ten minutes later, on the first turn after that. A mail
+  program may take a draft out of Drafts before its Sent copy is there. The note
+  tells the Clot not to write the draft again, because it was most likely
+  deleted on purpose. If it answered something urgent, the Clot may ask the user
+  once why it was dropped.
+- If the account has no Sent folder, the note says only that the draft left
+  Drafts.
+- The note joins the daemon's other notes at the start of the turn. It never
+  starts a turn of its own: it is only an update, and the Clot should not spend
+  a turn working out what to do about it. Each note and the end of following
+  its draft are written together, so a restart never repeats a note.
+- A lookup that fails is tried again before the next turn. A draft nobody has
+  sent or deleted after thirty days is no longer followed.
+
 ### Standing replies
 
 A standing rule with `via: email_reply` sends its template over SMTP, through
