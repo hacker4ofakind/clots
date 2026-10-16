@@ -1509,6 +1509,12 @@ const APPROVED = [
   "gh run view 4242 --log",
   "gh run list --branch clot/fix-login",
   "gh run view 4242 --log 2>&1 | tail -50",
+  "gh repo view",
+  "gh repo view --json name,description,defaultBranchRef",
+  "gh repo view owner/app --json defaultBranchRef --jq .defaultBranchRef.name",
+  "gh repo list",
+  "gh repo list owner --limit 50 --json name,isArchived",
+  "gh repo view --json owner -q.owner.login",
   "ls missing 2>/dev/null",
   "docker ps -a",
   "pm2 ps",
@@ -1601,6 +1607,21 @@ const REFUSED: [command: string, why: string][] = [
   ["gh issue close 7", "gh issue close"],
   ["gh api repos/o/r/issues -X POST", "gh api"],
   ["gh pr view 9 --web", "browser"],
+  ["gh repo view --web", "browser"],
+  ["gh repo view owner/app -w", "browser"],
+  ["gh repo view --web=true", "browser"],
+  ["gh repo view -w=true", "browser"],
+  ["gh pr view 9 -cw", "browser"],
+  ["gh repo", "gh repo"],
+  ["gh repo create owner/new --private", "gh repo create"],
+  ["gh repo delete owner/app --yes", "gh repo delete"],
+  ["gh repo edit --visibility public", "gh repo edit"],
+  ["gh repo fork owner/app", "gh repo fork"],
+  ["gh repo clone owner/app", "gh repo clone"],
+  ["gh repo rename new-name", "gh repo rename"],
+  ["gh repo sync", "gh repo sync"],
+  ["gh repo archive owner/app", "gh repo archive"],
+  ["gh repo set-default owner/app", "gh repo set-default"],
   ["docker run --rm alpine", "docker ps"],
   ["docker exec app sh", "docker ps"],
   ["pm2 restart all", "pm2 ps"],
@@ -1788,7 +1809,7 @@ const WRITING_FLAG: Record<string, (arg: string) => boolean> = {
 
 const GIT_SUBCOMMANDS = new Set(["log", "diff", "show", "status", "blame", "ls-files", "grep", "branch"]);
 const GIT_BRANCH_LISTING = new Set(["-a", "-r", "-v", "-vv", "--list", "--all", "--remotes", "--show-current"]);
-const GH_SUBCOMMANDS = new Set(["issue view", "issue list", "pr view", "pr list", "pr diff", "pr checks", "run view", "run list"]);
+const GH_SUBCOMMANDS = new Set(["issue view", "issue list", "pr view", "pr list", "pr diff", "pr checks", "run view", "run list", "repo view", "repo list"]);
 
 function checkGit(args: string[]): Verdict {
   const sub = args[0];
@@ -1805,7 +1826,8 @@ function checkGit(args: string[]): Verdict {
 function checkGh(args: string[]): Verdict {
   const sub = `${args[0] ?? ""} ${args[1] ?? ""}`.trim();
   if (!GH_SUBCOMMANDS.has(sub)) return no(`\`gh ${sub}\` is not on the approved list`);
-  if (args.some((a) => a === "--web" || a === "-w")) return no("`gh --web` opens a browser");
+  // `gh` takes a value after `=` (`--web=true`, `-w=true`) and short options run together (`-cw`).
+  if (args.some((a) => a === "--web" || a.startsWith("--web=") || /^-[a-zA-Z]*w/.test(a))) return no("`gh --web` opens a browser");
   return OK;
 }
 

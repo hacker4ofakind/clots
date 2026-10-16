@@ -258,7 +258,7 @@ Approved shell commands:
 - **Git:** `log`, `diff`, `show`, `status`, `blame`, `branch` (listing only),
   `ls-files`, `grep`
 - **GitHub CLI:** `issue view`, `issue list`, `pr view`, `pr list`, `pr diff`,
-  `pr checks`, `run view`, `run list`
+  `pr checks`, `run view`, `run list`, `repo view`, `repo list`
 - **System:** `ps`, `docker ps`, `pm2 ps`, `pm2 list`, `ping` with a count
 - **The project's test command**, set per Clot in the configuration, matched
   exactly
@@ -281,7 +281,8 @@ appear:
   `--o` or `--co`; `git` with any option before the subcommand, or with
   `--output` or `--ext-diff`; `git grep` with `-O` or any long option beginning
   `--op`; `tree` with `-o`; `file` with `-C` or any long option beginning
-  `--co` (it compiles a magic file); `gh` with `--web`;
+  `--co` (it compiles a magic file); `gh` with `--web` or `-w`, with a value
+  (`--web=true`) or among other short options (`-cw`);
 - `uniq` with more than one argument that is not an option: it writes to a
   second file. An option's value must be attached, as in `-f1`;
 - the long options above in any shortened form. GNU `sort` and `git grep` accept
