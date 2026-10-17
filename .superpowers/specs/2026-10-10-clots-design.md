@@ -721,7 +721,11 @@ onboarding can be resumed.
 - Node's built-in HTTP server for intake, behind Tailscale Funnel.
 - discord.js for Discord, behind the chat adapter interface.
 - An IMAP library with IDLE support.
-- Docker; one image built for arm64 and x64.
+- Docker; one image built for arm64 and x64, on Debian trixie with Node 24 and
+  npm for the Clot's own work. Claude Code comes from its native installer and
+  lives outside the Clot's home volume, so rebuilding the image is what updates
+  it: at startup the daemon recreates any container made from an older build,
+  keeping its volumes. gh comes from GitHub's own apt repository.
 - Playwright with Chromium.
 
 ## 14. Testing
