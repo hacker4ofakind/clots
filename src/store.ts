@@ -59,6 +59,19 @@ export interface ProposalRow {
   summary: string;
 }
 
+/** An email a Clot asked to send, waiting for the user's answer in a temporary channel of its own. */
+export interface SendReviewRow {
+  id: number;
+  clot: string;
+  channelId: string;
+  account: string;
+  /** The email it answers, when it is a reply. */
+  eventId: string | null;
+  /** The message, as JSON. */
+  mail: string;
+  openedAt: number;
+}
+
 /** Something the daemon has to tell a Clot at the start of its next turn. */
 export interface NoteRow {
   seq: number;
@@ -180,6 +193,15 @@ CREATE TABLE IF NOT EXISTS proposals (
   edit TEXT NOT NULL,
   summary TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS send_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE,
+  account TEXT NOT NULL,
+  event_id TEXT,
+  mail TEXT NOT NULL,
+  opened_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS notes (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   clot TEXT NOT NULL,
@@ -247,6 +269,10 @@ function toInbox(r: any): InboxRow {
 
 function toProposal(r: any): ProposalRow {
   return { id: r.id, clot: r.clot, channelId: r.channel_id, channelName: r.channel_name, sessionId: r.session_id ?? null, scope: r.scope, edit: r.edit, summary: r.summary };
+}
+
+function toSendReview(r: any): SendReviewRow {
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, account: r.account, eventId: r.event_id ?? null, mail: r.mail, openedAt: r.opened_at };
 }
 
 function toEvent(r: any): EventRow {
@@ -552,6 +578,39 @@ export class Store {
   /** Closes a proposal. Returns false when it was closed already: only the caller that gets true may carry out its outcome. */
   deleteProposal(id: number): boolean {
     return this.db.prepare("DELETE FROM proposals WHERE id = ?").run(id).changes === 1;
+  }
+
+  /** Stores an open send review and returns its ID. */
+  createSendReview(r: Omit<SendReviewRow, "id">): number {
+    const info = this.db
+      .prepare("INSERT INTO send_reviews (clot, channel_id, account, event_id, mail, opened_at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(r.clot, r.channelId, r.account, r.eventId, r.mail, r.openedAt);
+    return Number(info.lastInsertRowid);
+  }
+
+  sendReviewByChannel(channelId: string): SendReviewRow | undefined {
+    const r = this.db.prepare("SELECT * FROM send_reviews WHERE channel_id = ?").get(channelId);
+    return r ? toSendReview(r) : undefined;
+  }
+
+  /** Open send reviews, oldest first: one Clot's, or everyone's. */
+  openSendReviews(clot?: string): SendReviewRow[] {
+    const rows = clot === undefined ? this.db.prepare("SELECT * FROM send_reviews ORDER BY id").all() : this.db.prepare("SELECT * FROM send_reviews WHERE clot = ? ORDER BY id").all(clot);
+    return rows.map(toSendReview);
+  }
+
+  /** Closes a send review. Returns false when it was closed already: only the caller that gets true may carry out the answer. */
+  deleteSendReview(id: number): boolean {
+    return this.db.prepare("DELETE FROM send_reviews WHERE id = ?").run(id).changes === 1;
+  }
+
+  /** Closes a send review and leaves the Clot a note, together. Returns false when it was closed already. */
+  withdrawSendReview(id: number, clot: string, note: string): boolean {
+    return this.db.transaction(() => {
+      if (!this.deleteSendReview(id)) return false;
+      this.addNote(clot, note);
+      return true;
+    })();
   }
 
   addNote(clot: string, text: string): void {

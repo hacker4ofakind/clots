@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DraftTracker, recordDraft, type DraftFate, type PendingDraft } from "../src/drafts.js";
 import { Store } from "../src/store.js";
 
-const account = { account: "gmail", shared: true, address: "me@gmail.com", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["INBOX"] };
+const account = { account: "gmail", shared: true, address: "me@gmail.com", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["INBOX"], tellAddress: true };
 const draft = (id: string, text = "We are checking."): PendingDraft => ({ account: "gmail", messageId: `<${id}@gmail.com>`, subject: "Re: Order 7", to: ["jane@x.com"], text, savedAt: Date.UTC(2026, 9, 16, 9) });
 
 describe("DraftTracker", () => {

@@ -17,7 +17,7 @@ import {
   type Mail,
 } from "../src/sources/email.js";
 
-const account: EmailAccount = { account: "gmail", shared: true, address: "me@gmail.com", addresses: ["support@shop.ch"], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["Clots"] };
+const account: EmailAccount = { account: "gmail", shared: true, address: "me@gmail.com", addresses: ["support@shop.ch"], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["Clots"], tellAddress: true };
 
 const RAW = [
   "Delivered-To: me+shop@gmail.com",

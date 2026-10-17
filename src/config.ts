@@ -40,6 +40,8 @@ const SourcesSchema = z
           imap: endpoint(993).optional(),
           smtp: endpoint(465).optional(),
           mailboxes: z.array(z.string().min(1)).min(1),
+          // Whether the Clots are told the account's addresses, or only its name.
+          tellAddress: z.boolean().default(true),
         }),
       )
       .default([]),
@@ -91,6 +93,8 @@ const FileSchema = z.object({
   home: z.boolean().default(false),
   // The address the tunnel gives the intake port, for webhooks and OAuth logins.
   publicUrl: z.url().optional(),
+  // Whether a Clot may ask to send an email, which the daemon sends on the user's yes in a review channel; and how many days a request waits for that answer.
+  sendReview: z.strictObject({ enabled: z.boolean().default(true), days: z.number().positive().default(3) }).prefault({}),
   sources: SourcesSchema,
   mcpServers: z.record(z.string().regex(NAME), McpServerSchema).default({}),
 });
@@ -116,6 +120,8 @@ export interface EmailAccount extends AccountBase {
   smtp: Endpoint;
   /** The folders or Gmail labels the daemon watches. Nothing else is read. */
   mailboxes: string[];
+  /** Whether the Clots are told the account's addresses, or only its name. */
+  tellAddress: boolean;
 }
 export interface CalendarAccount extends AccountBase {
   icalUrl: string;
@@ -165,6 +171,8 @@ export interface Config {
   maxProposals: number;
   /** The tunnel's address, without a trailing slash; "" when not set. */
   publicUrl: string;
+  /** Emails a Clot asks to send, sent on the user's yes in a review channel. `maxMs`: how long a request waits for the answer. */
+  sendReview: { enabled: boolean; maxMs: number };
   sources: Sources;
   mcpServers: Record<string, McpServer>;
 }
@@ -203,7 +211,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
       const imap = a.imap ?? (gmail ? { host: "imap.gmail.com", port: 993 } : undefined);
       const smtp = a.smtp ?? (gmail ? { host: "smtp.gmail.com", port: 465 } : undefined);
       if (imap === undefined || smtp === undefined) throw new Error(`email account ${a.account}: imap and smtp are needed for an address that is not a Gmail one`);
-      return { ...base("email", a), address: a.address.toLowerCase(), addresses: a.addresses.map((x) => x.toLowerCase()), password: secret(env, a.password), imap, smtp, mailboxes: a.mailboxes };
+      return { ...base("email", a), address: a.address.toLowerCase(), addresses: a.addresses.map((x) => x.toLowerCase()), password: secret(env, a.password), imap, smtp, mailboxes: a.mailboxes, tellAddress: a.tellAddress };
     }),
     calendar: file.sources.calendar.map((a) => {
       if ((a.script === undefined) !== (a.scriptSecret === undefined)) throw new Error(`calendar account ${a.account}: script and scriptSecret go together`);
@@ -242,6 +250,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     home: file.home,
     maxProposals,
     publicUrl,
+    sendReview: { enabled: file.sendReview.enabled, maxMs: file.sendReview.days * 86_400_000 },
     sources,
     mcpServers,
   };

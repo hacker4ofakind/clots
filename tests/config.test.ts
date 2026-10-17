@@ -27,9 +27,16 @@ it("merges the config file and the environment", () => {
     home: false,
     maxProposals: 3,
     publicUrl: "",
+    sendReview: { enabled: true, maxMs: 3 * 86_400_000 },
     sources: { stripe: [], email: [], calendar: [], linear: [], notion: [] },
     mcpServers: {},
   });
+});
+
+it("reads the send review switch and how many days a review waits", () => {
+  expect(loadConfig({ ...json, sendReview: { enabled: false, days: 0.5 } }, env).sendReview).toEqual({ enabled: false, maxMs: 43_200_000 });
+  expect(loadConfig({ ...json, sendReview: { days: 7 } }, env).sendReview).toEqual({ enabled: true, maxMs: 7 * 86_400_000 });
+  expect(() => loadConfig({ ...json, sendReview: { days: 0 } }, env)).toThrow();
 });
 
 it("reads the home Clot and the limit on open proposals", () => {
@@ -113,6 +120,13 @@ it("fills in Gmail's servers, and wants them for any other address", () => {
   expect(() => loadConfig(withSources({ email: [own] }), keys)).toThrow("imap and smtp");
   const set = loadConfig(withSources({ email: [{ ...own, imap: { host: "mail.tady.ch" }, smtp: { host: "mail.tady.ch", port: 587 } }] }), keys).sources.email[0];
   expect(set).toMatchObject({ imap: { host: "mail.tady.ch", port: 993 }, smtp: { host: "mail.tady.ch", port: 587 } });
+});
+
+it("tells the Clots an email account's addresses unless told not to", () => {
+  const keys = { ...env, P: "app-password" };
+  const account = { account: "gmail", shared: true, address: "me@gmail.com", password: "P", mailboxes: ["Clots"] };
+  expect(loadConfig(withSources({ email: [account] }), keys).sources.email[0].tellAddress).toBe(true);
+  expect(loadConfig(withSources({ email: [{ ...account, tellAddress: false }] }), keys).sources.email[0].tellAddress).toBe(false);
 });
 
 it("reads a calendar's lead times in minutes, and wants the script's secret with its address", () => {

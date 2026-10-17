@@ -21,11 +21,12 @@ import { recipeHandler } from "./webhook-recipe.js";
 import { StoredOAuth } from "./mcp/oauth.js";
 import { CalendarFeed } from "./sources/calendar.js";
 import { calendarScript, describeScriptEvent } from "./sources/calendar-script.js";
-import { draftFates, imapflowClient, MailboxListener, saveDraft } from "./sources/imap.js";
+import { draftFates, imapflowClient, MailboxListener, saveDraft, saveSent } from "./sources/imap.js";
+import { SendReviews } from "./send-review.js";
 import { DraftTracker } from "./drafts.js";
 import { linearCommentSender, linearEnricher, linearHandler, linearMember } from "./sources/linear.js";
 import { notionBot, notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
-import { emailReplySender, smtpTransport } from "./sources/smtp.js";
+import { emailReplySender, mailer, smtpTransport } from "./sources/smtp.js";
 import { stripeEnricher, stripeHandler } from "./sources/stripe.js";
 import { SdkExplainer } from "./explainer.js";
 import { GlobalMemory } from "./global-memory.js";
@@ -136,11 +137,40 @@ const memory = new GlobalMemory({
   isBusy: (name) => clots.get(name)?.isBusy() ?? false,
 });
 
+/** Sends as the user: standing-rule replies and approved emails, each with a copy in Sent where the server does not file one. */
+const sendMail = mailer({ store, transport: smtpTransport, saveSent, log: (text, error) => console.warn(text, error) });
+/** Emails the Clots ask to send, each sent on the user's yes in a review channel. Set up with the email sources, unless switched off. */
+const sendReviews =
+  config.sources.email.length === 0 || !config.sendReview.enabled
+    ? undefined
+    : new SendReviews({
+        store,
+        chat,
+        userId: config.userId,
+        accounts: config.sources.email,
+        max: config.maxProposals,
+        maxMs: config.sendReview.maxMs,
+        now: () => Date.now(),
+        send: sendMail,
+        saveDraft,
+        // The user's feedback reaches the Clot as if typed in its live channel: a turn now, or into the running one.
+        feedback: async (name, text) => {
+          const session = store.activeSession(name);
+          const clot = clots.get(name);
+          if (!session || !clot) return false;
+          // Not waited for: it may start a whole turn. Stored as the Clot's message before the first await, so it is not lost.
+          void clot.onMessage({ id: `send-feedback:${randomUUID()}`, channelId: session.channelId, authorId: config.userId, text, at: new Date() }).catch((error) => console.error(`[${name}]`, error));
+          return true;
+        },
+        say,
+      });
+
 await chat.start((m) => {
   void (async () => {
     // A reply in a temporary channel is an answer to the daemon's question there, not a message for the Clot.
     if (await steering.onReply(m)) return;
     if (await proposals.onReply(m)) return;
+    if (await sendReviews?.onReply(m)) return;
     if (await memory.onReply(m)) return;
     const session = store.sessionByChannel(m.channelId);
     const clot = session && clots.get(session.clot);
@@ -213,6 +243,11 @@ for (const c of definitions) {
 
 // A proposal whose channel was removed while the daemon was down can no longer be answered.
 await proposals.closeOrphans();
+// Emails that waited too long for an answer, or whose channel is gone, are withdrawn: now, then every hour.
+if (sendReviews) {
+  await sendReviews.closeStale();
+  setInterval(() => void sendReviews.closeStale().catch((error) => console.error("[email] closing stale send reviews failed:", error)), 60 * 60_000);
+}
 
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
@@ -245,8 +280,8 @@ for (const account of config.sources.email) {
   }
 }
 if (config.sources.email.length > 0) {
-  toolDeps.email = { accounts: config.sources.email, save: saveDraft };
-  toolDeps.senders.email_reply = emailReplySender({ accounts: config.sources.email, store, transport: smtpTransport });
+  toolDeps.email = { accounts: config.sources.email, save: saveDraft, ...(sendReviews ? { review: sendReviews } : {}) };
+  toolDeps.senders.email_reply = emailReplySender({ accounts: config.sources.email, store, send: sendMail });
 }
 
 // Calendar: each feed polled for reminders, and read for calendar_list.

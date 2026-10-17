@@ -8,7 +8,7 @@ import { RuleWriter } from "../src/rule-writer.js";
 import { parseRuleFile, Rulebook } from "../src/rulebook.js";
 import type { RuleEdit, RuleScope } from "../src/rulebook-edit.js";
 import { Store } from "../src/store.js";
-import { makeTools, mustPropose, showRules, type DaemonTools, type TurnContext, type TurnKind } from "../src/tools.js";
+import { describeEmailAccounts, makeTools, mustPropose, showRules, type DaemonTools, type TurnContext, type TurnKind } from "../src/tools.js";
 
 const Z = "​";
 
@@ -246,7 +246,7 @@ describe("routing tools", () => {
 });
 
 describe("email_draft", () => {
-  const account = { account: "gmail", shared: true, address: "me@gmail.com", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["Clots"] };
+  const account = { account: "gmail", shared: true, address: "me@gmail.com", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["Clots"], tellAddress: true };
   let saved: any[];
   const emailTools = (kind: TurnKind) => {
     saved = [];
@@ -297,6 +297,62 @@ describe("email_draft", () => {
     expect(await emailTools("work")({ account: "gmail", text: "x" })).toContain("Refused");
     expect(await emailTools("work")({ account: "nope", to: ["a@b.c"], subject: "s", text: "x" })).toContain("Refused");
     expect(saved).toEqual([]);
+  });
+
+  it("tells the Clot the accounts it may write from, with their addresses unless they are kept from it", () => {
+    const tady = { ...account, account: "tady", address: "me@tady.ch", addresses: ["support@tady.ch"] };
+    expect(describeEmailAccounts([account, tady])).toBe("The email accounts you may write from are the user's own: gmail (me@gmail.com), tady (me@tady.ch; mail to support@tady.ch also arrives there).");
+    expect(describeEmailAccounts([{ ...tady, tellAddress: false }])).toBe("The email accounts you may write from are the user's own: tady (its address is not shown to you).");
+    expect(describeEmailAccounts([])).toContain("no email account");
+    expect(makeTools({ rulebook, writer: new RuleWriter({ rulebook, store, commit: () => undefined }), proposals: { open: async () => "" }, store, senders: {}, say: async () => undefined, handOver: async () => "", email: { accounts: [account, { ...tady, clot: "other", shared: false }], save: async () => ({ mailbox: "" }) } }, { clot: "graphite", kind: "work", steered: () => false }).emailAccounts).toContain("gmail (me@gmail.com).");
+  });
+
+  describe("email_send", () => {
+    let reviews: { clot: string; req: any }[];
+    const sendTools = (kind: TurnKind, event?: ClotEvent, review = true) => {
+      reviews = [];
+      const t = makeTools(
+        {
+          rulebook,
+          writer: new RuleWriter({ rulebook, store, commit: () => undefined }),
+          proposals: { open: async () => "FILED" },
+          store,
+          senders: {},
+          say: async (_clot, text) => void said.push(text),
+          handOver: async () => "",
+          email: {
+            accounts: [account],
+            save: async () => ({ mailbox: "Drafts" }),
+            ...(review ? { review: { open: async (clot: string, req: any) => (reviews.push({ clot, req }), "FILED FOR REVIEW") } } : {}),
+          },
+        },
+        { clot: "graphite", kind, steered: () => false, event },
+      );
+      return t.emailSend;
+    };
+    const mailEvent = () => store.getEvent("email:gmail:<m2@x.com>")! as unknown as ClotEvent;
+
+    it("puts a reply or a new message to the user, and sends nothing itself", async () => {
+      expect(await sendTools("work")!({ event: "email:gmail:<m2@x.com>", text: "We are checking." })).toBe("FILED FOR REVIEW");
+      expect(reviews[0]).toMatchObject({ clot: "graphite", req: { account: "gmail", event: "email:gmail:<m2@x.com>", mail: { from: "me+shop@gmail.com", to: ["jane@x.com"], subject: "Re: Order 7", text: "We are checking." } } });
+      expect(await sendTools("brainstorm")!({ account: "gmail", to: ["lukas@tady.ch"], subject: "Rebooking", text: "Can we move it?" })).toBe("FILED FOR REVIEW");
+      expect(reviews[0].req).toMatchObject({ account: "gmail", event: undefined, mail: { from: "me@gmail.com", to: ["lukas@tady.ch"] } });
+      expect(said).toEqual([]);
+    });
+
+    it("lets an investigation answer only the email it is looking into", async () => {
+      expect(await sendTools("investigation", mailEvent())!({ event: "email:gmail:<m2@x.com>", text: "Thanks." })).toBe("FILED FOR REVIEW");
+      expect(await sendTools("investigation", mailEvent())!({ account: "gmail", to: ["a@b.c"], subject: "s", text: "x" })).toContain("only ask to answer that email");
+      expect(await sendTools("investigation", { ...issue(), id: "d-1" } as ClotEvent)!({ event: "email:gmail:<m2@x.com>", text: "x" })).toContain("Refused");
+      expect(reviews).toEqual([]);
+    });
+
+    it("refuses what a draft refuses, and is not offered when send review is off", async () => {
+      expect(await sendTools("work")!({ event: "d-1", text: "x" })).toContain("Refused");
+      expect(await sendTools("work")!({ account: "gmail", text: "x" })).toContain("Refused");
+      expect(reviews).toEqual([]);
+      expect(sendTools("work", undefined, false)).toBeUndefined();
+    });
   });
 });
 

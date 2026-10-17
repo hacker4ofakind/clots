@@ -198,7 +198,7 @@ export const DAEMON_TOOL_SERVER = "clots";
 /**
  * How the daemon's tools are named in a turn. They run in the daemon, not in the container,
  * and each enforces its own limits: an edit made in a locked turn is only ever proposed, and a
- * send happens only under a standing rule the user approved.
+ * send happens only under a standing rule the user approved, or on the user's yes in a review channel.
  */
 export const DAEMON_TOOL_PREFIX = `mcp__${DAEMON_TOOL_SERVER}__`;
 

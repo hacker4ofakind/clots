@@ -59,3 +59,17 @@ export const MEMORY_RETRY = `I couldn't match that reply.\n\n${MEMORY_REPLIES}`;
 export const CAL_REPLIES = ["Reply with one of:", "- `yes`, `sure`, `do that` or `yeah` to remove it from your calendar", "- `no`, `dont` or `not at all` to keep it"].join("\n");
 
 export const CAL_RETRY = `I couldn't match that reply.\n\n${CAL_REPLIES}`;
+
+/** A reply about an email a Clot asks to send: send it, drop it, save it as a draft, or nothing when it is none of these, which makes it feedback. */
+export function matchSendReply(text: string): "yes" | "no" | "draft" | undefined {
+  if (normalizeReply(text) === "draft") return "draft";
+  return matchYesNo(text);
+}
+
+export const SEND_REPLIES = [
+  "Reply with one of:",
+  "- `yes`, `sure`, `do that` or `yeah` to send it as it is",
+  "- `no`, `dont` or `not at all` to drop it",
+  "- `draft` to save it in your Drafts instead, to change and send yourself",
+  "- anything else is feedback: I'll pass it on, and the revised email comes back in a new channel",
+].join("\n");
