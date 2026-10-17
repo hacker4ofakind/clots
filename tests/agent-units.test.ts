@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isTurnActivity, TurnTracker } from "../src/agent/turn-tracker.js";
 import { parseRateLimit } from "../src/agent/usage.js";
 import { buildPrompt, CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "../src/agent/prompts.js";
-import { containerName, dockerExecArgs, gitIdentity, noreplyEmail, pickSdkEnv, sessionEnv, toContainerCommand } from "../src/agent/container.js";
+import { containerName, containerStep, dockerExecArgs, gitIdentity, noreplyEmail, pickSdkEnv, sessionEnv, toContainerCommand } from "../src/agent/container.js";
 
 describe("TurnTracker", () => {
   it("finishes on a result when nothing was pushed", () => {
@@ -168,5 +168,23 @@ describe("container helpers", () => {
     expect(dockerExecArgs({ container: "clot-g", cwd: "/workspace/repo", envKeys: ["A", "B"], command: ["claude", "-p"] })).toEqual([
       "exec", "-i", "-w", "/workspace/repo", "-e", "A", "-e", "B", "clot-g", "claude", "-p",
     ]);
+  });
+
+  it("creates a missing container", () => {
+    expect(containerStep(undefined, "sha256:new")).toBe("create");
+  });
+
+  it("recreates a container made from an older build of the image, running or not", () => {
+    expect(containerStep("true sha256:old", "sha256:new")).toBe("recreate");
+    expect(containerStep("false sha256:old", "sha256:new")).toBe("recreate");
+  });
+
+  it("starts a stopped container on the current image and leaves a running one alone", () => {
+    expect(containerStep("false sha256:new", "sha256:new")).toBe("start");
+    expect(containerStep("true sha256:new", "sha256:new")).toBe("none");
+  });
+
+  it("keeps the container when the image cannot be read", () => {
+    expect(containerStep("true sha256:old", undefined)).toBe("none");
   });
 });

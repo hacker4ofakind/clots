@@ -118,14 +118,14 @@ diff --git a/docker/Dockerfile b/docker/Dockerfile
 index f74b960..fd06edb 100644
 --- a/docker/Dockerfile
 +++ b/docker/Dockerfile
-@@ -2,6 +2,7 @@ FROM node:22-bookworm-slim
- 
- RUN apt-get update \
-  && apt-get install -y --no-install-recommends git gh ca-certificates curl ripgrep \
+@@ -9,6 +9,7 @@ RUN apt-get update \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends git gh ripgrep \
 +      iputils-ping procps tree file \
   && rm -rf /var/lib/apt/lists/*
  
- RUN npm install -g @anthropic-ai/claude-code
+ # The installer puts Claude Code in the installing user's home. A Clot's home is
 ```
 
 Run: `npm run image`
@@ -133,11 +133,7 @@ Expected: the build succeeds.
 Run: `docker run --rm clots-clot:dev sh -c "ping -c 1 127.0.0.1 >/dev/null && ps >/dev/null && tree --version && file --version | head -1"`
 Expected: a `tree` version line and a `file` version line, and exit code 0.
 
-The Clot's existing container still runs the old image. Remove it; the daemon makes a new one at its next start, and the container's login and repository survive, because they are on volumes:
-
-```bash
-docker rm -f clot-<name>
-```
+The Clot's existing container keeps running the old image until the daemon's next start, which recreates it from the new build. The container's login and repository survive, because they are on volumes.
 
 - [ ] **Step 4: Add the dependency and the ignore and example entries**
 
@@ -6086,17 +6082,17 @@ diff --git a/src/agent/container.ts b/src/agent/container.ts
 index 27851c0..d87f5ef 100644
 --- a/src/agent/container.ts
 +++ b/src/agent/container.ts
-@@ -88,7 +88,8 @@ export function sessionExists(container: string, sessionId: string): boolean {
-   }
+@@ -100,7 +100,8 @@ export function containerStep(info: string | undefined, currentImage: string | undefined): "creat
+   return running === "true" ? "none" : "start";
  }
  
 -export async function ensureContainer(o: { clot: string; image: string; repoUrl: string; githubToken: string }): Promise<void> {
 +/** Starts the Clot's container if needed, sets up git in it and clones the repository. Returns the login of the account that owns the token, when it can be read. */
 +export async function ensureContainer(o: { clot: string; image: string; repoUrl: string; githubToken: string }): Promise<string | undefined> {
    const name = containerName(o.clot);
-   const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", name]).then(
-     (r) => r.stdout.trim(),
-@@ -119,4 +120,5 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl:
+   const [info, currentImage] = await Promise.all([
+     run("docker", ["inspect", "-f", "{{.State.Running}} {{.Image}}", name]).then((r) => r.stdout.trim(), () => undefined),
+@@ -136,4 +137,5 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl:
    await run("docker", ["exec", "-e", "GH_TOKEN", "-e", "REPO_URL", "-e", "CLOT_GIT_NAME", "-e", "CLOT_GIT_EMAIL", name, "sh", "-c", script], {
      env: { ...process.env, GH_TOKEN: o.githubToken, REPO_URL: o.repoUrl, CLOT_GIT_NAME: identity.name, CLOT_GIT_EMAIL: identity.email },
    });

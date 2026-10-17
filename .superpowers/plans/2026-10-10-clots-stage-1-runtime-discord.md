@@ -25,6 +25,7 @@
 - Approval scope: after the user's go-ahead the Clot may edit, test, commit to a branch and open a pull request. Merging to the main branch, deploying, spending money, deleting data and sending anything to a person each need a separate yes; messages to people are drafts.
 - Commits are authored as `<name>-clot` with the no-reply address of the GitHub account that owns the Clot's token. Pull request descriptions end with "Created with a Clot.", linked to the Clots repository.
 - Sign-in: a container that has been logged in with `claude /login` uses that login, which brings the account's connectors. Otherwise the session gets `CLAUDE_CODE_OAUTH_TOKEN` from `.env`. The token is never passed when the container has a login, because it would override it.
+- The image decides the Claude Code version: auto-updates are off in it. At startup the daemon recreates a container made from an older build of the image; the home and workspace volumes keep the login, sessions and repository.
 - The turn summary is posted by the daemon. It never enters the Clot's session or the router's context.
 - A handoff saves the new session before announcing it, and a failed chat call never aborts one.
 - Secrets live in `.env`, which is never committed and never posted to Discord.
@@ -38,7 +39,7 @@
 |---|---|
 | `scripts/preflight.mjs` | Measure the development environment and fail if it cannot run a Clot |
 | `scripts/spike.ts` | Verify the three stage-1 assumptions against the real SDK |
-| `docker/Dockerfile` | The Clot image: Node, git, gh, Claude Code, a non-root user |
+| `docker/Dockerfile` | The Clot image: Debian trixie with Node 24, git, gh, Claude Code's native binary, a non-root user |
 | `src/types.ts` | Shared types |
 | `src/chat/names.ts` | Channel naming and message splitting (pure) |
 | `src/chat/adapter.ts` | `ChatAdapter` interface |
@@ -205,13 +206,27 @@ Expected: both commands exit 0.
 `docker/Dockerfile`:
 
 ```dockerfile
-FROM node:22-bookworm-slim
+FROM node:24-trixie-slim
 
+# gh comes from GitHub's own repository: Debian's stays on the version it froze.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git gh ca-certificates curl ripgrep \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && install -d -m 755 /etc/apt/keyrings \
+ && curl -fsSL -o /etc/apt/keyrings/githubcli-archive-keyring.gpg https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+ && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends git gh ripgrep \
  && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code
+# The installer puts Claude Code in the installing user's home. A Clot's home is
+# a volume that would hide it, so the binary moves to /usr/local/bin, and the
+# image, not the Clot, decides the version.
+WORKDIR /tmp
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && install -m 755 "$(readlink -f /root/.local/bin/claude)" /usr/local/bin/claude \
+ && rm -rf /root/.local /root/.claude /root/.claude.json
+ENV DISABLE_AUTOUPDATER=1
 
 RUN useradd -m -u 1001 clot \
  && mkdir -p /workspace \
@@ -1132,7 +1147,7 @@ import { describe, expect, it } from "vitest";
 import { isTurnActivity, TurnTracker } from "../src/agent/turn-tracker.js";
 import { parseRateLimit } from "../src/agent/usage.js";
 import { buildPrompt, CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "../src/agent/prompts.js";
-import { containerName, dockerExecArgs, gitIdentity, noreplyEmail, pickSdkEnv, sessionEnv, toContainerCommand } from "../src/agent/container.js";
+import { containerName, containerStep, dockerExecArgs, gitIdentity, noreplyEmail, pickSdkEnv, sessionEnv, toContainerCommand } from "../src/agent/container.js";
 
 describe("TurnTracker", () => {
   it("finishes on a result when nothing was pushed", () => {
@@ -1288,6 +1303,24 @@ describe("container helpers", () => {
     expect(dockerExecArgs({ container: "clot-g", cwd: "/workspace/repo", envKeys: ["A", "B"], command: ["claude", "-p"] })).toEqual([
       "exec", "-i", "-w", "/workspace/repo", "-e", "A", "-e", "B", "clot-g", "claude", "-p",
     ]);
+  });
+
+  it("creates a missing container", () => {
+    expect(containerStep(undefined, "sha256:new")).toBe("create");
+  });
+
+  it("recreates a container made from an older build of the image, running or not", () => {
+    expect(containerStep("true sha256:old", "sha256:new")).toBe("recreate");
+    expect(containerStep("false sha256:old", "sha256:new")).toBe("recreate");
+  });
+
+  it("starts a stopped container on the current image and leaves a running one alone", () => {
+    expect(containerStep("false sha256:new", "sha256:new")).toBe("start");
+    expect(containerStep("true sha256:new", "sha256:new")).toBe("none");
+  });
+
+  it("keeps the container when the image cannot be read", () => {
+    expect(containerStep("true sha256:old", undefined)).toBe("none");
   });
 });
 ```
@@ -1833,18 +1866,35 @@ export function sessionExists(container: string, sessionId: string): boolean {
   }
 }
 
+/**
+ * What the container needs at startup. `info` is `docker inspect`'s "<running> <image id>", or
+ * undefined when there is no container. A container made from an older build of the image is
+ * recreated: the image carries Claude Code, and the home and workspace volumes keep the rest.
+ */
+export function containerStep(info: string | undefined, currentImage: string | undefined): "create" | "recreate" | "start" | "none" {
+  if (info === undefined) return "create";
+  const [running, image] = info.split(" ");
+  if (currentImage !== undefined && image !== currentImage) return "recreate";
+  return running === "true" ? "none" : "start";
+}
+
 export async function ensureContainer(o: { clot: string; image: string; repoUrl: string; githubToken: string }): Promise<void> {
   const name = containerName(o.clot);
-  const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", name]).then(
-    (r) => r.stdout.trim(),
-    () => "missing",
-  );
-  if (state === "missing") {
+  const [info, currentImage] = await Promise.all([
+    run("docker", ["inspect", "-f", "{{.State.Running}} {{.Image}}", name]).then((r) => r.stdout.trim(), () => undefined),
+    run("docker", ["image", "inspect", "-f", "{{.Id}}", o.image]).then((r) => r.stdout.trim(), () => undefined),
+  ]);
+  const step = containerStep(info, currentImage);
+  if (step === "recreate") {
+    console.log(`[${o.clot}] the image was rebuilt; recreating the container, keeping its volumes`);
+    await run("docker", ["rm", "-f", name]);
+  }
+  if (step === "create" || step === "recreate") {
     await run("docker", [
       "run", "-d", "--name", name, "--restart", "unless-stopped",
       "-v", `${name}-home:/home/clot`, "-v", `${name}-work:/workspace`, o.image,
     ]);
-  } else if (state !== "true") {
+  } else if (step === "start") {
     await run("docker", ["start", name]);
   }
 
