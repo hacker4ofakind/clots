@@ -61,7 +61,7 @@ Every source is set up under `sources` in `clots.config.json`, one entry per acc
 
 Run a source's assumption check before relying on it: `scripts/spike-2c-email.ts`, `scripts/spike-2c-calendar.ts`, `scripts/spike-2c-watch.ts`, and `scripts/capture-2c.ts <source>` to see deliveries arrive.
 
-A Clot can save email drafts in your Drafts folder, read your calendar, add or move events without guests, and remove one only after you say yes in chat and again in a `-cal` channel. Nothing is sent to anyone except a standing rule you approved.
+A Clot can save email drafts in your Drafts folder, read your calendar, add or move events without guests, and remove one only after you say yes in chat and again in a `-cal` channel. Nothing goes to anyone without your yes: a standing rule you approved, or an email the Clot asks to send. That email is shown to you in a `-mail` channel: answer `yes` to send it, `no` to drop it, `draft` to have it saved in Drafts, or anything else as feedback, and the revised email comes back in a new channel. Unanswered requests are withdrawn after `sendReview.days` (default 3); `"sendReview": { "enabled": false }` in `clots.config.json` leaves only drafts and standing rules. Sent mail gets a copy in Sent (Gmail files its own). The Clots are told each email account's addresses; set `"tellAddress": false` on an account to show them only its name.
 
 ## Commands
 
