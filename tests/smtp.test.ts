@@ -58,8 +58,13 @@ describe("mailer", () => {
 
   it("still calls it sent when only the copy fails, and says so", async () => {
     copyFails = true;
-    expect(await send()(own, outgoing)).toEqual({ ok: true, sentCopy: "no copy could be put in Sent (no Sent folder)" });
+    expect(await send()(own, outgoing)).toEqual({ ok: true, noCopy: "no Sent folder" });
     expect(logged[0]).toContain("no copy could be put in Sent");
+  });
+
+  it("names the recipients the server refused while taking the others", async () => {
+    answer = { messageId: "x", accepted: ["a@b.c"], rejected: ["gone@b.c"] };
+    expect(await send()(own, { ...outgoing, to: ["a@b.c", "gone@b.c"] })).toEqual({ ok: true, rejected: ["gone@b.c"] });
   });
 
   it("makes no copy of what was not sent", async () => {

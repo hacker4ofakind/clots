@@ -13,7 +13,8 @@ export function smtpTransport(account: EmailAccount) {
 export const filesSentItself = (account: EmailAccount) => account.smtp.host.toLowerCase() === "smtp.gmail.com";
 
 /** What became of a message handed to the mail server. `refused`: the server said no, so it was not sent; otherwise it may or may not have gone. */
-export type MailSent = { ok: true; sentCopy?: string } | { ok: false; refused: boolean; reason: string };
+/** `rejected`: recipients the server refused while taking the others. `noCopy`: why no copy could be put in Sent. */
+export type MailSent = { ok: true; rejected?: string[]; noCopy?: string } | { ok: false; refused: boolean; reason: string };
 
 export interface MailerDeps {
   store: Store;
@@ -31,23 +32,28 @@ export function mailer(o: MailerDeps): (account: EmailAccount, mail: OutgoingMai
   return async (account, mail) => {
     // Known as the daemon's own before it leaves, so its copy coming back is never taken for new mail.
     o.store.setState(ownMessageKey(mail.messageId), "1");
+    const done: { ok: true; rejected?: string[]; noCopy?: string } = { ok: true };
     try {
-      await o.transport(account).sendMail({ from: mail.from, to: mail.to, subject: mail.subject, text: mail.text, messageId: mail.messageId, inReplyTo: mail.inReplyTo, references: mail.references });
+      const info: any = await o.transport(account).sendMail({ from: mail.from, to: mail.to, subject: mail.subject, text: mail.text, messageId: mail.messageId, inReplyTo: mail.inReplyTo, references: mail.references });
+      // The server may take some recipients and refuse others; it went to those it took.
+      const rejected: string[] = Array.isArray(info?.rejected) ? info.rejected.map((r: unknown) => (typeof r === "string" ? r : String((r as { address?: string })?.address ?? r))) : [];
+      if (rejected.length > 0) done.rejected = rejected;
     } catch (error: any) {
       const code = typeof error?.responseCode === "number" ? error.responseCode : undefined;
       const why = error instanceof Error ? error.message : String(error);
       if (code !== undefined && code >= 500) return { ok: false, refused: true, reason: `the mail server refused it (${code} ${why})` };
       return { ok: false, refused: false, reason: `the mail server could not be reached or did not answer clearly (${why})` };
     }
-    if (filesSentItself(account)) return { ok: true };
-    try {
-      await o.saveSent(account, mail);
-      return { ok: true };
-    } catch (error) {
-      // The mail went; only its copy is missing.
-      o.log(`[email] sent from ${account.account}, but no copy could be put in Sent:`, error);
-      return { ok: true, sentCopy: `no copy could be put in Sent (${error instanceof Error ? error.message : String(error)})` };
+    if (!filesSentItself(account)) {
+      try {
+        await o.saveSent(account, mail);
+      } catch (error) {
+        // The mail went; only its copy is missing.
+        o.log(`[email] sent from ${account.account}, but no copy could be put in Sent:`, error);
+        done.noCopy = error instanceof Error ? error.message : String(error);
+      }
     }
+    return done;
   };
 }
 

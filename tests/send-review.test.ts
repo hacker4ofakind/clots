@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { InboundMessage } from "../src/chat/adapter.js";
 import { FakeChat } from "../src/chat/fake.js";
 import type { EmailAccount } from "../src/config.js";
-import { SEND_FILED, SendReviews, span } from "../src/send-review.js";
+import { closeAllReviews, SEND_FILED, SendReviews, span } from "../src/send-review.js";
 import { ownMessageKey, type OutgoingMail } from "../src/sources/email.js";
 import type { MailSent } from "../src/sources/smtp.js";
 import { Store } from "../src/store.js";
@@ -122,6 +122,26 @@ describe("SendReviews", () => {
     expect(chat.deleted).toContain(id);
   });
 
+  it("tells the user and the Clot who did not get an email the server took only in part", async () => {
+    sendAnswer = { ok: true, rejected: ["gone@x.com"], noCopy: "no Sent folder" };
+    await reviews.open("graphite", { account: "tady", mail: mail() });
+    await reviews.onReply(reply(channel(), "yes"));
+    expect(said[0]).toContain("the mail server refused gone@x.com, so it did not go to them; no copy could be put in Sent: no Sent folder");
+    expect(notes()[0]).toContain("Tell the user who did not get it.");
+  });
+
+  it("closes every review left when send review is switched off", async () => {
+    await reviews.open("graphite", { account: "tady", mail: mail() });
+    store.createSendReview({ clot: "graphite", channelId: await chat.createChannel("cat-graphite", "graphite-mail-2"), account: "tady", eventId: null, mail: JSON.stringify(mail("Other.")), openedAt: now, state: "sending" });
+    await closeAllReviews({ store, chat, say: async (_clot, text) => void said.push(text) });
+    expect(store.openSendReviews()).toEqual([]);
+    const texts = notes();
+    expect(texts[0]).toContain("sending email for review has been switched off");
+    expect(texts[1]).toContain("whether it went out is not known");
+    expect(chat.channels.map((c) => c.name)).toEqual(["graphite-1610"]);
+    expect(sent).toEqual([]);
+  });
+
   it("says when an approved email was refused, and when it may or may not have gone", async () => {
     sendAnswer = { ok: false, refused: true, reason: "the mail server refused it (550)" };
     await reviews.open("graphite", { account: "tady", mail: mail() });
@@ -168,8 +188,8 @@ describe("SendReviews", () => {
     expect(feedback[0].text).toContain("Mention the refund is on its way.");
     expect(said[0]).toContain("Feedback on the email");
     expect(chat.deleted).toContain(id);
-    // The channel is gone before the Clot gets to work on the feedback.
-    expect(channelsAtFeedback).toBe(1);
+    // Handed over first, before anything is awaited; the channel goes after.
+    expect(channelsAtFeedback).toBe(2);
     expect(store.openSendReviews()).toEqual([]);
   });
 

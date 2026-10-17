@@ -34,7 +34,7 @@ export interface SendReviewsDeps {
   send: (account: EmailAccount, mail: OutgoingMail) => Promise<MailSent>;
   /** Puts a message in the account's Drafts folder. */
   saveDraft: (account: EmailAccount, mail: OutgoingMail) => Promise<{ mailbox: string }>;
-  /** Hands the user's feedback to the Clot as a message the user typed in its live channel. False when it could not. */
+  /** Hands the user's feedback to the Clot as a message the user typed in its live channel. False when it could not. Must store it before its first await. */
   feedback: (clot: string, text: string) => Promise<boolean>;
   /** Posts in a Clot's live channel. Never throws. */
   say: (clot: string, text: string) => Promise<void>;
@@ -61,6 +61,30 @@ export function describeMail(mail: OutgoingMail): string {
 
 const mailOf = (review: SendReviewRow) => JSON.parse(review.mail) as OutgoingMail;
 const headlineOf = (review: SendReviewRow) => mailHeadline(mailOf(review), review.account);
+
+/** The note for the Clot and the line for the user about a review a stop caught half-way. */
+function interruptedOutcome(review: SendReviewRow, what: string): [string, string] {
+  if (review.state === "sending") return [`The user approved your email ${what}, but the daemon stopped while sending it: whether it went out is not known. It will not be tried again. Tell the user.`, `Approved, but the daemon stopped while sending it, so it may or may not have gone: the email ${what}`];
+  if (review.state === "drafting") return [`The user asked for your email ${what} as a draft, but the daemon stopped while saving it: it may or may not be in Drafts. Nothing was sent.`, `The daemon stopped while saving this as a draft, so it may or may not be in Drafts; nothing was sent: the email ${what}`];
+  return [`Your email ${what} was withdrawn unsent: the daemon stopped before it was shown to the user in full. Ask again if it is still needed.`, `Withdrawn, not sent (the daemon stopped while showing it): the email ${what}`];
+}
+
+/**
+ * Closes every send review left from when send review was on. Called at startup when it is now off,
+ * or no email account is left: nothing could answer them. Nothing is sent or tried again.
+ */
+export async function closeAllReviews(d: Pick<SendReviewsDeps, "store" | "chat" | "say">): Promise<void> {
+  for (const review of d.store.openSendReviews()) {
+    const what = headlineOf(review);
+    const [note, line] =
+      review.state === "open"
+        ? [`Your email ${what} was withdrawn unsent: sending email for review has been switched off. Do not ask to send it again.`, `Withdrawn, not sent (sending email for review is switched off): the email ${what}`]
+        : interruptedOutcome(review, what);
+    if (!d.store.closeSendReview(review.id, review.clot, note)) continue;
+    await d.say(review.clot, line);
+    await d.chat.deleteChannel(review.channelId).catch(() => undefined);
+  }
+}
 
 /**
  * Emails a Clot asks to send. Each is shown to the user in a temporary channel and answered
@@ -149,8 +173,8 @@ export class SendReviews {
       return true;
     }
     if (!store.deleteSendReview(review.id)) return true;
-    await chat.deleteChannel(review.channelId).catch(() => undefined);
     await this.feedback(review, m.text);
+    await chat.deleteChannel(review.channelId).catch(() => undefined);
     return true;
   }
 
@@ -190,12 +214,7 @@ export class SendReviews {
 
   /** Closes a review the daemon stopped in the middle of. Nothing is tried again: it may have been done. */
   private async interrupted(review: SendReviewRow, what: string): Promise<void> {
-    const [note, line] =
-      review.state === "sending"
-        ? [`The user approved your email ${what}, but the daemon stopped while sending it: whether it went out is not known. It will not be tried again. Tell the user.`, `Approved, but the daemon stopped while sending it, so it may or may not have gone: the email ${what}`]
-        : review.state === "drafting"
-          ? [`The user asked for your email ${what} as a draft, but the daemon stopped while saving it: it may or may not be in Drafts. Nothing was sent.`, `The daemon stopped while saving this as a draft, so it may or may not be in Drafts; nothing was sent: the email ${what}`]
-          : [`Your email ${what} was withdrawn unsent: the daemon stopped before it was shown to the user in full. Ask again if it is still needed.`, `Withdrawn, not sent (the daemon stopped while showing it): the email ${what}`];
+    const [note, line] = interruptedOutcome(review, what);
     if (!this.d.store.closeSendReview(review.id, review.clot, note)) return;
     await this.d.say(review.clot, line);
     await this.d.chat.deleteChannel(review.channelId).catch(() => undefined);
@@ -210,8 +229,12 @@ export class SendReviews {
     let note: string;
     let line: string;
     if (sent.ok) {
-      const caveat = sent.sentCopy === undefined ? "" : ` (${sent.sentCopy})`;
-      note = `The user approved your email ${what}, and the daemon sent it${caveat}.`;
+      const caveats = [
+        ...(sent.rejected === undefined ? [] : [`the mail server refused ${sent.rejected.join(", ")}, so it did not go to them`]),
+        ...(sent.noCopy === undefined ? [] : [`no copy could be put in Sent: ${sent.noCopy}`]),
+      ];
+      const caveat = caveats.length === 0 ? "" : ` (${caveats.join("; ")})`;
+      note = `The user approved your email ${what}, and the daemon sent it${caveat}.${sent.rejected === undefined ? "" : " It will not be tried again. Tell the user who did not get it."}`;
       line = `Sent, as you approved: the email ${what}${caveat}`;
     } else if (sent.refused) {
       note = `The user approved your email ${what}, but it was not sent: ${sent.reason}. Tell the user.`;
@@ -261,7 +284,10 @@ export class SendReviews {
     const what = headlineOf(review);
     const answers = review.eventId === null ? "" : ` It answered the email ${review.eventId}.`;
     const message = `[Feedback on the email you asked to send ${what}. It was not sent, and its review is closed.${answers} The email was:]\n${quote(mail.text)}\n\n[The user's feedback, from the review channel:]\n${text}`;
+    // Handed over before anything is awaited since the review was closed: the Clot's queue stores it
+    // at once, so a stop cannot fall between closing the review and keeping the feedback.
+    const handed = this.d.feedback(review.clot, message);
+    if (!(await handed)) this.d.store.addNote(review.clot, message);
     await this.d.say(review.clot, `Feedback on the email ${what}, passed on:\n${quote(text)}`);
-    if (!(await this.d.feedback(review.clot, message))) this.d.store.addNote(review.clot, message);
   }
 }

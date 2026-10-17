@@ -22,7 +22,7 @@ import { StoredOAuth } from "./mcp/oauth.js";
 import { CalendarFeed } from "./sources/calendar.js";
 import { calendarScript, describeScriptEvent } from "./sources/calendar-script.js";
 import { draftFates, imapflowClient, MailboxListener, saveDraft, saveSent } from "./sources/imap.js";
-import { SendReviews } from "./send-review.js";
+import { closeAllReviews, SendReviews } from "./send-review.js";
 import { DraftTracker } from "./drafts.js";
 import { linearCommentSender, linearEnricher, linearHandler, linearMember } from "./sources/linear.js";
 import { notionBot, notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
@@ -244,7 +244,9 @@ for (const c of definitions) {
 // A proposal whose channel was removed while the daemon was down can no longer be answered.
 await proposals.closeOrphans();
 // Emails that waited too long for an answer, or whose channel is gone, are withdrawn: now, then every hour.
-if (sendReviews) {
+// With send review off, or no email account left, nothing can answer the reviews still open: they are closed.
+if (!sendReviews) await closeAllReviews({ store, chat, say });
+else {
   await sendReviews.closeStale(true);
   setInterval(() => void sendReviews.closeStale().catch((error) => console.error("[email] closing stale send reviews failed:", error)), 60 * 60_000);
 }
