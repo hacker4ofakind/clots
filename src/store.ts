@@ -70,7 +70,11 @@ export interface SendReviewRow {
   /** The message, as JSON. */
   mail: string;
   openedAt: number;
+  /** Being shown to the user, waiting for the answer, or being sent or saved as a draft after it. */
+  state: SendReviewState;
 }
+
+export type SendReviewState = "posting" | "open" | "sending" | "drafting";
 
 /** Something the daemon has to tell a Clot at the start of its next turn. */
 export interface NoteRow {
@@ -200,7 +204,8 @@ CREATE TABLE IF NOT EXISTS send_reviews (
   account TEXT NOT NULL,
   event_id TEXT,
   mail TEXT NOT NULL,
-  opened_at INTEGER NOT NULL
+  opened_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'open'
 );
 CREATE TABLE IF NOT EXISTS notes (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,7 +277,7 @@ function toProposal(r: any): ProposalRow {
 }
 
 function toSendReview(r: any): SendReviewRow {
-  return { id: r.id, clot: r.clot, channelId: r.channel_id, account: r.account, eventId: r.event_id ?? null, mail: r.mail, openedAt: r.opened_at };
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, account: r.account, eventId: r.event_id ?? null, mail: r.mail, openedAt: r.opened_at, state: r.state };
 }
 
 function toEvent(r: any): EventRow {
@@ -320,6 +325,7 @@ export class Store {
     this.addColumn("sessions", "interrupted_event", "TEXT");
     this.addColumn("sessions", "steered", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("proposals", "session_id", "TEXT");
+    this.addColumn("send_reviews", "state", "TEXT NOT NULL DEFAULT 'open'");
     this.addColumn("events", "account", "TEXT NOT NULL DEFAULT 'github'");
     this.addColumn("events", "place", "TEXT NOT NULL DEFAULT ''");
     // Every event stored before 2c came from GitHub, and its place is its repository.
@@ -580,12 +586,17 @@ export class Store {
     return this.db.prepare("DELETE FROM proposals WHERE id = ?").run(id).changes === 1;
   }
 
-  /** Stores an open send review and returns its ID. */
+  /** Stores a send review and returns its ID. */
   createSendReview(r: Omit<SendReviewRow, "id">): number {
     const info = this.db
-      .prepare("INSERT INTO send_reviews (clot, channel_id, account, event_id, mail, opened_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(r.clot, r.channelId, r.account, r.eventId, r.mail, r.openedAt);
+      .prepare("INSERT INTO send_reviews (clot, channel_id, account, event_id, mail, opened_at, state) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(r.clot, r.channelId, r.account, r.eventId, r.mail, r.openedAt, r.state);
     return Number(info.lastInsertRowid);
+  }
+
+  /** Moves a send review from one state to the next. Returns false when it was not in that state: only the caller that gets true goes on. */
+  moveSendReview(id: number, from: SendReviewState, to: SendReviewState): boolean {
+    return this.db.prepare("UPDATE send_reviews SET state = ? WHERE id = ? AND state = ?").run(to, id, from).changes === 1;
   }
 
   sendReviewByChannel(channelId: string): SendReviewRow | undefined {
@@ -604,8 +615,8 @@ export class Store {
     return this.db.prepare("DELETE FROM send_reviews WHERE id = ?").run(id).changes === 1;
   }
 
-  /** Closes a send review and leaves the Clot a note, together. Returns false when it was closed already. */
-  withdrawSendReview(id: number, clot: string, note: string): boolean {
+  /** Closes a send review and leaves the Clot a note, together, so a stop in between loses neither. Returns false when it was closed already. */
+  closeSendReview(id: number, clot: string, note: string): boolean {
     return this.db.transaction(() => {
       if (!this.deleteSendReview(id)) return false;
       this.addNote(clot, note);

@@ -188,6 +188,48 @@ describe("SendReviews", () => {
     expect(store.openSendReviews()).toHaveLength(1);
   });
 
+  it("takes no answer until the email is shown in full", async () => {
+    const id = await chat.createChannel("cat-graphite", "graphite-mail");
+    store.createSendReview({ clot: "graphite", channelId: id, account: "tady", eventId: null, mail: JSON.stringify(mail()), openedAt: now, state: "posting" });
+    await reviews.onReply(reply(id, "yes"));
+    expect(sent).toEqual([]);
+    expect(chat.postsIn(id).at(-1)).toContain("still being shown");
+    expect(store.openSendReviews()[0].state).toBe("posting");
+  });
+
+  it("takes the same text answering another email as a review of its own", async () => {
+    await reviews.open("graphite", { account: "tady", event: "email:tady:<a@x.com>", mail: mail() });
+    expect(await reviews.open("graphite", { account: "tady", event: "email:tady:<b@x.com>", mail: mail() })).toBe(SEND_FILED);
+    expect(await reviews.open("graphite", { account: "tady", event: "email:tady:<b@x.com>", mail: mail() })).toContain("already with the user");
+  });
+
+  it("does not send on a yes that came after the deadline", async () => {
+    await reviews.open("graphite", { account: "tady", mail: mail() });
+    now += 3 * DAY;
+    await reviews.onReply(reply(channel(), "yes"));
+    expect(sent).toEqual([]);
+    expect(notes()[0]).toContain("withdrawn unsent");
+    expect(store.openSendReviews()).toEqual([]);
+  });
+
+  it("closes, at startup only, the reviews a stop caught half-way, and tries nothing again", async () => {
+    const make = async (state: "posting" | "sending" | "drafting", text: string) =>
+      store.createSendReview({ clot: "graphite", channelId: await chat.createChannel("cat-graphite", "graphite-mail"), account: "tady", eventId: null, mail: JSON.stringify(mail(text)), openedAt: now, state });
+    await make("posting", "A.");
+    await make("sending", "Bb.");
+    await make("drafting", "Ccc.");
+    await reviews.closeStale();
+    expect(store.openSendReviews()).toHaveLength(3);
+    await reviews.closeStale(true);
+    expect(store.openSendReviews()).toEqual([]);
+    const texts = notes();
+    expect(texts[0]).toContain("stopped before it was shown to the user in full");
+    expect(texts[1]).toContain("stopped while sending it: whether it went out is not known");
+    expect(texts[2]).toContain("may or may not be in Drafts");
+    expect(sent).toEqual([]);
+    expect(drafts).toEqual([]);
+  });
+
   it("withdraws a review left unanswered too long, or whose channel is gone", async () => {
     await reviews.open("graphite", { account: "tady", mail: mail() });
     now += 2 * DAY;

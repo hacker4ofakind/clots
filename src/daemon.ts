@@ -245,7 +245,7 @@ for (const c of definitions) {
 await proposals.closeOrphans();
 // Emails that waited too long for an answer, or whose channel is gone, are withdrawn: now, then every hour.
 if (sendReviews) {
-  await sendReviews.closeStale();
+  await sendReviews.closeStale(true);
   setInterval(() => void sendReviews.closeStale().catch((error) => console.error("[email] closing stale send reviews failed:", error)), 60 * 60_000);
 }
 
