@@ -89,22 +89,39 @@ export function sessionExists(container: string, sessionId: string): boolean {
 }
 
 /**
+ * What the container needs at startup. `info` is `docker inspect`'s "<running> <image id>", or
+ * undefined when there is no container. A container made from an older build of the image is
+ * recreated: the image carries Claude Code, and the home and workspace volumes keep the rest.
+ */
+export function containerStep(info: string | undefined, currentImage: string | undefined): "create" | "recreate" | "start" | "none" {
+  if (info === undefined) return "create";
+  const [running, image] = info.split(" ");
+  if (currentImage !== undefined && image !== currentImage) return "recreate";
+  return running === "true" ? "none" : "start";
+}
+
+/**
  * Starts the Clot's container if needed, sets up git in it and clones the repository, when the
  * Clot has one: the home Clot does not. Returns the login of the account that owns the token,
  * when it can be read.
  */
 export async function ensureContainer(o: { clot: string; image: string; repoUrl?: string; githubToken: string }): Promise<string | undefined> {
   const name = containerName(o.clot);
-  const state = await run("docker", ["inspect", "-f", "{{.State.Running}}", name]).then(
-    (r) => r.stdout.trim(),
-    () => "missing",
-  );
-  if (state === "missing") {
+  const [info, currentImage] = await Promise.all([
+    run("docker", ["inspect", "-f", "{{.State.Running}} {{.Image}}", name]).then((r) => r.stdout.trim(), () => undefined),
+    run("docker", ["image", "inspect", "-f", "{{.Id}}", o.image]).then((r) => r.stdout.trim(), () => undefined),
+  ]);
+  const step = containerStep(info, currentImage);
+  if (step === "recreate") {
+    console.log(`[${o.clot}] the image was rebuilt; recreating the container, keeping its volumes`);
+    await run("docker", ["rm", "-f", name]);
+  }
+  if (step === "create" || step === "recreate") {
     await run("docker", [
       "run", "-d", "--name", name, "--restart", "unless-stopped",
       "-v", `${name}-home:/home/clot`, "-v", `${name}-work:/workspace`, o.image,
     ]);
-  } else if (state !== "true") {
+  } else if (step === "start") {
     await run("docker", ["start", name]);
   }
 
