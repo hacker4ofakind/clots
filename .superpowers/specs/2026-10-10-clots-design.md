@@ -398,6 +398,8 @@ design is in `.superpowers/specs/2026-10-14-clots-global-memory-design.md`.
   and administrators, so a message from them in a closed channel is answered with a
   pointer to the live one.
 - While a turn runs, or a recap is being written, the Clot shows as typing.
+- A post pings only the users the daemon mentions itself. Posts carry text from
+  emails, issues and other outsiders, whose `@everyone` or `<@id>` stays text.
 - When a category approaches Discord's channel limit, the oldest session channels
   are deleted. Full transcripts remain on disk.
 - No threads in the first version.
@@ -465,9 +467,12 @@ yet and no recap, it does nothing.
   and opening a pull request.
 - Each of these needs its own explicit yes: merging to the main branch, deploying,
   spending money, deleting data.
-- Anything addressed to a person is written as a draft and never sent, except
-  through a standing rule. An email draft can be saved in the user's own Drafts
-  folder, for the user to send.
+- Nothing addressed to a person goes out without the user's yes. It is written
+  as a draft, sent under a standing rule the user approved, or, for email, put to
+  the user with send review: the daemon shows the email in a temporary channel
+  and sends it only on the user's yes there. A daemon-wide switch turns send
+  review off, leaving drafts and standing rules. An email draft can be saved in
+  the user's own Drafts folder, for the user to send.
 - In the user's calendar a Clot may add events and move or change them, never
   one with guests and never a repeating one. Removing an event needs two yeses:
   the user's in chat, then the user's in a temporary channel where the daemon
@@ -482,9 +487,9 @@ yet and no recap, it does nothing.
   token cannot reach a repository its account is only a collaborator on.)
   On Linear the Clots have a member of their own, as on GitHub. Elsewhere,
   read-only keys unless a standing rule needs more. The one exception is email:
-  the daemon reads the user's own mailboxes, and a standing `email_reply` is sent
-  as the user, from the address the mail came to, with text the user approved
-  word for word.
+  the daemon reads the user's own mailboxes, and sends as the user only text the
+  user approved word for word: a standing `email_reply`, from the address the
+  mail came to, or an email the user approved in its review channel.
 - **Knowing its own work**: the daemon reads the account's login from the token
   at startup. That is how an event the Clot caused itself is recognised (section
   3).
@@ -505,10 +510,12 @@ yet and no recap, it does nothing.
   the container and the scoped credentials are the boundary. In a locked turn the
   lock decides every call.
 - **Privileged actions** (sending from a template, editing the rulebook, posting to
-  chat, saving an email draft, changing the calendar, handing an event to another
-  Clot) exist only as daemon tools, outside the container. Under the lock, the
-  tools that only read (the calendar, the daemon's MCP servers) are allowed,
-  rulebook edits are only proposed, and the rest are refused.
+  chat, saving an email draft, asking to send an email, changing the calendar,
+  handing an event to another Clot) exist only as daemon tools, outside the
+  container. Under the lock, the tools that only read (the calendar, the daemon's
+  MCP servers) are allowed, rulebook edits are only proposed, an email can be put
+  to the user only as the answer to the email being looked into, and the rest are
+  refused.
 - **Secrets** are entered through the `clots` CLI, never through chat.
 
 ### The lock
@@ -786,7 +793,8 @@ Each stage gets its own specification and plan.
    - **2c. More sources**: Stripe, email, Google Calendar, Linear and Notion, watch
      recipes with the daemon's MCP client, and webhook recipes; with them, shared
      sources, routing rules, the routing call and routing corrections, each
-     source's way of sending a standing rule, email drafts and the calendar tools.
+     source's way of sending a standing rule, email drafts, send review and the
+     calendar tools.
      Sentry, Vercel and PostHog are specified there and built later, once each can
      be checked live
      (`.superpowers/specs/2026-10-14-clots-stage-2c-sources-design.md`).

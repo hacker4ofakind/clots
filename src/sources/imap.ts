@@ -24,16 +24,26 @@ export function composeMail(mail: OutgoingMail): Promise<Buffer> {
 }
 
 /** Puts a message in the account's Drafts folder for the user to read, change and send. Nothing is sent. */
-export async function saveDraft(account: EmailAccount, mail: OutgoingMail): Promise<{ mailbox: string }> {
+export function saveDraft(account: EmailAccount, mail: OutgoingMail): Promise<{ mailbox: string }> {
+  return appendMail(account, mail, { use: "\\Drafts", name: /^(\[gmail\]\/)?drafts$/i, flags: ["\\Draft", "\\Seen"], what: "draft", folder: "Drafts" });
+}
+
+/** Puts a copy of a message the daemon sent in the account's Sent folder, as a mail program does. */
+export function saveSent(account: EmailAccount, mail: OutgoingMail): Promise<{ mailbox: string }> {
+  return appendMail(account, mail, { use: "\\Sent", name: SENT_NAME, flags: ["\\Seen"], what: "copy", folder: "Sent" });
+}
+
+const SENT_NAME = /^(\[gmail\]\/)?sent( mail| items| messages)?$/i;
+
+async function appendMail(account: EmailAccount, mail: OutgoingMail, box: { use: string; name: RegExp; flags: string[]; what: string; folder: string }): Promise<{ mailbox: string }> {
   const client = new ImapFlow({ host: account.imap.host, port: account.imap.port, secure: account.imap.port === 993, auth: { user: account.address, pass: account.password }, logger: false });
   await client.connect();
   try {
-    const boxes = await client.list();
-    const drafts = findBox(boxes, "\\Drafts", /^(\[gmail\]\/)?drafts$/i);
-    if (!drafts) throw new Error("the account has no Drafts folder");
-    const appended = await client.append(drafts.path, await composeMail(mail), ["\\Draft", "\\Seen"]);
-    if (!appended) throw new Error(`the server did not take the draft into ${drafts.path}`);
-    return { mailbox: drafts.path };
+    const found = findBox(await client.list(), box.use, box.name);
+    if (!found) throw new Error(`the account has no ${box.folder} folder`);
+    const appended = await client.append(found.path, await composeMail(mail), box.flags);
+    if (!appended) throw new Error(`the server did not take the ${box.what} into ${found.path}`);
+    return { mailbox: found.path };
   } finally {
     await client.logout().catch(() => undefined);
   }
@@ -52,7 +62,7 @@ export async function draftFates(account: EmailAccount, drafts: PendingDraft[]):
   try {
     const boxes = await client.list();
     const draftsBox = findBox(boxes, "\\Drafts", /^(\[gmail\]\/)?drafts$/i);
-    const sentBox = findBox(boxes, "\\Sent", /^(\[gmail\]\/)?sent( mail| items| messages)?$/i);
+    const sentBox = findBox(boxes, "\\Sent", SENT_NAME);
     /**
      * Finds the drafts' copies in the open mailbox: by Message-ID for all of them first, then, among
      * the messages none of those took, by subject and first recipient (in Drafts, by either one, so a

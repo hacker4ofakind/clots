@@ -1,6 +1,7 @@
 import type { CalendarAccount, EmailAccount } from "./config.js";
 import type { CalendarRemoval } from "./proposals.js";
 import { recordDraft } from "./drafts.js";
+import type { SendRequest } from "./send-review.js";
 import { describeSpan, parseWhen, type Occurrence } from "./sources/calendar.js";
 import { describeScriptEvent, type ScriptRequest, type ScriptResult } from "./sources/calendar-script.js";
 import type { Sender } from "./events/github-comment.js";
@@ -38,6 +39,10 @@ export interface DaemonTools {
   routeCorrect(a: { event: string; clot: string }): Promise<string>;
   /** Only when email is set up. */
   emailDraft?(a: { event?: string; account?: string; to?: string[]; subject?: string; text: string }): Promise<string>;
+  /** The email accounts the Clot may write from, as a sentence for the email tools' descriptions. Only when email is set up. */
+  emailAccounts?: string;
+  /** Only when email is set up and send review is on. */
+  emailSend?(a: { event?: string; account?: string; to?: string[]; subject?: string; text: string }): Promise<string>;
   /** Only when a calendar is set up. */
   calendarList?(a: { from?: string; to?: string }): Promise<string>;
   /** Only when a calendar has its script. */
@@ -61,8 +66,8 @@ export interface ToolDeps {
   say: (clot: string, text: string) => Promise<void>;
   /** Moves an event to another Clot. */
   handOver: (from: string, eventId: string, to: string) => Promise<string>;
-  /** The email accounts, and a way to put a draft in one's Drafts folder. Absent when no email is set up. */
-  email?: { accounts: EmailAccount[]; save(account: EmailAccount, mail: OutgoingMail): Promise<{ mailbox: string }> };
+  /** The email accounts, a way to put a draft in one's Drafts folder, and the send reviews when they are on. Absent when no email is set up. */
+  email?: { accounts: EmailAccount[]; save(account: EmailAccount, mail: OutgoingMail): Promise<{ mailbox: string }>; review?: { open(clot: string, req: SendRequest): Promise<string> } };
   /** The calendars, read through their feeds. Absent when no calendar is set up. */
   calendar?: {
     accounts: CalendarAccount[];
@@ -170,7 +175,8 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       return d.handOver(ctx.clot, event, clot);
     },
 
-    ...(d.email === undefined ? {} : { emailDraft: (a: Parameters<NonNullable<DaemonTools["emailDraft"]>>[0]) => emailDraft(d, ctx, a) }),
+    ...(d.email === undefined ? {} : { emailDraft: (a: EmailArgs) => emailDraft(d, ctx, a), emailAccounts: describeEmailAccounts(usable(d.email.accounts, ctx.clot)) }),
+    ...(d.email?.review === undefined ? {} : { emailSend: (a: EmailArgs) => emailSend(d, ctx, a) }),
     ...(d.calendar === undefined ? {} : { calendarList: (a: { from?: string; to?: string }) => calendarList(d, a) }),
     // These only read, so they work under the lock too. Trying a recipe refuses a tool that may change things.
     ...(d.mcp === undefined ? {} : { mcpList: () => d.mcp!.describe() }),
@@ -298,26 +304,60 @@ async function calendarList(d: ToolDeps, a: { from?: string; to?: string }): Pro
 /** The accounts a Clot may write from: those bound to it, and the shared ones. */
 const usable = (accounts: EmailAccount[], clot: string) => accounts.filter((account) => account.clot === undefined || account.clot === clot);
 
-async function emailDraft(d: ToolDeps, ctx: TurnContext, a: { event?: string; account?: string; to?: string[]; subject?: string; text: string }): Promise<string> {
+type EmailArgs = { event?: string; account?: string; to?: string[]; subject?: string; text: string };
+
+/** The accounts a Clot may write from, each with its addresses unless the user keeps them from the Clots. */
+export function describeEmailAccounts(accounts: EmailAccount[]): string {
+  if (accounts.length === 0) return "You have no email account to write a new message from.";
+  const one = (account: EmailAccount) => {
+    if (!account.tellAddress) return `${account.account} (its address is not shown to you)`;
+    const also = account.addresses.length > 0 ? `; mail to ${account.addresses.join(", ")} also arrives there` : "";
+    return `${account.account} (${account.address}${also})`;
+  };
+  return `The email accounts you may write from are the user's own: ${accounts.map(one).join(", ")}.`;
+}
+
+/** The message a draft or a send would be: a reply to an email routed to the Clot, or a new message from an account it may use. A string says why not. */
+function buildMail(d: ToolDeps, ctx: TurnContext, a: EmailArgs): { account: EmailAccount; mail: OutgoingMail } | string {
   const email = d.email!;
-  if (ctx.kind !== "work") return "Refused: drafts are saved in a working turn. While locked, write the draft in your reply; the user's go-ahead lets you save it.";
-  let account: EmailAccount | undefined;
-  let mail: OutgoingMail;
   if (a.event !== undefined) {
     const event = d.store.getEvent(a.event);
     if (!event || event.source !== "email" || event.clot !== ctx.clot) return "Refused: that is not an email that was routed to you. Give the id from the email's block.";
-    account = email.accounts.find((candidate) => candidate.account === event.account);
+    const account = email.accounts.find((candidate) => candidate.account === event.account);
     if (!account) return `Refused: the email account ${event.account} is not configured any more.`;
     const saved = d.store.getState(emailMetaKey(event.id));
     const meta: EmailMeta = saved === undefined ? { messageId: event.ref || undefined, replyTo: "", references: [], subject: event.title } : JSON.parse(saved);
-    mail = replyMail(event, meta, a.text, newMessageId(event.place));
-  } else {
-    const allowed = usable(email.accounts, ctx.clot);
-    account = allowed.find((candidate) => candidate.account === a.account);
-    if (!account) return `Refused: give the event you are answering, or one of these accounts: ${allowed.map((candidate) => candidate.account).join(", ") || "none"}.`;
-    if (!a.to || a.to.length === 0 || !a.subject) return "Refused: a new message needs recipients and a subject.";
-    mail = newMail(account, a.to, a.subject, a.text, newMessageId(account.address));
+    return { account, mail: replyMail(event, meta, a.text, newMessageId(event.place)) };
   }
+  const allowed = usable(email.accounts, ctx.clot);
+  const account = allowed.find((candidate) => candidate.account === a.account);
+  if (!account) return `Refused: give the event you are answering, or one of these accounts: ${allowed.map((candidate) => candidate.account).join(", ") || "none"}.`;
+  if (!a.to || a.to.length === 0 || !a.subject) return "Refused: a new message needs recipients and a subject.";
+  return { account, mail: newMail(account, a.to, a.subject, a.text, newMessageId(account.address)) };
+}
+
+/**
+ * Puts an email to the user, who sends it, drops it, has it saved as a draft, or gives feedback.
+ * Nothing leaves without the user's yes, so it works in every kind of turn; an investigation
+ * may only answer the email it is looking into.
+ */
+async function emailSend(d: ToolDeps, ctx: TurnContext, a: EmailArgs): Promise<string> {
+  if (ctx.kind === "investigation") {
+    const event = ctx.event;
+    const looking = event === undefined ? [] : [event.id, ...(event.kind === "batch" ? d.store.eventsMergedInto(event.id).map((part) => part.id) : [])];
+    if (a.event === undefined || !looking.includes(a.event)) return "Refused: while looking into an event, you can only ask to answer that email. Give its id. A new message can be asked for in a turn the user started.";
+  }
+  const built = buildMail(d, ctx, a);
+  if (typeof built === "string") return built;
+  return d.email!.review!.open(ctx.clot, { account: built.account.account, event: a.event, mail: built.mail });
+}
+
+async function emailDraft(d: ToolDeps, ctx: TurnContext, a: EmailArgs): Promise<string> {
+  const email = d.email!;
+  if (ctx.kind !== "work") return "Refused: drafts are saved in a working turn. While locked, write the draft in your reply; the user's go-ahead lets you save it.";
+  const built = buildMail(d, ctx, a);
+  if (typeof built === "string") return built;
+  const { account, mail } = built;
   let mailbox: string;
   try {
     // Marked as the daemon's own first: if the user sends the draft as it is, its copy is not taken for new mail.

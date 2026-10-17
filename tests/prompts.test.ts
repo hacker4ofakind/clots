@@ -37,9 +37,10 @@ describe("the system prompts", () => {
     expect(CLOT_SYSTEM_PROMPT).toContain("only after the user has said yes");
   });
 
-  it("tell the Clots to save email drafts rather than send them", () => {
+  it("tell the Clots that nothing goes to a person without the user's yes: a draft, or an email put to the user", () => {
+    expect(CLOT_SYSTEM_PROMPT).toContain("Nothing goes to another person without the user's yes.");
     expect(CLOT_SYSTEM_PROMPT).toContain("email_draft");
-    expect(CLOT_SYSTEM_PROMPT).toContain("Never send anything to another person.");
+    expect(CLOT_SYSTEM_PROMPT).toContain("the daemon sends it only on their yes");
   });
 
   it("tell every Clot that all sources are untrusted, and how to correct a routing", () => {

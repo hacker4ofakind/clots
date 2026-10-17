@@ -154,6 +154,9 @@ one that source produces; a rule that names no source may name any kind but
   `shared: true`. A value that is a credential is never written in this file: the
   file names the key in `.env` that holds it.
 - **`mcpServers`**: the daemon's own MCP servers (section 13).
+- **`sendReview`** (optional): `{ "enabled": true, "days": 3 }`, both the
+  defaults. Whether a Clot may ask to send an email, and how many days a request
+  waits for the user's answer (section 9).
 
 GitHub keeps its configuration: a repository is bound to the Clot whose `repoUrl`
 names it, and the home Clot takes the rest (2b section 9).
@@ -350,7 +353,9 @@ way of sending to it.
 address), `addresses` (other addresses the account receives for, such as
 `support@…` delivered into it; optional), `password` (the `.env` key), `imap` and
 `smtp` (host and port; Gmail's are the defaults when the address ends in
-`@gmail.com`), and `mailboxes` (the folders or Gmail labels the daemon watches).
+`@gmail.com`), `mailboxes` (the folders or Gmail labels the daemon watches), and
+`tellAddress` (optional, default true: whether the Clots are told the account's
+addresses or only its name).
 
 **Setup:** for Gmail, 2-step verification and an app password; a Gmail filter that
 puts the right mail under a label, or mail sent to `+aliases`; and each alias that
@@ -406,12 +411,15 @@ their mail client.
 - A reply is addressed to the sender (its `Reply-To` when there is one), its
   subject starts with "Re:", it carries `In-Reply-To` and `References`, and it is
   from the address the original was sent to.
-- A new message is from the account's address.
+- A new message is from the account's address. The tool's description lists the
+  accounts the Clot may write from (those bound to it and the shared ones), each
+  with its address and the other addresses it receives for, unless its
+  `tellAddress` is false; then only its name.
 - Plain text only. The daemon posts the draft in the Clot's live channel.
 - Allowed in a working turn only. Under the lock it is refused: an investigation
   writes its draft in its reply, and the user's go-ahead lets the next turn save
   it.
-- Nothing is sent. Sending stays the user's, as the parent design says.
+- Nothing is sent: the user sends it from their mail.
 
 The daemon follows each draft a Clot saves, so the Clot knows what the user did
 with it. Before any of that Clot's turns (a message from the user, or an event
@@ -444,13 +452,75 @@ that triage let through), it signs in to the account and looks for the draft:
 - A lookup that fails is tried again before the next turn. A draft nobody has
   sent or deleted after thirty days is no longer followed.
 
+### Send review
+
+`email_send` asks to send an email, with the same fields as `email_draft`. The
+daemon builds the message as for a draft, sends nothing, and shows it to the user
+in a temporary channel, `<clot>-mail` (then `-2`, `-3`), with its From, To,
+Subject, the email it answers if any, and the full text. The Clot is told it was
+filed and not to say it was sent. A daemon-wide switch, `sendReview.enabled`
+(default on), turns this off: the tool is then not offered.
+
+- **Where:** in working and brainstorm turns, a reply to an email routed to the
+  Clot or a new message from an account it may use. In an investigation, only a
+  reply to the email being looked into (or one gathered into its batch). Nothing
+  leaves without the user's yes, so a steered event does not block it.
+- **Limits:** at most as many open requests per Clot as proposals
+  (`CLOTS_MAX_PROPOSALS`, counted separately). The same email, to the same
+  people, answering the same email, is not filed twice.
+- **Shown in full first:** a request is answerable only once the whole email and
+  the list of answers are in the channel. An answer before that is told to wait.
+- **Answers,** from the user only:
+  - `yes`, `sure`, `do that`, `yeah`: the daemon sends it over SMTP, as the
+    user, and puts a copy in Sent (below).
+  - `no`, `dont`, `not at all`: dropped. The Clot is told not to ask again unless
+    the user asks.
+  - `draft`: saved in Drafts, as `email_draft` would, and followed the same way.
+    If it cannot be saved, nothing is sent and the question stays open in the
+    same channel.
+  - Anything else is feedback. The daemon hands it to the Clot, quoting the email
+    and naming the email it answered, exactly as a message the user typed in the
+    live channel: a turn starts if none is running, or it joins the running turn
+    like any message of the user's. The Clot revises and calls `email_send`
+    again, which opens a new channel. The daemon also shows the feedback in the
+    live channel.
+- **Closing:** the channel is deleted as soon as the user answers, except on
+  `draft`, where it stays until the draft is saved. Each outcome is posted in the
+  live channel and left to the Clot as a note at its next turn.
+- **Once only:** an answer moves the request out of "open" before anything is
+  done, so a second answer does nothing. A request closes together with the note
+  that tells the Clot its outcome.
+- **Sending fails:** a 5xx answer means it was not sent. Any other failure means
+  it may or may not have gone; it is never tried again, and the Clot is told to
+  tell the user. Recipients the server refused while taking the others are
+  named in the outcome, and not tried again.
+- **Lifetime:** a request survives the Clot's session closing and the daemon
+  restarting. It is withdrawn unsent after `sendReview.days` (default 3)
+  without an answer, or when its channel is removed. This is checked at startup,
+  every hour, and when an answer comes, so a yes after the deadline sends
+  nothing.
+- **Stopped half-way:** at startup, a request the daemon stopped while showing,
+  sending or saving it is closed, and the Clot and the user are told the outcome
+  is unknown. Nothing is tried again.
+- **Switched off:** at a start with send review off, or no email account left,
+  every open request is closed the same way, unsent.
+
 ### Standing replies
 
 A standing rule with `via: email_reply` sends its template over SMTP, through
 `nodemailer`, as a reply to the email event that triggered it: to the sender, in
-the thread, from the address the original was sent to. This is the one place a
-Clot sends as the user: a template the user approved word for word, sent from the
-address the mail came to. Section 17 has the rules every way of sending shares.
+the thread, from the address the original was sent to. A Clot sends as the user
+only here and through send review: text the user approved word for word. Section
+17 has the rules every way of sending shares.
+
+### Copies in Sent
+
+Mail the daemon sends, standing replies and approved emails alike, is put in the
+account's Sent folder over IMAP afterwards, as a mail program does. Gmail is
+skipped, because it files what goes through its SMTP server by itself. A copy that
+cannot be made is logged and named in the outcome; the mail has gone all the same.
+Each message is known as the daemon's own before it leaves, so its copy never
+comes back as new mail.
 
 ## 10. Google Calendar
 
@@ -954,6 +1024,7 @@ The tools 2c adds, and where they may run:
 | `route_correct` | Hands an event to another Clot (section 7) | yes | refused |
 | `rulebook_routing` | Adds or removes a routing rule | proposal | proposal |
 | `email_draft` | Saves a draft (section 9) | yes | refused |
+| `email_send` | Puts an email to the user, who sends it, drops it, has it saved as a draft or gives feedback (section 9); only with send review on | yes | only a reply to the email looked into |
 | `calendar_list` | Reads the schedule (section 10) | yes | yes |
 | `calendar_write` | Creates or changes an event (section 10) | with no steered event | refused |
 | `calendar_remove` | Puts a removal to the user (section 10) | only in a turn the user started with no steered event | refused |
@@ -978,6 +1049,10 @@ It gains:
   invitations and email included, is untrusted data;
 - the new tools, and that drafts, calendar changes and routing corrections happen
   in working turns;
+- that nothing goes to another person without the user's yes: a draft, a
+  standing rule, or, where `email_send` is offered, an email the user reviews in
+  its channel, which an investigation may use to put its reply to an email to
+  the user at once;
 - for `calendar_remove`: to ask the user in chat first, naming the event, and to
   call the tool only after the user's yes.
 

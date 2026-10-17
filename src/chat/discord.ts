@@ -12,6 +12,8 @@ export class DiscordChat implements ChatAdapter {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent],
   });
   private guild!: Guild;
+  /** The users the daemon has mentioned: the only ones a post may ping. */
+  private mentioned = new Set<string>();
 
   constructor(private token: string, private guildId: string) {}
 
@@ -45,7 +47,9 @@ export class DiscordChat implements ChatAdapter {
 
   async post(channelId: string, text: string): Promise<void> {
     const channel = await this.textChannel(channelId);
-    for (const part of splitMessage(text)) await channel.send(part);
+    // Only those the daemon mentions itself are pinged: posts carry text from emails and other outsiders,
+    // whose @everyone or <@id> must stay text.
+    for (const part of splitMessage(text)) await channel.send({ content: part, allowedMentions: { parse: [], users: [...this.mentioned] } });
   }
 
   async postActivity(channelId: string, activity: TurnActivity): Promise<void> {
@@ -78,6 +82,7 @@ export class DiscordChat implements ChatAdapter {
   }
 
   mention(userId: string): string {
+    this.mentioned.add(userId);
     return `<@${userId}>`;
   }
 

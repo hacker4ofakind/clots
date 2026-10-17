@@ -114,7 +114,7 @@ export function toolServer(tools: DaemonTools) {
         : [
             tool(
               "email_draft",
-              "Saves an email as a draft in the user's mailbox, for the user to read, change and send. Nothing is sent. To answer an email event, give its id and your text: the draft answers its sender, in its thread, from the address it came to. For a new message, give the account, the recipients and a subject. Works in a working turn only.",
+              `Saves an email as a draft in the user's mailbox, for the user to read, change and send. Nothing is sent. To answer an email event, give its id and your text: the draft answers its sender, in its thread, from the address it came to. For a new message, give the account, the recipients and a subject. Works in a working turn only. ${tools.emailAccounts ?? ""}`.trim(),
               {
                 event: z.string().optional().describe("The id of the email you are answering."),
                 account: z.string().optional().describe("For a new message: the email account to write from."),
@@ -123,6 +123,23 @@ export function toolServer(tools: DaemonTools) {
                 text: z.string().min(1).describe("The message, in plain text."),
               },
               (a) => reply(() => tools.emailDraft!({ event: a.event, account: a.account, to: a.to, subject: a.subject, text: a.text })),
+              always,
+            ),
+          ]),
+      ...(tools.emailSend === undefined
+        ? []
+        : [
+            tool(
+              "email_send",
+              `Asks to send an email. The daemon shows it to the user in a separate channel and sends it only on their yes; they may also drop it, have it saved as a draft, or give feedback, which reaches you as a message from them: revise the email and call this again. Takes the same fields as email_draft. Works in every kind of turn; while looking into an event, only to answer that email. ${tools.emailAccounts ?? ""}`.trim(),
+              {
+                event: z.string().optional().describe("The id of the email you are answering."),
+                account: z.string().optional().describe("For a new message: the email account to write from."),
+                to: z.array(z.string()).optional().describe("For a new message: the recipients' addresses."),
+                subject: z.string().optional().describe("For a new message: the subject."),
+                text: z.string().min(1).describe("The message, in plain text."),
+              },
+              (a) => reply(() => tools.emailSend!({ event: a.event, account: a.account, to: a.to, subject: a.subject, text: a.text })),
               always,
             ),
           ]),

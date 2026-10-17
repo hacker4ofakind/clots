@@ -5,7 +5,7 @@ import { emailMetaKey, ownMessageKey } from "../src/sources/email.js";
 import { MailboxListener, startPosition, type FetchedMail, type ImapClient } from "../src/sources/imap.js";
 import { Store } from "../src/store.js";
 
-const account: EmailAccount = { account: "gmail", shared: true, address: "me@gmail.com", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["Clots"] };
+const account: EmailAccount = { account: "gmail", shared: true, address: "me@gmail.com", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["Clots"], tellAddress: true };
 
 const message = (n: number) => Buffer.from([`Message-ID: <m${n}@x.com>`, "From: jane@x.com", "To: me+shop@gmail.com", `Subject: Message ${n}`, "", `Body ${n}`].join("\r\n"));
 

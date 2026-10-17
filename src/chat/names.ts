@@ -33,6 +33,11 @@ export function calChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-cal`, existing);
 }
 
+/** The temporary channel in which the user reviews an email a Clot asks to send: `project-mail`, then `-2`, `-3` while others are open. */
+export function mailChannelName(project: string, existing: string[]): string {
+  return firstFree(`${slug(project)}-mail`, existing);
+}
+
 /** The temporary channel in which the user is asked about a global memory: `home-memory`, then `-2`, `-3` while others are open. */
 export function memoryChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-memory`, existing);
