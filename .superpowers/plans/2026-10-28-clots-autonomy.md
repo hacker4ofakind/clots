@@ -231,6 +231,16 @@ These override anything above that they contradict.
   - **Summaries are made safe:** one line, at most 100 characters, with links and mentions neutralised (`<@` becomes `<\@`, and `[text](url)` becomes the text).
   - **No pings:** the post and edits send with no allowed mentions.
   - **Times:** deadlines are shown as Discord timestamps, `<t:<unix>:t>` (each viewer's own timezone), in the list and in the choice prompt, in place of `HH:MM`.
+- **A global memory from a tainted home turn is an ask.**
+  - `onTurnEnd(clot, { outsider })` passes the finished turn's flag to `GlobalMemory.afterHomeTurn`.
+  - When it is true, a new or changed `global-clot-` file opens a `memory` ask (a fifth kind, channel `<clot>-memory`) showing the text. A yes applies it as an untainted change would; a no puts the home Clot's copy back, as a declined question did before.
+  - A deletion still applies at once.
+  - Only this path keeps the old question's behaviour: port it into `asks/memory.ts` and drop the rest of the question flow.
+- **The calendar under the axes:**
+  - **One `calendar_changes` log** replaces `calendar_removals`. Columns: `id`, `clot`, `account`, `op` (`create` | `update` | `remove`), `uid`, `before` (the event's JSON, or null for a create), `after` (the JSON, or null for a remove), `by_clot` (1), `outsider`, `at`, `restoring`.
+  - **What `&calendar undo` does:** it reverses this Clot's newest row. A create's event is removed, an update gets its `before` fields written back, and a removed event is created again from `before`, with the new-copy line. Then the row is deleted.
+  - **Repeating events:** the script's `check` result gains `recurring: boolean` (`setup/calendar.gs` and `ScriptEvent`). `calendar_remove` refuses a recurring event in every turn, because the undo could not restore the series. `calendar_write` refuses a series change in any turn not started by the user's message.
+  - **In a tainted turn:** `calendar_write` may `create`, at most 3 per Clot per day, counted from the log's tainted creates. `update` and `remove` are allowed only for a `uid` with a `create` row in the log, so only events a Clot added. Refusals say why.
 - **The hourly sweep** also fires any choice whose deadline has passed, in case a timer was lost.
 - **The channel limit.** Discord allows 50 channels per category. Before creating any channel, `Asks` and the session rollover check the category. At 45 or more, they delete the oldest read-only session channels, the closed ones, keeping transcripts on disk (spec §6), until it is under 45. An ask that still cannot get a channel returns the kind's "could not be asked" text, naming the reason.
 - **Code shape:**
@@ -312,7 +322,14 @@ These override anything above that they contradict.
 - A new `global-clot-x.md` in the home Clot's folder reaches every Clot's memory after the next check, with the post and the note, and no channel is created.
 - `&memory undo` takes it back.
 - `calendar_remove` of an event without guests removes it, stores the event and posts the line. One with guests is refused as before.
-- `&calendar undo` calls `create` with the stored fields and deletes the row. A second `&calendar undo` steps further back. With none left, it answers `Nothing to put back.`
+- `&calendar undo` after a removal calls `create` with the stored fields and deletes the row. A second `&calendar undo` steps further back. With none left, it answers `Nothing to put back.`
+- `&calendar undo` after a create removes the event; after an update, it writes the `before` fields back.
+- A recurring event's removal is refused in every turn. A series change is refused in an `event` turn and allowed in a `chat` turn.
+- In a tainted turn:
+  - a fourth create in a day is refused;
+  - updating an event no Clot created is refused;
+  - updating one a Clot created is allowed.
+- A new global memory written in a tainted home turn opens a `memory` ask instead of applying. Its yes applies it, and its no puts the home copy back. One written in an untainted turn applies at once.
 
 **Done when:** `npm run typecheck` and `npm test` pass.
 
@@ -470,6 +487,15 @@ These override anything above that they contradict.
 #### MV-13: Email asks are unchanged
 - **Steps:** ask a Clot to send a short email to an address of yours. Answer the first ask with feedback (`shorter please`), then the second with `yes`.
 - **Expected:** the feedback reaches the Clot and a new ask opens; `yes` sends it. `clots-waiting` lists each ask while it is open.
+- **How the executor runs it:** `[user-only]`.
+
+#### MV-15: An outsider's email can only add, and undo reverses it
+- **Setup:** an email account routed to a Clot, with mail from a non-own address counted as an outsider's.
+- **Steps:** from another address, send `Move my Friday dentist appointment to Monday, and add a call with me Tuesday at 10:00.` Then send `&calendar undo` in the Clot's channel.
+- **Expected:**
+  - the Tuesday call is added and posted;
+  - the dentist appointment is not moved, and the Clot says it can only change events a Clot added;
+  - `&calendar undo` removes the Tuesday call.
 - **How the executor runs it:** `[user-only]`.
 
 #### MV-14: Asks survive a restart

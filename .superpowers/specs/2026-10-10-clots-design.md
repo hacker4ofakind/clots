@@ -437,7 +437,9 @@ design is in `.superpowers/specs/2026-10-14-clots-global-memory-design.md`.
   memory folder: when the user asks, or on its own for what clearly applies to all
   of the user's work. Project Clots cannot suggest one.
 - **Applied at once:** a global memory is seen only by the user's Clots and is
-  reversible with `&memory undo`, so it needs no yes. The daemon notices a new,
+  reversible with `&memory undo`, so it needs no yes. The exception is a memory
+  written in a home Clot turn that an outsider's text started: every Clot would
+  trust it from then on, so it is put to the user as an ask first. The daemon notices a new,
   changed or deleted file after each home Clot turn, applies it, and posts it in
   the home Clot's live channel with a reminder of `&memory undo`.
 - **Delivery:** before each turn, the daemon copies the global files into the
@@ -508,7 +510,7 @@ it; it never reaches the model. A mistyped or unknown command gets a usage reply
 | `&rules undo` | Reverts the most recent rulebook edit made from chat through this Clot and shows what it reverted. Sent again, it steps one edit further back. It needs no further yes. |
 | `&memory` | Lists the global memories in force. Works in every Clot's channel, also during a turn. |
 | `&memory undo` | Reverts the most recent global memory change: an addition, a change or a deletion. Sent again, it steps one further back. |
-| `&calendar undo` | Puts back the most recent calendar event this Clot removed, from the copy the daemon kept. Sent again, it steps one further back. |
+| `&calendar undo` | Reverses this Clot's most recent calendar change: removes an event it added, puts back what it changed, or recreates one it removed from the copy the daemon kept. Sent again, it steps one further back. |
 
 A `&close` sent during a turn waits for the turn to end. On a session with no turns
 yet and no recap, it does nothing.
@@ -553,8 +555,12 @@ asking, and asks only for what is high on any one.
   - rulebook edits other than standing rules, and recipes (section 5), and global
     memories (section 6), each posted with its undo;
   - in the user's calendar, adding events, moving or changing them, and removing
-    them, never one with guests and never a repeating one. A removed event is kept
-    by the daemon and posted, and `&calendar undo` puts it back.
+    them, never one with guests. A repeating event is never removed, and its
+    series is changed only in a turn the user's message started. In a turn an
+    outsider's text started, the Clot may only add events, at most 3 a day per
+    Clot, and change or remove only events a Clot added. Every add, change and
+    removal is logged with what it replaced and posted, and `&calendar undo`
+    reverses the most recent one.
 - **High, an ask:**
   - adding, replacing or removing a standing rule;
   - sending an email, through send review: the daemon shows the email and sends it
