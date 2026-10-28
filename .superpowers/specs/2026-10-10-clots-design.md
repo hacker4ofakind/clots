@@ -2,8 +2,8 @@
 
 Date: 2026-10-10
 Status: approved in brainstorming. Stages 1, 2a, 2b and 2c (but for Sentry, Vercel
-and PostHog) and global memory are implemented. The main session and workers
-(section 4) and autonomy (sections 3 and 7) are the next two parts, before 2d.
+and PostHog), global memory, and the main session and workers (section 4) are
+implemented. Autonomy (sections 3 and 7) is the next part, before 2d.
 
 ## 1. What Clots is
 
@@ -547,7 +547,13 @@ asking, and asks only for what is high on any one.
   - a comment, review or reply that reaches a person on any source;
   - merging to the default branch, and deploying. A Clot commits straight to the
     default branch only when the user asks for it in chat, which is then the ask's
-    answer;
+    answer. A pull request is merged with the daemon tool
+    `merge_pull_request(number)`, which only the main session has. It may call it
+    on its own, for example to suggest shipping a pull request once the user has
+    checked it; the daemon then opens the ask, showing the pull request's title,
+    link and checks, and merges only on the user's yes there. The tool refuses a
+    pull request that is not on one of the Clot's own `clot/` branches or is a
+    draft;
   - anything that spends $5 or more, and anything that accepts terms or makes a
     promise in the user's name.
 
