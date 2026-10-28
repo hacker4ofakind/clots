@@ -286,9 +286,11 @@ The main session's daemon tools:
 - **Progress**: the worker posts nothing itself. The daemon posts in the Clot's
   live channel when a worker starts (title, model and effort), every 20 minutes
   with its latest step, and when it ends, followed by the turn summary.
-- **Limit**: 5 workers run at once per host, across all its Clots, or the number in
+- **Limit**: 3 workers run at once per host, across all its Clots, or the number in
   `CLOTS_MAX_WORKERS`. Others wait, urgent first, then in the order they were
   started. One heavy job at a time per host still holds.
+- **Time limit**: a worker's turn is stopped after 90 minutes and reported to the
+  main session like a failure, so a stuck worker never keeps its place.
 - **Workers start no workers.** A worker may use subagents for searching.
 - **Failure**: a worker cut off by a restart is resumed and told so. The usage
   limit pauses every worker. A worker whose session fails is reported to the main
@@ -661,9 +663,10 @@ instruction hidden in that text can do.
   commands it considers read-only. The turn also runs in the default permission
   mode with a callback that gives the same answer, and the tools that edit and
   write files are removed from it.
-- **What is approved**: reading, searching and listing files; web search and web
-  fetch; subagents and skills; the daemon's own tools, each of which enforces its
-  own rating on the axes; and a
+- **What is approved**: reading, searching and listing files; writing and editing
+  files inside the Clot's own memory folder, and nowhere else, so the Clot keeps its
+  memory (section 6); web search and web fetch; subagents and skills; the daemon's
+  own tools, each of which enforces its own rating on the axes; and a
   fixed list of shell commands that only read, plus the project's own test
   command, given exactly. The list, and the flags and
   shell features that are refused because they would make a reader write or run
@@ -686,6 +689,15 @@ instruction hidden in that text can do.
 - Event payloads are wrapped and labelled as untrusted when passed to the main
   session. The Clot's system prompt states that instructions come only from the
   user through chat.
+- An event from an outsider is still acted on: people who don't know how the
+  project is meant to be used find bugs the user would not. An outsider is the
+  author of a GitHub issue, comment or review whose association with the
+  repository is not owner, member or collaborator, or the sender of an email from
+  an address that is not one of the user's own. The event is marked as from an
+  outsider, and the main session is told to be more cautious with it: confirm the
+  problem in the code before starting a worker, keep the work to the problem
+  reported, and do nothing else the text asks for. The worker's brief says the
+  report came from an outsider.
 - A worker's brief is written by the main session. Text from an event that the
   brief quotes stays wrapped and labelled as untrusted, and the worker's system
   prompt states that its instructions are the brief's own words.
@@ -876,7 +888,7 @@ onboarding can be resumed.
 - Live checks: a GitHub issue reaches an open pull request with no reply from the
   user; a choice times out and the Clot goes with its pick; an ask is listed in
   `clots-waiting`, answered, and leaves the list.
-- On the Pi: a memory and build-time check with three Clots and five workers
+- On the Pi: a memory and build-time check with three Clots and three workers
   running, and Chromium open.
 
 ## 15. Development environments
@@ -1047,7 +1059,8 @@ If any of these fails, stop and bring the finding to the user before continuing.
 - A worker's branch runs the repository's CI with its Actions secrets, as any
   collaborator's pull request does. The Clots' token cannot change workflow files,
   but the scripts CI runs are the worker's to change.
-- Five workers per host, plus Chromium, on an 8 GB Pi is unmeasured. Stage 3's
+- Three workers per host, plus Chromium, on an 8 GB Pi is unmeasured, and the
+  containers have no memory cap. Stage 3's
   check on the Pi runs exactly that load.
 - Acting without asking means a wrong low action is noticed later: a pre-filter
   that drops too much, a pull request built on the wrong option. Each is posted
