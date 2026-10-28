@@ -24,6 +24,10 @@ describe("guardCommand", () => {
     "grep -r mailer src",
     "gh pr list -R o/r",
     "git remote -v",
+    "gh pr close --delete-branch",
+    "gh pr edit --add-label bug --title x",
+    "env gh pr view",
+    "timeout 60 gh pr checks",
   ])("lets %s through", (line) => {
     expect(guardCommand(line, worker)).toEqual({ ok: true });
   });
@@ -46,6 +50,9 @@ describe("guardCommand", () => {
     "gh pr review --approve",
     "gh pr close 7",
     "gh pr edit 7 --title x",
+    "gh pr close --delete-branch 42",
+    "gh pr edit --add-label bug 7",
+    "gh pr edit --title x 7",
     "gh issue comment 1 -b hi",
     "gh issue close 1",
     "gh release create v1",
@@ -83,6 +90,12 @@ describe("guardCommand", () => {
   it("refuses a home Clot worker's push of any other branch, and its pull request in a named repository", () => {
     expect(guardCommand("git push origin feature", home).ok).toBe(false);
     expect(guardCommand(`gh pr create -R a/b --title x --body-file f`, home).ok).toBe(false);
+  });
+
+  it("refuses a wrapper given options, which could take the command's place", () => {
+    for (const line of ["env -u UNUSED gh pr merge 42", "env -u X git push origin main", "sudo -u root gh pr merge 1", "timeout -s KILL 10 gh pr merge 3", "xargs -I {} gh pr merge {}"]) {
+      expect(guardCommand(line, worker).ok).toBe(false);
+    }
   });
 
   it("refuses a substitution for its syntax only, with the hint and without the main-session sentence", () => {

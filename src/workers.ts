@@ -13,6 +13,8 @@ const RESTART_PACE_MS = 30_000;
 const IDLE_EXPIRY_MS = 7 * 24 * 60 * MINUTE;
 const HOUR = 60 * MINUTE;
 const MAX_LISTED = 20;
+/** The state key that keeps the usage limit's reset, in Unix milliseconds, across a restart. */
+const PAUSE_KEY = "workers-paused-until";
 const MAX_BRIEF = 20_000;
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh"];
 
@@ -29,7 +31,7 @@ export interface WorkersDeps {
     sessionExists(clot: string, sessionId: string): Promise<boolean>;
   };
   /** The pull requests GitHub has for a branch. Absent in tests that do not need it. */
-  prsForBranch?(clot: string, branch: string, repo: string): Promise<{ number: number; url: string; state: string }[]>;
+  prsForBranch?(clot: string, branch: string, repo: string): Promise<{ number: number; url: string; state: string; isCrossRepository?: boolean }[]>;
   /** Whether the Clot is in the configuration. A queued worker of a removed Clot waits. */
   knows(clot: string): boolean;
   /** The Clot's repository as owner/name, lowercased, or null for the home Clot. */
@@ -160,19 +162,31 @@ export class Workers {
     const until = resetsAt * 1000;
     if (this.pausedUntil !== null && this.pausedUntil >= until) return;
     this.pausedUntil = until;
+    // Kept, so a restart before the reset still waits for it.
+    this.d.store.setState(PAUSE_KEY, String(until));
+    this.setWake(until);
+  }
+
+  private setWake(until: number): void {
     this.cancelWake?.();
     this.cancelWake = this.d.after(Math.max(0, until - this.d.now()), () => this.wake());
   }
 
-  /** Database only, before the Clots start: their first turns can start workers. */
+  /**
+   * Database only, before the Clots start: their first turns can start workers. Every worker that
+   * was waiting goes back in the queue: one cut off by a restart or by the usage limit, one waiting
+   * to retry a turn that failed to start, one with messages. A pause still in force holds them back.
+   */
   recover(): void {
     const { store } = this.d;
+    const paused = Number(store.getState(PAUSE_KEY) ?? "0");
+    if (paused > this.d.now()) this.pausedUntil = paused;
     for (const w of store.workersWithStatus("running")) {
       store.setWorker(w.id, { interrupted: true });
       store.queueWorker(w.id);
     }
     for (const w of store.workersWithStatus("idle")) {
-      if (store.hasWorkerMessages(w.id) || (w.interrupted && w.retries > 0)) store.queueWorker(w.id);
+      if (store.hasWorkerMessages(w.id) || w.interrupted || w.retries > 0) store.queueWorker(w.id);
     }
   }
 
@@ -186,6 +200,7 @@ export class Workers {
       store.addNote(w.clot, `Worker ${shortId(w.id)} "${w.title}" could not be resumed: its worktree is gone. Its branch is kept.`);
     }
     await this.reconcile();
+    if (this.pausedUntil !== null) this.setWake(this.pausedUntil);
     this.d.every(HOUR, () => void this.reconcile().then(() => this.expire()));
     this.ready = true;
     this.pacing = true;
@@ -273,13 +288,25 @@ export class Workers {
     this.live.set(w.id, slot);
     store.setWorker(w.id, { status: "running" });
 
+    // A stop or a closed pull request can come during any await below. They set the status first,
+    // so it is checked after each: the turn does not start, and a worktree made meanwhile goes.
+    const cancelled = async (made: boolean): Promise<boolean> => {
+      if (store.getWorker(w.id)!.status === "running") return false;
+      this.live.delete(w.id);
+      if (made) await this.d.container.removeWorktree(w.clot, w.worktree).catch((error) => console.error(`[${w.clot}] removing worker ${w.id}'s worktree failed:`, error));
+      this.dispatch();
+      return true;
+    };
+
     let worker = w;
     try {
       if (!this.hasPlace(w)) {
         const home = this.d.repoOf(w.clot) === null;
         const base = home ? null : await this.d.container.defaultBranch(w.clot);
+        if (await cancelled(false)) return undefined;
         await this.d.container.addWorktree(w.clot, { workerId: w.id, branch: w.branch, base });
         store.setWorker(w.id, { base });
+        if (await cancelled(true)) return undefined;
         worker = store.getWorker(w.id)!;
         await this.d.say(w.clot, `Started: ${w.title} (${modelLabel(w.model, w.effort)})`);
       } else if (await this.closedOnGithub(w)) {
@@ -287,21 +314,18 @@ export class Workers {
       }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      if (await cancelled(false)) return undefined;
       this.live.delete(w.id);
       store.setWorker(w.id, { status: "failed", failure: reason });
       await this.d.say(w.clot, `Worker failed: ${w.title}`);
       this.dispatch();
       return reason;
     }
-    // Stopped or closed while the worktree was being made.
-    if (store.getWorker(w.id)!.status !== "running") {
-      this.live.delete(w.id);
-      this.dispatch();
-      return undefined;
-    }
+    if (await cancelled(false)) return undefined;
 
     const first = worker.turnSeq === 0 && !worker.started;
     const resume = worker.started || (await this.d.container.sessionExists(w.clot, w.id).catch(() => false));
+    if (await cancelled(false)) return undefined;
     const messages = store.takeWorkerMessages(w.id);
     const seq = worker.turnSeq + 1;
     store.setWorker(w.id, { asked: null, interrupted: false, turnSeq: seq, idleSince: null });
@@ -390,8 +414,12 @@ export class Workers {
       }
 
       const report = slot.buffer.report();
-      const link = prLink(report);
-      const change = { status: "idle" as const, started, retries: 0, idleSince: this.d.now(), ...(w.prUrl === null && link ? { prUrl: link } : {}) };
+      // The link is a hint until GitHub confirms it: it gives a home worker the repository to ask
+      // about, so a missed webhook is still caught by the hourly check.
+      const link = w.prUrl === null ? prLink(report) : undefined;
+      const parsed = link === undefined ? undefined : /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/.exec(link);
+      const fromLink = parsed ? { prUrl: link, prRepo: w.prRepo ?? parsed[1].toLowerCase(), prNumber: Number(parsed[2]) } : {};
+      const change = { status: "idle" as const, started, retries: 0, idleSince: this.d.now(), ...fromLink };
       if (w.asked !== null) {
         const under = report.trim() === "" ? "" : `\n\n[What it wrote after asking:]\n${report}`;
         this.toMainAndSet(w, rowId, `[Question from worker ${shortId(id)}, ${name}. Answer it with message_worker, or ask the user.]\n${w.asked}${under}`, change);
@@ -437,6 +465,7 @@ export class Workers {
   /** The usage limit has reset: every worker it cut off carries on. */
   private wake(): void {
     this.pausedUntil = null;
+    this.d.store.setState(PAUSE_KEY, "0");
     for (const w of this.d.store.workersWithStatus("idle")) if (w.interrupted) this.d.store.queueWorker(w.id);
     this.dispatch();
   }
@@ -445,8 +474,11 @@ export class Workers {
   private async closedOnGithub(w: WorkerRow): Promise<boolean> {
     const repo = this.d.repoOf(w.clot) ?? w.prRepo;
     if (!this.d.prsForBranch || w.branch === null || repo === null) return false;
-    const prs = await this.d.prsForBranch(w.clot, w.branch, repo).catch(() => undefined);
-    const pr = prs?.sort((a, b) => b.number - a.number)[0];
+    const found = await this.d.prsForBranch(w.clot, w.branch, repo).catch(() => undefined);
+    // A fork's branch can have the same name: only the repository's own pull requests count,
+    // and the one the worker is known to have comes first.
+    const own = (found ?? []).filter((pr) => pr.isCrossRepository !== true).sort((a, b) => b.number - a.number);
+    const pr = own.find((p) => p.number === w.prNumber) ?? own[0];
     if (!pr) return false;
     if (pr.state === "OPEN") {
       if (w.prNumber !== pr.number) this.d.store.setWorker(w.id, { prNumber: pr.number, prUrl: pr.url, prRepo: repo });

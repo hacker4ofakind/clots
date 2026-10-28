@@ -449,6 +449,142 @@ describe("Workers after a restart", () => {
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("closed");
     expect(runner.turns).toHaveLength(1);
   });
+
+  /** Stops this daemon's Workers and starts a fresh one on the same database, as a restart does. */
+  async function restart(): Promise<Workers> {
+    runner = new FakeRunner();
+    timers = [];
+    const again = build();
+    again.recover();
+    await again.startUp();
+    await settle();
+    return again;
+  }
+
+  it("keeps a worker the usage limit cut off waiting for the reset across a restart, then resumes it", async () => {
+    await workers.start("graphite", fix);
+    const resetsAt = Math.floor(clock / 1000) + 3600;
+    finishTurn(runner.turns[0], { ok: false, limit: { resetsAt } });
+    await settle();
+
+    await restart();
+    expect(runner.turns).toHaveLength(0);
+    await advance(3600 * 1000);
+    await settle();
+    expect(runner.turns).toHaveLength(1);
+    expect(runner.turns[0].req.prompt.startsWith("[Your previous turn was cut off")).toBe(true);
+  });
+
+  it("retries after a restart a worker that was waiting to retry a turn that failed to start", async () => {
+    await workers.start("graphite", fix);
+    finishTurn(runner.turns[0], { ok: false, responded: false });
+    await settle();
+    expect(store.getWorker("00000001-0000-0000-0000-000000000000")).toMatchObject({ status: "idle", retries: 1, interrupted: false });
+
+    await restart();
+    expect(runner.turns).toHaveLength(1);
+    expect(runner.turns[0].req.prompt).toBe(fix.brief);
+  });
+});
+
+describe("Workers cancelled while a turn is being prepared", () => {
+  /** A promise the test resolves by hand. */
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it("does not start a stopped worker's turn when its session check resolves", async () => {
+    await workers.start("graphite", fix);
+    finishTurn(runner.turns[0]);
+    await settle();
+    const probe = deferred<boolean>();
+    workers = build({ container: { ...deps.container, sessionExists: () => probe.promise } });
+    workers.recover();
+    await workers.startUp();
+    store.setWorker("00000001-0000-0000-0000-000000000000", { started: false });
+    await workers.message("graphite", "00000001", "Carry on.");
+    await settle();
+    expect(await workers.stop("graphite", "00000001")).toContain("Stopped");
+    probe.resolve(false);
+    await settle();
+    expect(runner.turns).toHaveLength(1);
+    expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("stopped");
+  });
+
+  it("removes a worktree made after the worker was stopped, and posts no Started line", async () => {
+    const made = deferred<void>();
+    workers = build({
+      container: {
+        ...deps.container,
+        addWorktree: async (_clot, o) => {
+          await made.promise;
+          existing.add(`/workspace/worktrees/${o.workerId}`);
+          return `/workspace/worktrees/${o.workerId}`;
+        },
+      },
+    });
+    workers.recover();
+    await workers.startUp();
+    const starting = workers.start("graphite", fix);
+    await settle();
+    await workers.stop("graphite", "00000001");
+    made.resolve();
+    await starting;
+    await settle();
+    expect(runner.turns).toHaveLength(0);
+    expect(existing.has("/workspace/worktrees/00000001-0000-0000-0000-000000000000")).toBe(false);
+    expect(lines()).toEqual(["Stopped: Fix X"]);
+  });
+
+  it("does not start a turn for a worker whose pull request closed while it was being prepared", async () => {
+    await workers.start("graphite", fix);
+    finishTurn(runner.turns[0]);
+    await settle();
+    const probe = deferred<boolean>();
+    workers = build({ container: { ...deps.container, sessionExists: () => probe.promise } });
+    workers.recover();
+    await workers.startUp();
+    store.setWorker("00000001-0000-0000-0000-000000000000", { started: false });
+    await workers.message("graphite", "00000001", "Carry on.");
+    await settle();
+    await workers.onPullRequest({ repo: "o/r", branch: "clot/fix-x-1a2b", headRepo: "o/r", number: 9, url: "u", action: "closed" });
+    probe.resolve(false);
+    await settle();
+    expect(runner.turns).toHaveLength(1);
+    expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("closed");
+  });
+});
+
+describe("Workers checking GitHub", () => {
+  it("ignores a newer closed pull request from a fork while the worker's own is open", async () => {
+    await workers.start("graphite", fix);
+    finishTurn(runner.turns[0]);
+    await settle();
+    prs.set("clot/fix-x-1a2b", [
+      { number: 9, url: "https://github.com/o/r/pull/9", state: "OPEN", isCrossRepository: false },
+      { number: 12, url: "https://github.com/o/r/pull/12", state: "CLOSED", isCrossRepository: true },
+    ] as never);
+    await advance(60 * 60_000);
+    expect(store.getWorker("00000001-0000-0000-0000-000000000000")).toMatchObject({ status: "idle", prNumber: 9 });
+    expect(removed).toEqual([]);
+  });
+
+  it("finds a home worker's merged pull request from its report's link when the opened webhook was missed", async () => {
+    await workers.start("home", { ...fix, title: "Add editorconfig" });
+    runner.turns[0].req.onText("Pull request\nhttps://github.com/Someone/Tools/pull/4");
+    finishTurn(runner.turns[0]);
+    await settle();
+    expect(store.getWorker("00000001-0000-0000-0000-000000000000")).toMatchObject({ prRepo: "someone/tools", prNumber: 4 });
+
+    const asked: string[] = [];
+    prs.set("clot/add-editorconfig-1a2b", [{ number: 4, url: "https://github.com/Someone/Tools/pull/4", state: "MERGED", isCrossRepository: false }] as never);
+    deps.prsForBranch = async (_clot, branch, repo) => (asked.push(repo), prs.get(branch) ?? []);
+    await advance(60 * 60_000);
+    expect(asked).toEqual(["someone/tools"]);
+    expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("closed");
+  });
 });
 
 describe("the main session's worker tools", () => {

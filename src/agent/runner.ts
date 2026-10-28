@@ -82,15 +82,21 @@ function userMessage(text: string): SDKUserMessage {
   return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
 }
 
+/** A word that can only be a command or a subcommand name: no URL, path, assignment or value. */
+const PLAIN_WORD = /^[a-z][a-z0-9._-]{0,39}$/i;
+
 /**
  * A short name for a tool call, shown to the user as a worker's latest step. For Bash it is the
- * command's first two words only: a command line can hold a connection string or a token.
+ * program's name, and its subcommand when that is a plain word, nothing else: a command line can
+ * hold a connection string or a token, in an assignment, a URL or any argument.
  */
 export function stepOf(block: { name: string; input: unknown }): string {
   if (block.name !== "Bash") return block.name;
   const command = typeof (block.input as { command?: unknown })?.command === "string" ? (block.input as { command: string }).command : "";
-  const words = (command.split(/\r?\n/)[0] ?? "").trim().split(/\s+/).slice(0, 2).join(" ");
-  return words === "" ? "Bash" : words.slice(0, MAX_STEP);
+  const words = (command.split(/\r?\n/)[0] ?? "").trim().split(/\s+/).filter((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
+  const program = (words[0] ?? "").split("/").pop() ?? "";
+  if (!PLAIN_WORD.test(program)) return "Bash";
+  return PLAIN_WORD.test(words[1] ?? "") ? `${program} ${words[1]}`.slice(0, MAX_STEP) : program;
 }
 
 type HookAnswer = { hookSpecificOutput?: { hookEventName: "PreToolUse"; permissionDecision: "deny"; permissionDecisionReason: string } };

@@ -196,11 +196,27 @@ describe("container helpers", () => {
 describe("the runner's worker turns", () => {
   const guard = { branch: "clot/fix-a1b2", base: "main", repo: "o/r" };
 
-  it("names a step by the command's first two words, or by the tool", () => {
+  it("names a step by the program and a plain subcommand only, or by the tool", () => {
     expect(stepOf({ name: "Bash", input: { command: "npm test -- --run\nsecond line" } })).toBe("npm test");
-    expect(stepOf({ name: "Bash", input: { command: `psql postgres://user:secret@db/x -c "select 1"` } })).toBe("psql postgres://user:secret@db/x");
-    expect(stepOf({ name: "Bash", input: { command: `${"x".repeat(200)} y` } })).toHaveLength(120);
+    expect(stepOf({ name: "Bash", input: { command: "/usr/bin/git status" } })).toBe("git status");
     expect(stepOf({ name: "Edit", input: { file_path: "a.ts" } })).toBe("Edit");
+  });
+
+  it("keeps assignments, URLs and argument values out of a step", () => {
+    for (const command of [
+      "DATABASE_URL=postgres://user:s3cr3t-synthetic@host/db npm test",
+      `psql postgres://user:s3cr3t-synthetic@db/x -c "select 1"`,
+      "curl -H 'Authorization: Bearer s3cr3t-synthetic' https://api.example.com",
+      "export TOKEN=s3cr3t-synthetic",
+      "s3cr3t-synthetic=1",
+      `${"x".repeat(200)} y`,
+    ]) {
+      const step = stepOf({ name: "Bash", input: { command } });
+      expect(step).not.toContain("s3cr3t");
+      expect(step).not.toContain("://");
+      expect(step.length).toBeLessThanOrEqual(81);
+    }
+    expect(stepOf({ name: "Bash", input: { command: "DATABASE_URL=postgres://u:p@h/db npm test" } })).toBe("npm test");
   });
 
   it("denies what the guard refuses, and lets the rest through", () => {
@@ -243,6 +259,11 @@ describe("worker steps in the container", () => {
     expect(workerExec.removeWorktree("clot-g", "/workspace/worktrees/w1").slice(-2)).toEqual(["sh", "/workspace/worktrees/w1"]);
     expect(workerExec.refreshMain("clot-g", "main").slice(0, 3)).toEqual(["exec", "-e", "GH_TOKEN"]);
     expect(workerExec.refreshMain("clot-g", "main").slice(-2)).toEqual(["sh", "main"]);
+    // Unfinished work in a clone an earlier version edited is stashed before the forced checkout.
+    const refresh = workerExec.refreshMain("clot-g", "main")[6];
+    expect(refresh.indexOf("stash push --include-untracked")).toBeGreaterThan(-1);
+    expect(refresh.indexOf("stash push")).toBeLessThan(refresh.indexOf("checkout --detach --force"));
+    expect(workerExec.prsForBranch("clot-g", "clot/x", "o/r").at(-1)).toBe("number,url,state,isCrossRepository");
     expect(workerExec.defaultBranch("clot-g")).toEqual(["exec", "clot-g", "git", "-C", "/workspace/repo", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   });
 

@@ -176,14 +176,16 @@ export const workerExec = {
   ],
   removeDirectory: (container: string, path: string) => ["exec", container, "rm", "-rf", path],
   exists: (container: string, path: string) => ["exec", container, "test", "-d", path],
+  // A clone an earlier version edited in place may hold unfinished work: it is stashed, not thrown
+  // away, before the checkout. A local branch it was on keeps its commits.
   refreshMain: (container: string, base: string) => [
     "exec", "-e", "GH_TOKEN", container, "sh", "-c",
-    `git -C ${REPO} fetch origin && git -C ${REPO} checkout --detach --force "origin/$1"`,
+    `git -C ${REPO} fetch origin && { [ -z "$(git -C ${REPO} status --porcelain)" ] || git -C ${REPO} stash push --include-untracked -m "clots: kept before refreshing the main checkout"; } && git -C ${REPO} checkout --detach --force "origin/$1"`,
     "sh", base,
   ],
   killStray: (container: string) => ["exec", container, "pkill", "-x", "claude"],
   sessionExists: (container: string, sessionId: string) => ["exec", container, "sh", "-c", 'ls /home/clot/.claude/projects/*/"$1".jsonl', "sh", sessionId],
-  prsForBranch: (container: string, branch: string, repo: string) => ["exec", "-e", "GH_TOKEN", container, "gh", "pr", "list", "-R", repo, "--head", branch, "--state", "all", "--json", "number,url,state"],
+  prsForBranch: (container: string, branch: string, repo: string) => ["exec", "-e", "GH_TOKEN", container, "gh", "pr", "list", "-R", repo, "--head", branch, "--state", "all", "--json", "number,url,state,isCrossRepository"],
 };
 
 async function docker(args: string[], env?: Record<string, string>): Promise<string> {
@@ -256,7 +258,7 @@ export async function sessionExistsAsync(container: string, sessionId: string): 
   );
 }
 
-/** The pull requests GitHub has for a branch, open or not. */
-export async function prsForBranch(container: string, o: { branch: string; repo: string; githubToken: string }): Promise<{ number: number; url: string; state: string }[]> {
+/** The pull requests GitHub has for a branch name, open or not. A fork's branch can share the name: isCrossRepository says so. */
+export async function prsForBranch(container: string, o: { branch: string; repo: string; githubToken: string }): Promise<{ number: number; url: string; state: string; isCrossRepository: boolean }[]> {
   return JSON.parse(await docker(workerExec.prsForBranch(container, o.branch, o.repo), { GH_TOKEN: o.githubToken }));
 }

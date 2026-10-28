@@ -277,15 +277,20 @@ The main session's daemon tools:
   or closed. Then the daemon removes the worktree; the transcript stays on disk.
   The daemon learns of the pull request from GitHub (its webhook, and an hourly
   check with `gh`, since a missed delivery is not sent again), never from the
-  worker's text, and ignores a pull request from a fork. A worker idle for 7 days
+  worker's text, and ignores a pull request from a fork. A home Clot worker's
+  report link only tells the hourly check which repository to ask, and GitHub's
+  answer decides. The usage limit's reset is kept across a restart, and every
+  worker that was waiting is queued again. A worker idle for 7 days
   with no open pull request is closed the same way. A Clot has at most 20 workers
   listed at once.
 - **The main session's clone** is brought up to date with the default branch
   before each of its turns, by the daemon: the main session cannot pull, and would
-  otherwise investigate old code.
+  otherwise investigate old code. Uncommitted changes found there are stashed
+  first, never discarded.
 - **Progress**: the worker posts nothing itself. The daemon posts in the Clot's
   live channel when a worker starts (title, model and effort), every 20 minutes
-  with its latest step, and when it ends, followed by the turn summary.
+  with its latest step (a tool's name, or a command's program and plain
+  subcommand, never its arguments), and when it ends, followed by the turn summary.
 - **Limit**: 3 workers run at once per host, across all its Clots, or the number in
   `CLOTS_MAX_WORKERS`. Others wait, urgent first, then in the order they were
   started. One heavy job at a time per host still holds.
@@ -643,6 +648,10 @@ own permission rules, and nothing can pre-approve a call past it. It refuses:
   push other than `--force-with-lease`; pushing a tag; and changing git's
   configuration or remotes;
 - commands that send mail or messages.
+
+A command it must read closely has to be written plainly: a wrapper such as `env`
+or `sudo` with options of its own, or a pull request named on `gh pr edit` or
+`gh pr close`, wherever it stands among the flags, is refused.
 
 It also refuses every MCP tool other than the worker's own `ask_main`, since a
 connector brought in by the container's login could send unchecked.

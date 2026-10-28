@@ -55,6 +55,7 @@ export function guardCommand(line: string, w: GuardContext): Verdict {
 
 function checkCommand(raw: string[], w: GuardContext): Verdict {
   const words = unwrap(raw);
+  if (!Array.isArray(words)) return words;
   if (words.length === 0) return OK;
   const name = path.posix.basename(words[0]);
   if (SHELLS.has(name)) {
@@ -68,8 +69,12 @@ function checkCommand(raw: string[], w: GuardContext): Verdict {
   return OK;
 }
 
-/** Leaves out leading NAME=value assignments and the wrappers that run the command after them. */
-function unwrap(words: string[]): string[] {
+/**
+ * Leaves out leading NAME=value assignments and the wrappers that run the command after them.
+ * A wrapper given options is refused: some take a value (`env -u NAME`, `sudo -u user`), and
+ * guessing which would let the value pass for the command.
+ */
+function unwrap(words: string[]): string[] | Verdict {
   let rest = words;
   while (rest.length > 0) {
     const first = rest[0];
@@ -77,7 +82,7 @@ function unwrap(words: string[]): string[] {
     else if (WRAPPERS.has(path.posix.basename(first))) {
       const wrapper = path.posix.basename(first);
       rest = rest.slice(1);
-      while (rest[0]?.startsWith("-")) rest = rest.slice(1);
+      if (rest[0]?.startsWith("-")) return { ok: false, reason: `Commands that use gh, git push or a mail sender must be written plainly, with no options on \`${wrapper}\`.` };
       // timeout takes its duration before the command.
       if (wrapper === "timeout" && rest.length > 0) rest = rest.slice(1);
     } else break;
@@ -96,9 +101,15 @@ function expand(args: string[]): string[] {
   });
 }
 
-/** Words that are neither flags nor the value right after a flag. */
+/** The flags of `gh pr edit` and `gh pr close` that take a value. Every other flag is boolean. */
+const GH_PR_VALUE_FLAGS = new Set([
+  ...["-t", "--title", "-b", "--body", "-F", "--body-file", "-B", "--base", "-m", "--milestone", "-c", "--comment"],
+  ...["--add-label", "--remove-label", "--add-assignee", "--remove-assignee", "--add-reviewer", "--remove-reviewer", "--add-project", "--remove-project"],
+]);
+
+/** Words that are neither flags nor the value of a flag that takes one: a pull request selector, wherever it stands. */
 function positionals(args: string[]): string[] {
-  return args.filter((arg, i) => !arg.startsWith("-") && (i === 0 || !args[i - 1].startsWith("-")));
+  return args.filter((arg, i) => !arg.startsWith("-") && (i === 0 || !GH_PR_VALUE_FLAGS.has(args[i - 1])));
 }
 
 function checkGh(all: string[], w: GuardContext): Verdict {
