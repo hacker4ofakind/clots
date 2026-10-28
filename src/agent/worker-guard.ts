@@ -107,9 +107,18 @@ const GH_PR_VALUE_FLAGS = new Set([
   ...["--add-label", "--remove-label", "--add-assignee", "--remove-assignee", "--add-reviewer", "--remove-reviewer", "--add-project", "--remove-project"],
 ]);
 
-/** Words that are neither flags nor the value of a flag that takes one: a pull request selector, wherever it stands. */
+/**
+ * Words that are neither flags nor the value of a flag that takes one: a pull request selector,
+ * wherever it stands. Read left to right as gh reads them: a flag that takes a value consumes the
+ * next word, whatever it looks like, so `--title --body 42` leaves 42 as the selector.
+ */
 function positionals(args: string[]): string[] {
-  return args.filter((arg, i) => !arg.startsWith("-") && (i === 0 || !GH_PR_VALUE_FLAGS.has(args[i - 1])));
+  const found: string[] = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (GH_PR_VALUE_FLAGS.has(args[i])) i += 1;
+    else if (!args[i].startsWith("-")) found.push(args[i]);
+  }
+  return found;
 }
 
 function checkGh(all: string[], w: GuardContext): Verdict {

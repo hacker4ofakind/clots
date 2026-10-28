@@ -82,13 +82,28 @@ function userMessage(text: string): SDKUserMessage {
   return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
 }
 
-/** A word that can only be a command or a subcommand name: no URL, path, assignment or value. */
+/** A word that can only be a program's name: no URL, path, assignment or value. */
 const PLAIN_WORD = /^[a-z][a-z0-9._-]{0,39}$/i;
+
+const PACKAGE_MANAGER = ["test", "run", "install", "ci", "build", "exec", "start", "lint", "add"];
+/** The subcommands a step may name, by program. Any other second word could be an argument, and a secret. */
+const SUBCOMMANDS: Record<string, Set<string>> = {
+  npm: new Set(PACKAGE_MANAGER),
+  pnpm: new Set(PACKAGE_MANAGER),
+  yarn: new Set(PACKAGE_MANAGER),
+  bun: new Set(PACKAGE_MANAGER),
+  git: new Set(["status", "diff", "log", "show", "add", "commit", "push", "fetch", "pull", "checkout", "switch", "branch", "rebase", "merge", "stash", "reset", "restore", "worktree"]),
+  gh: new Set(["pr", "issue", "run", "repo", "api", "auth"]),
+  docker: new Set(["build", "run", "compose", "ps", "exec", "logs"]),
+  cargo: new Set(["build", "test", "run", "check", "clippy", "fmt"]),
+  go: new Set(["build", "test", "run", "vet", "mod"]),
+};
 
 /**
  * A short name for a tool call, shown to the user as a worker's latest step. For Bash it is the
- * program's name, and its subcommand when that is a plain word, nothing else: a command line can
- * hold a connection string or a token, in an assignment, a URL or any argument.
+ * program's name, and its subcommand when the program is a known one and the word one of its
+ * subcommands, nothing else: a command line can hold a connection string or a token, in an
+ * assignment, a URL or any argument.
  */
 export function stepOf(block: { name: string; input: unknown }): string {
   if (block.name !== "Bash") return block.name;
@@ -96,7 +111,7 @@ export function stepOf(block: { name: string; input: unknown }): string {
   const words = (command.split(/\r?\n/)[0] ?? "").trim().split(/\s+/).filter((word) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(word));
   const program = (words[0] ?? "").split("/").pop() ?? "";
   if (!PLAIN_WORD.test(program)) return "Bash";
-  return PLAIN_WORD.test(words[1] ?? "") ? `${program} ${words[1]}`.slice(0, MAX_STEP) : program;
+  return SUBCOMMANDS[program]?.has(words[1] ?? "") ? `${program} ${words[1]}`.slice(0, MAX_STEP) : program;
 }
 
 type HookAnswer = { hookSpecificOutput?: { hookEventName: "PreToolUse"; permissionDecision: "deny"; permissionDecisionReason: string } };

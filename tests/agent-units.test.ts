@@ -199,6 +199,7 @@ describe("the runner's worker turns", () => {
   it("names a step by the program and a plain subcommand only, or by the tool", () => {
     expect(stepOf({ name: "Bash", input: { command: "npm test -- --run\nsecond line" } })).toBe("npm test");
     expect(stepOf({ name: "Bash", input: { command: "/usr/bin/git status" } })).toBe("git status");
+    expect(stepOf({ name: "Bash", input: { command: "printf hello" } })).toBe("printf");
     expect(stepOf({ name: "Edit", input: { file_path: "a.ts" } })).toBe("Edit");
   });
 
@@ -209,6 +210,10 @@ describe("the runner's worker turns", () => {
       "curl -H 'Authorization: Bearer s3cr3t-synthetic' https://api.example.com",
       "export TOKEN=s3cr3t-synthetic",
       "s3cr3t-synthetic=1",
+      "printf s3cr3t-synthetic",
+      "echo s3cr3t-synthetic > .env",
+      "npm s3cr3t-synthetic",
+      "mytool s3cr3t-synthetic",
       `${"x".repeat(200)} y`,
     ]) {
       const step = stepOf({ name: "Bash", input: { command } });

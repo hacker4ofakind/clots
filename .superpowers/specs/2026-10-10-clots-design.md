@@ -289,8 +289,8 @@ The main session's daemon tools:
   first, never discarded.
 - **Progress**: the worker posts nothing itself. The daemon posts in the Clot's
   live channel when a worker starts (title, model and effort), every 20 minutes
-  with its latest step (a tool's name, or a command's program and plain
-  subcommand, never its arguments), and when it ends, followed by the turn summary.
+  with its latest step (a tool's name, or a command's program and, for a few
+  known programs, its subcommand, never its arguments), and when it ends, followed by the turn summary.
 - **Limit**: 3 workers run at once per host, across all its Clots, or the number in
   `CLOTS_MAX_WORKERS`. Others wait, urgent first, then in the order they were
   started. One heavy job at a time per host still holds.
