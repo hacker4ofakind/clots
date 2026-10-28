@@ -121,7 +121,7 @@ const workers = new Workers({
   runnerFor: (clot) => runners.get(clot)!,
   container: {
     defaultBranch: (clot) => defaultBranch(containerName(clot)),
-    addWorktree: (clot, o) => addWorktree(containerName(clot), o),
+    addWorktree: (clot, o) => addWorktree(containerName(clot), { ...o, githubToken: config.githubToken }),
     removeWorktree: (clot, path) => removeWorktree(containerName(clot), path),
     worktreeExists: (clot, path) => worktreeExists(containerName(clot), path),
     sessionExists: (clot, id) => sessionExistsAsync(containerName(clot), id),
@@ -272,7 +272,7 @@ for (const c of definitions) {
       await drafts?.check(name);
       await memory.beforeTurn(name);
       // The main session cannot pull, so the daemon keeps its clone on the latest default branch. Old code is better than none.
-      if (repoOf.get(name)) await refreshMainCheckout(containerName(name)).catch((error) => console.warn(`[${name}] refreshing the clone failed; reading the code as it was:`, error));
+      if (repoOf.get(name)) await refreshMainCheckout(containerName(name), config.githubToken).catch((error) => console.warn(`[${name}] refreshing the clone failed; reading the code as it was:`, error));
     },
     memory: { list: () => memory.list(), undo: () => memory.undo() },
     makeTools: (ctx) => makeTools(toolDeps, ctx),

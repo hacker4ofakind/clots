@@ -158,12 +158,13 @@ export function worktreePath(workerId: string, home: boolean): string {
 
 /**
  * The docker arguments for each worker step. The branch and the path come from titles the model
- * wrote, so they are passed as the script's positional arguments, never put into its text.
+ * wrote, so they are passed as the script's positional arguments, never put into its text. A step
+ * that fetches passes GH_TOKEN: git's credential helper in the container reads it from there.
  */
 export const workerExec = {
   defaultBranch: (container: string) => ["exec", container, "git", "-C", REPO, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
   addWorktree: (container: string, path: string, branch: string, base: string) => [
-    "exec", container, "sh", "-c",
+    "exec", "-e", "GH_TOKEN", container, "sh", "-c",
     `git -C ${REPO} fetch origin && git -C ${REPO} worktree add --no-track -b "$1" "$2" "origin/$3"`,
     "sh", branch, path, base,
   ],
@@ -176,7 +177,7 @@ export const workerExec = {
   removeDirectory: (container: string, path: string) => ["exec", container, "rm", "-rf", path],
   exists: (container: string, path: string) => ["exec", container, "test", "-d", path],
   refreshMain: (container: string, base: string) => [
-    "exec", container, "sh", "-c",
+    "exec", "-e", "GH_TOKEN", container, "sh", "-c",
     `git -C ${REPO} fetch origin && git -C ${REPO} checkout --detach --force "origin/$1"`,
     "sh", base,
   ],
@@ -196,12 +197,12 @@ async function docker(args: string[], env?: Record<string, string>): Promise<str
 }
 
 /** Runs a git step in the container's chain. One that hits another git's lock is tried once more, two seconds later. */
-function gitStep(container: string, args: string[]): Promise<string> {
+function gitStep(container: string, args: string[], env?: Record<string, string>): Promise<string> {
   const attempt = () =>
-    docker(args).catch(async (error: Error) => {
+    docker(args, env).catch(async (error: Error) => {
       if (!/index\.lock|cannot lock ref/.test(error.message)) throw error;
       await new Promise((resolve) => setTimeout(resolve, 2000));
-      return docker(args);
+      return docker(args, env);
     });
   const next = (chains.get(container) ?? Promise.resolve()).then(attempt, attempt);
   chains.set(container, next.catch(() => undefined));
@@ -215,10 +216,10 @@ export async function defaultBranch(container: string): Promise<string> {
 }
 
 /** Makes a worker's place and returns its path. With a base, a worktree on a new branch from it; without, an empty directory. */
-export async function addWorktree(container: string, o: { workerId: string; branch: string | null; base: string | null }): Promise<string> {
+export async function addWorktree(container: string, o: { workerId: string; branch: string | null; base: string | null; githubToken: string }): Promise<string> {
   const path = worktreePath(o.workerId, o.base === null);
   if (o.base === null || o.branch === null) await docker(workerExec.addDirectory(container, path));
-  else await gitStep(container, workerExec.addWorktree(container, path, o.branch, o.base));
+  else await gitStep(container, workerExec.addWorktree(container, path, o.branch, o.base), { GH_TOKEN: o.githubToken });
   return path;
 }
 
@@ -236,9 +237,9 @@ export async function worktreeExists(container: string, path: string): Promise<b
 }
 
 /** Brings the main session's clone to the default branch's latest commit. It is never a worker's branch, so detaching it is safe. */
-export async function refreshMainCheckout(container: string): Promise<void> {
+export async function refreshMainCheckout(container: string, githubToken: string): Promise<void> {
   const base = await defaultBranch(container);
-  await gitStep(container, workerExec.refreshMain(container, base));
+  await gitStep(container, workerExec.refreshMain(container, base), { GH_TOKEN: githubToken });
 }
 
 /** Stops every Claude Code process left in the container: a `docker exec` can outlive the daemon that started it. */

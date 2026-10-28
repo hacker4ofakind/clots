@@ -237,10 +237,11 @@ describe("the runner's worker turns", () => {
 describe("worker steps in the container", () => {
   it("passes the branch and the path as the script's arguments, never in its text", () => {
     const args = workerExec.addWorktree("clot-g", "/workspace/worktrees/w1", "clot/x-$(rm -rf)-1a2b", "main");
-    expect(args.slice(0, 4)).toEqual(["exec", "clot-g", "sh", "-c"]);
-    expect(args[4]).toBe('git -C /workspace/repo fetch origin && git -C /workspace/repo worktree add --no-track -b "$1" "$2" "origin/$3"');
-    expect(args.slice(5)).toEqual(["sh", "clot/x-$(rm -rf)-1a2b", "/workspace/worktrees/w1", "main"]);
+    expect(args.slice(0, 6)).toEqual(["exec", "-e", "GH_TOKEN", "clot-g", "sh", "-c"]);
+    expect(args[6]).toBe('git -C /workspace/repo fetch origin && git -C /workspace/repo worktree add --no-track -b "$1" "$2" "origin/$3"');
+    expect(args.slice(7)).toEqual(["sh", "clot/x-$(rm -rf)-1a2b", "/workspace/worktrees/w1", "main"]);
     expect(workerExec.removeWorktree("clot-g", "/workspace/worktrees/w1").slice(-2)).toEqual(["sh", "/workspace/worktrees/w1"]);
+    expect(workerExec.refreshMain("clot-g", "main").slice(0, 3)).toEqual(["exec", "-e", "GH_TOKEN"]);
     expect(workerExec.refreshMain("clot-g", "main").slice(-2)).toEqual(["sh", "main"]);
     expect(workerExec.defaultBranch("clot-g")).toEqual(["exec", "clot-g", "git", "-C", "/workspace/repo", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   });

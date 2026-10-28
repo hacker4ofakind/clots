@@ -142,7 +142,8 @@
   - `defaultBranch(container)` reads `git -C /workspace/repo symbolic-ref --short refs/remotes/origin/HEAD` and strips `origin/`, falling back to `main`. The worker row stores it (`base`), because the guard needs it;
   - `removeWorktree` runs `git -C /workspace/repo worktree remove --force <path>`, then `git -C /workspace/repo worktree prune`. The local branch is kept;
   - for the home Clot, `mkdir -p` and `rm -rf` of `/workspace/workers/<id>`. The daemon still names a branch for it (`branch` set, `base` null): the worker is told to create that branch in whatever it clones and push only it;
-  - pass the branch and path as `sh` positional arguments, never interpolated. Branch names come from titles the model wrote.
+  - pass the branch and path as `sh` positional arguments, never interpolated. Branch names come from titles the model wrote;
+  - every `docker exec` that fetches (the worktree's creation, the main checkout's refresh) passes `-e GH_TOKEN` with the token in the exec's environment, as `ensureContainer` does: the container's git credential helper reads `$GH_TOKEN`, and without it GitHub answers "Invalid username or token".
 - **A pull request's own lifecycle.** `normalizeGithub` keeps ignoring `pull_request` `closed`. `acceptGithub` gets an optional `onPullRequest(a: { repo; branch; headRepo; number; url; action: "opened" | "closed" })` in `IntakeDeps`. Call it after signature verification, for `x-github-event: pull_request` with action `opened`, `reopened` or `closed`. It uses `repository.full_name`, `pull_request.head.ref`, `pull_request.head.repo.full_name`, `number` and `html_url`.
   - **Closed:** answer 200 without storing an event.
   - **Opened:** store and continue as today (the self-caused drop still drops the Clot's own).
