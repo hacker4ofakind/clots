@@ -583,8 +583,8 @@ it is withdrawn:
 | Kind | Channel | Exact yes | Exact no | Any other reply | Withdrawn when |
 |---|---|---|---|---|---|
 | Rule change (a standing rule, or any edit from an outsider's turn) | `<clot>-rule` | applies it | declines it | repeats the question | never |
-| Email to send | `<clot>-mail` | sends it | saves it as a draft | goes to the main session as the user's feedback, and the review closes | its review window passes |
-| Merge | `<clot>-ask` | merges | declines | repeats the question | the pull request gets a new commit, or closes |
+| Email to send | `<clot>-mail` | sends it | drops it; `draft` saves it as a draft instead | goes to the main session as the user's feedback, and the review closes | its review window passes |
+| Merge | `<clot>-ask` | merges | declines | goes to the main session as the user's feedback, and the ask closes | the pull request gets a new commit, or closes |
 | Choice | `<clot>-choice` | `1`, `2`, `one`, `two`, `first` or `second` decide it; `your pick` or `go ahead` take the Clot's pick | none | goes to the main session as a turn of the user's own, with the choice attached, and the choice closes | never: the timeout decides it |
 
 What every ask shares:

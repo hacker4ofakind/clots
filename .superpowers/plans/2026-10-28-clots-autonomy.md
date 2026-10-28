@@ -26,10 +26,10 @@
   - No: `no`, `dont`, `not at all`.
   - Choice: `1`, `one` and `first` mean option 1; `2`, `two` and `second` mean option 2; `your pick` and `go ahead` mean the Clot's pick.
 - User-facing strings, exactly:
-  - choice prompt: `<mention> <clot> asks: <question>\n\n**1.** <option 1>\n**2.** <option 2>\n\nMy pick: <n>. Answer 1 or 2, "your pick", or write what you want instead. I'll go with <n> at <HH:MM> if I don't hear from you.`
+  - choice prompt: `<mention> <clot> asks: <question>\n\n**1.** <option 1>\n**2.** <option 2>\n\nMy pick: <n>. Answer 1 or 2, "your pick", or write what you want instead. I'll go with <n> at <t:<unix>:t> if I don't hear from you.`
   - merge prompt: `<mention> <clot> asks to merge <repo>#<n>, "<title>" (<url>), at commit <short sha>.\nChecks: <passed> passed, <failed> failed, <pending> pending.\n\nyes merges it (squash); no leaves it open.`
   - empty waiting list: `Nothing is waiting for you.`
-  - waiting list heading: `**Waiting for you**`, then one line per ask: `• <clot>: <summary> → <channel link>`, with ` (decides at HH:MM)` for a choice
+  - waiting list heading: `**Waiting for you**`, then one line per ask: `• <clot>: <summary> → <channel link>`, with ` (decides at <t:<unix>:t>)` for a choice
   - calendar removal post: `Calendar (<account>): removed <event>. \`&calendar undo\` puts it back.`
 - Write the spec and plan as the design, with no change notes. Use the Edit tool, not scripted bulk edits (the user's standing rules).
 
@@ -68,7 +68,7 @@
 
   When `ctx.outsider` is true, every rulebook edit (pre-filter, triage line, urgency marker, routing rule, recipe) opens a `rule` ask instead of applying. The tool's result says it was put to the user because the turn came from an outsider.
 - **One `user_asks` table.** It is a new table; the old `asks` table was steering's. Columns:
-  - `id` (integer key), `kind`, `clot`, `channel_id` (unique), `channel_name`;
+  - `id` (`INTEGER PRIMARY KEY AUTOINCREMENT`), `kind`, `clot`, `channel_id` (unique), `channel_name`;
   - `payload` (JSON), `summary` (one line, for `clots-waiting` and `&rules`);
   - `state` (`posting` | `open` | `busy`), `opened_at`, `deadline` (null except for choices), `dedupe` (a string unique per open ask of a kind and Clot).
 
@@ -91,10 +91,10 @@ interface AskKind<P> {
   stale?(ask: AskRow<P>, now: number): string | undefined;   // the withdrawal reason
 }
 interface AskIo {
-  close(note: string | null, line: string | null): Promise<boolean>;  // closeAsk + delete channel + post line in live channel + refresh waiting
+  /** closeAsk (+ the inbox row, in the same transaction) + delete channel + post line in live channel + onChange + kick the Clot. */
+  close(note: string | null, line: string | null, then?: { inbox: { id: string; text: string; kind: "message" | "choice"; outsider: boolean } }): Promise<boolean>;
   repeat(text: string): Promise<void>;                                 // post in the ask's channel
   setBusy(): boolean; reopen(): void;                                  // moveAsk open→busy, busy→open
-  toMain(text: string): Promise<boolean>;                              // a turn of the user's own, as send review's feedback does (daemon.ts uses clot.onMessage with a synthetic id)
 }
 ```
 
@@ -115,7 +115,7 @@ interface AskIo {
   - `sending` and `drafting` both map to `busy`, with the step kept in the payload;
   - `interruptedOutcome` becomes `interrupted`;
   - the expiry window becomes `stale`;
-  - other text goes through `toMain` as feedback;
+  - other text closes the ask with a `message` inbox row carrying the feedback;
   - the daemon-wide switch that turns send review off still removes the `emailSend` tool.
 
   Its existing tests move over with only the setup changed. They are the proof that nothing regressed.
@@ -133,8 +133,8 @@ interface AskIo {
   - **On success,** post `Merged <repo>#<n>.` The worker closes through the existing closed-PR path.
 - **Withdrawing a merge ask.** Add `synchronize` to the actions `acceptGithub` passes to `onPullRequest`. The daemon's handler withdraws any merge ask for that repository and number: on `synchronize` with the reason `new commits were pushed`, and on `closed` with `the pull request was closed`. A `synchronize` from a fork is ignored, as today.
 - **Choice kind.** The `askChoice({ question, options: [string, string], pick: 1 | 2 })` tool, main session only. A third open choice for the Clot is refused: `Not asked: 3 choices already wait for the user. Decide this one yourself, or put it in your reply.` The payload is `{ question, options, pick, outsider }`; the deadline is now plus the timeout; the dedupe key is the question.
-  - **An exact answer** closes the choice and calls `toMain` with: `[Your choice "<question>": the user picked <n>: <option>.]`
-  - **Any other text** closes it and calls `toMain` with: `[The user answered your choice "<question>" (1. <o1> 2. <o2>; your pick was <n>):]\n<text>`
+  - **An exact answer** closes the choice with a `message` inbox row: `[Your choice "<question>": the user picked <n>: <option>.]`
+  - **Any other text** closes it with a `message` inbox row: `[The user answered your choice "<question>" (1. <o1> 2. <o2>; your pick was <n>):]\n<text>`
 
   Both are turns of the user's own (`chat`), since the words are theirs.
 - **The choice timer.** `Asks` schedules one timer per open choice, and reschedules them at startup; a deadline already past fires at once. When it fires:
@@ -158,6 +158,90 @@ interface AskIo {
 
   `Asks` calls `refresh()` after every open, close and withdrawal, and once at startup. Discord's limit is 2,000 characters: past that, end the list with `…and <n> more`.
 - **`&rules`** lists open rule asks from `user_asks` (kind `rule`) where it listed proposals.
+
+### Hardening from the plan review
+
+These override anything above that they contradict.
+
+- **The outsider flag travels with the data.** It is never worked out at turn time.
+  - `inbox` gains an `outsider` column (default 0). `sessions` gains `interrupted_outsider`, which `queueContinuation` copies onto the continuation row.
+  - Every row is stamped when it is enqueued:
+    - an event row from its event;
+    - a worker row from the worker;
+    - a choice's timeout row and its answer row from the choice's payload, so a `chat` turn answering an outsider-tainted choice is tainted too;
+    - an email feedback or merge feedback row from the ask's payload;
+    - a user's own message: 0.
+  - `TurnContext.outsider` reads the row.
+  - `message_worker` called from a tainted turn sets the worker's `outsider` for good.
+- **Which events count as an outsider's:**
+  - **GitHub:** `pr_opened` is set from `pull_request.author_association`, as issues are.
+  - **Email:** a sender's address counts as the user's own only when the message's `Authentication-Results` header shows `dmarc=pass` (Gmail adds it). Otherwise, even from an own address, it is an outsider's. A mail server that adds no such header makes all mail an outsider's, which only means rule edits from mail are asked.
+  - **Calendar:** an event whose organiser is not one of the user's addresses is an outsider's.
+  - **Stripe** (customer-written text), **webhook recipes** and **watch recipes:** always outsiders.
+  - **Linear and Notion:** stay insiders: their authors are members of the user's own workspaces.
+
+  Add one normaliser test per source.
+- **`synchronize` never closes a worker.** `Workers.onPullRequest` handles `opened` and `closed` explicitly, and returns on anything else.
+- **Asks being carried out are never withdrawn.**
+  - Withdrawals, sweeps and the channel check touch only `open` asks.
+  - At startup, every `busy` ask is passed to its kind's `interrupted` **before** any channel check. A `busy` email's channel is always gone by then, and closing it as withdrawn would invite a second send.
+  - A kind with no `interrupted` handler is closed with the note `This was being carried out when the daemon stopped; whether it finished is not known. Check before asking again.`
+  - An ask left in `posting` at startup is deleted, with its channel, as send review does today.
+- **Closing and handing over in one transaction.** `AskIo.close(note, line, then?: { inbox: InboxRow })`. The inbox row goes into the same transaction as the close, with `enqueue`'s result checked: if the row already exists, the transaction is rolled back.
+  - **The rows that go through it:**
+    - email feedback;
+    - merge feedback;
+    - both kinds of choice answer;
+    - the choice timeout.
+
+    They are stored even while the daemon is starting and the Clots aren't loaded yet. They run when the Clot drains.
+  - **`toMain` is removed.**
+  - **After the transaction,** `Asks` calls `deps.kick(clot)`. That is a new public `Clot.kick()` that starts `drain()`, so the stored row actually runs.
+  - **`user_asks.id`** is declared `INTEGER PRIMARY KEY AUTOINCREMENT`, so a closed ask's id is never reused and `choice:<id>` never collides with an old inbox row.
+- **The ask core checks the author.** `Asks.onReply` ignores any message whose author isn't the user before dispatching to a kind. Test a non-owner author in each kind's channel.
+
+  A user's message in a channel whose ask is gone gets `This question is already closed.` and goes no further.
+- **Limits and deduplication** are per kind and per Clot:
+  - choices: 3;
+  - rule asks: `CLOTS_MAX_PROPOSALS`;
+  - email: send review's limit;
+  - merge: one per pull request.
+
+  Asks opened from a tainted turn have their own cap of 2 per Clot and kind, so outsiders cannot fill the user's slots.
+- **A rule the user undid** is not re-added by a tainted or non-`chat` turn. The rule writer keeps the undone edits, and a matching add from such a turn returns `Not applied: the user undid this rule. Ask them in your reply if you think it is needed.` This is spec §5's "never again once undone", enforced.
+- **`route_correct` in non-`chat` turns:** an event can be handed over once. A second hand-over of the same event is refused. The post says `handed over by <clot>` there, and `at your request` only in a `chat` turn.
+- **`email_send` in a tainted turn** may only answer the email being looked into (`event` set to it), as investigations were limited before. In other turns it is free.
+- **A timeout turn starts no new choice.** `ask_choice` is refused in a turn whose row came from a choice's timeout. That turn's prompt also says to carry on with the pick, without a second worker for the same work.
+- **Merge details:**
+  - **Validate before building any URL:** `repo` against `^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`, `n` as a positive integer, `sha` as 40 hex characters. Compare repository names lowercased everywhere.
+  - **Base branch:** refuse unless the base is the repository's default branch (`GET /repos/{repo}` gives `default_branch`).
+  - **What the prompt shows:** the base branch, the files changed and the lines added and removed (from the PR's `changed_files`, `additions`, `deletions`), and `From an outsider's report.` as its first line when the ask's payload is tainted.
+  - **Check counts** combine `GET /repos/{repo}/commits/{sha}/check-runs?per_page=100` with `GET /repos/{repo}/commits/{sha}/status`. More than 100 runs shows `100+`.
+  - **Timeouts:** every GitHub call has a 15-second timeout, made with `AbortSignal.timeout`. The lookups run before entering the `opening` chain.
+  - **An unclear merge result** (5xx, timeout, network error) is followed by one `GET` of the PR. If it shows `merged: true`, report `Merged`; otherwise close with the note `GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`
+  - **Interrupted:** the merge kind's `interrupted` reads the PR and reports `Merged`, or not merged.
+  - **A `synchronize` whose head sha equals the ask's `headSha`** (a replayed delivery) does not withdraw.
+  - **Other text in a merge ask** goes to the main session as feedback, through the shared close.
+  - **The main prompt:** call `merge_pull_request` only for a PR whose worker is idle with its report in, and not again for every push while it works.
+  - **Shared helper:** `github-api.ts` has one request helper that sets the token, accept and API-version headers, and never puts the token in an error. `githubCommentSender` moves onto it.
+- **The calendar removal snapshot** comes from the `check` call made before `remove`, and is stored before `remove` is called. A removal whose answer is lost still leaves an undo. `&calendar undo` runs one at a time per Clot, and marks the row as being restored before `create`, so two quick undos restore once.
+- **`clots-waiting` robustness:**
+  - **Storing the message:** store the message id right after posting; the pin is best-effort.
+  - **When to post a new message:** only when Discord says the message or the channel is unknown (codes 10008 or 10003). Any other error is retried at 5, 30 and 120 seconds, and the stored "last text" is updated only after an edit succeeds.
+  - **Summaries are made safe:** one line, at most 100 characters, with links and mentions neutralised (`<@` becomes `<\@`, and `[text](url)` becomes the text).
+  - **No pings:** the post and edits send with no allowed mentions.
+  - **Times:** deadlines are shown as Discord timestamps, `<t:<unix>:t>` (each viewer's own timezone), in the list and in the choice prompt, in place of `HH:MM`.
+- **The hourly sweep** also fires any choice whose deadline has passed, in case a timer was lost.
+- **The channel limit.** Discord allows 50 channels per category. Before creating any channel, `Asks` and the session rollover check the category. At 45 or more, they delete the oldest read-only session channels, the closed ones, keeping transcripts on disk (spec §6), until it is under 45. An ask that still cannot get a channel returns the kind's "could not be asked" text, naming the reason.
+- **Code shape:**
+  - each kind is a factory with its own dependencies, registered in `new Asks({ kinds })`. `open` takes the kind object, and the kind owns its result texts;
+  - deadline timers are generic: any ask with a `deadline` gets an `onDeadline` hook, with the scheduler and clock injected as `Workers` gets them;
+  - `prepareMerge` lives in `asks/merge.ts`;
+  - the legacy steering `asks` table's helpers and `askChannelName` are renamed `steeringAsk…`, and kept only for the migration;
+  - the one-shot migration goes in `src/asks-migration.ts`, and the old proposal, send review and memory question store methods are deleted;
+  - `matchChoice` goes in `src/events/reply.ts`, and the `CAL_*` and `MEMORY_*` constants go;
+  - `TOOL_AXES` is keyed by `Exclude<keyof DaemonTools, "emailAccounts">`;
+  - `Asks` reports changes only through `onChange`, which `Waiting` subscribes to.
 - **Prompt.**
   - Add `AXES_NOTE` to `SHARED_PROMPT`: *Do without asking whatever is free to undo, seen only by the user, under $5, and commits them to nothing. Anything else, the daemon puts to the user for you. Prepare everything up to that step, then carry on with other work.*
   - Replace every "proposal", "propose" and "wait for the user's answer" line with the matching outcome: applied, or put to the user. Calendar removal is now direct, so drop "ask the user in chat first".
@@ -289,7 +373,7 @@ interface AskIo {
 
 **Tests (behaviours):**
 - With no asks, the pinned message reads `Nothing is waiting for you.`
-- Opening a rule ask and a choice gives two lines, the choice's with `(decides at HH:MM)`. Closing one leaves one.
+- Opening a rule ask and a choice gives two lines, the choice's with `(decides at <t:…:t>)`. Closing one leaves one.
 - Three opens within 2 seconds lead to one edit.
 - The same render twice leads to no edit.
 - A failed edit posts and pins a new message and stores its id.
