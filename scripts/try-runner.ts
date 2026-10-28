@@ -16,7 +16,8 @@ const first = await runner.startTurn({
   newSessionId: id,
   prompt: "Use Bash to run `pwd` and tell me the result. Remember the word 'heron'.",
   effort: "low",
-  locked: false,
+  role: "main",
+  model: "claude-opus-5-5",
   onText: (t) => console.log("[clot]", t),
 }).done;
 console.log("first:", first);
@@ -25,7 +26,8 @@ const second = await runner.startTurn({
   resume: id,
   prompt: "Which word did I ask you to remember?",
   effort: "low",
-  locked: true,
+  role: "main",
+  model: "claude-opus-5-5",
   onText: (t) => console.log("[clot]", t),
 }).done;
 console.log("second:", second);

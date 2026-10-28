@@ -5,9 +5,14 @@ import { linkTo } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
 import { Hold } from "./hold.js";
 import type { Route } from "./routing.js";
-import type { ClotPort } from "./steering.js";
 import type { Store } from "./store.js";
 import type { Triage } from "./triage.js";
+
+/** The part of a Clot that the pipeline and hand-overs need. */
+export interface ClotPort {
+  isBusy(): boolean;
+  queueEvent(event: ClotEvent, notice: string, kick?: boolean): Promise<void>;
+}
 
 export interface PipelineDeps {
   store: Store;
@@ -15,7 +20,6 @@ export interface PipelineDeps {
   /** One file's pre-filters ("global", or a Clot's name), and the triage guidance for a Clot. */
   rulebook: { dropsIn(name: string, event: ClotEvent): boolean; guidance(clot: string): string };
   triage: Triage;
-  steering: { ask(clot: string, event: ClotEvent, message: string): Promise<boolean> };
   clots: Map<string, ClotPort>;
   /** Picks the Clot for an event. */
   route: (event: ClotEvent) => Promise<Route>;
@@ -30,7 +34,7 @@ export interface PipelineDeps {
   schedule: (ms: number, fn: () => void) => () => void;
 }
 
-/** Takes a stored event from arrival to its outcome: dropped, held, asked about, or queued for the Clot. */
+/** Takes a stored event from arrival to its outcome: dropped, held, or queued for the Clot. */
 export class Pipeline {
   private held: Hold;
   /** Events being handled at this moment, so that one is never handled twice at once. */
@@ -144,8 +148,7 @@ export class Pipeline {
     const { store, chat } = this.d;
     const drop = (why: string) => store.setEventStatus(event.id, "dropped", why);
 
-    const busy = port.isBusy();
-    const verdict = await this.d.triage.judge({ event, guidance: this.d.rulebook.guidance(clotName), tail: busy ? store.tail(clotName, 4) : null });
+    const verdict = await this.d.triage.judge({ event, guidance: this.d.rulebook.guidance(clotName) });
     store.recordTriage(event.id, verdict.message, verdict.urgent);
 
     // Checked before "no action": triage usually says both of an injection attempt, and the user must still hear of it.
@@ -158,9 +161,6 @@ export class Pipeline {
     }
 
     if (!verdict.needsAction) return drop("triage: no action needed");
-
-    // Still busy: the turn may have ended while triage was thinking.
-    if (verdict.relevantNow && port.isBusy() && (await this.d.steering.ask(clotName, event, verdict.message))) return;
 
     await port.queueEvent(event, verdict.message);
   }

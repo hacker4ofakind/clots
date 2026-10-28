@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { containerName, ensureContainer, hasOwnLogin, sessionEnv } from "./agent/container.js";
+import { addWorktree, containerName, defaultBranch, ensureContainer, hasOwnLogin, killStrayClaude, prsForBranch, refreshMainCheckout, removeWorktree, sessionEnv, sessionExistsAsync, worktreeExists } from "./agent/container.js";
 import { DockerMemoryFolders } from "./agent/memory-folder.js";
 import { HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
 import { SdkRunner } from "./agent/runner.js";
@@ -28,21 +28,20 @@ import { linearCommentSender, linearEnricher, linearHandler, linearMember } from
 import { notionBot, notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
 import { emailReplySender, mailer, smtpTransport } from "./sources/smtp.js";
 import { stripeEnricher, stripeHandler } from "./sources/stripe.js";
-import { SdkExplainer } from "./explainer.js";
 import { GlobalMemory } from "./global-memory.js";
 import { handOver } from "./hand-over.js";
 import { Supervisor } from "./listeners.js";
-import { githubHandler, startIntake, type Handler } from "./intake.js";
+import { githubHandler, startIntake, type Handler, type PullRequestChange } from "./intake.js";
 import { Pipeline } from "./pipeline.js";
 import { Proposals } from "./proposals.js";
 import { SdkRouter } from "./router.js";
 import { RuleWriter } from "./rule-writer.js";
 import { Rulebook } from "./rulebook.js";
 import { matchStanding } from "./standing.js";
-import { Steering } from "./steering.js";
 import { Store } from "./store.js";
 import { makeTools, showRules, type ToolDeps } from "./tools.js";
 import { SdkTriage } from "./triage.js";
+import { Workers } from "./workers.js";
 
 const config = loadConfig(JSON.parse(fs.readFileSync("clots.config.json", "utf8")), process.env);
 
@@ -64,7 +63,11 @@ const deliver = (event: ClotEvent, dropped?: string): void => {
  * The intake's paths. Each source adds its own as it is set up below. A request to a path that is
  * not here yet is answered 404, and webhook sources deliver it again later.
  */
-const handlers = new Map<string, Handler>([["/webhooks/github", githubHandler({ secret: config.webhookSecret, insertEvent: (event) => store.insertEvent(event), now: () => Date.now() })]]);
+/** Set once the workers exist. A pull request closed before then is caught by their check with GitHub at startup. */
+let onPullRequest: (a: PullRequestChange) => Promise<void> = async () => undefined;
+const handlers = new Map<string, Handler>([
+  ["/webhooks/github", githubHandler({ secret: config.webhookSecret, insertEvent: (event) => store.insertEvent(event), now: () => Date.now(), onPullRequest: (a) => onPullRequest(a) })],
+]);
 /** The webhook recipes' paths, /webhooks/r/<name>, set once the rulebook is read. */
 let recipeHandlers: (name: string) => Handler | undefined = () => undefined;
 const intake = startIntake({
@@ -94,7 +97,8 @@ const names = definitions.map((c) => c.name);
 const chat = new DiscordChat(config.discordToken, config.guildId);
 const router = new SdkRouter();
 const clots = new Map<string, Clot>();
-const steering = new Steering({ store, chat, explainer: new SdkExplainer(), userId: config.userId, timeZone: config.timeZone, clots });
+const runners = new Map<string, SdkRunner>();
+const repoOf = new Map(definitions.map((c) => [c.name, c.repoUrl === undefined ? null : (repoSlug(c.repoUrl) ?? null)]));
 
 /** Posts in a Clot's live channel. What the daemon says there never enters the Clot's session. */
 const say = async (clot: string, text: string): Promise<void> => {
@@ -112,6 +116,43 @@ rulebook.ensure();
 rulebook.load();
 rulebook.watch();
 
+const workers = new Workers({
+  store,
+  runnerFor: (clot) => runners.get(clot)!,
+  container: {
+    defaultBranch: (clot) => defaultBranch(containerName(clot)),
+    addWorktree: (clot, o) => addWorktree(containerName(clot), o),
+    removeWorktree: (clot, path) => removeWorktree(containerName(clot), path),
+    worktreeExists: (clot, path) => worktreeExists(containerName(clot), path),
+    sessionExists: (clot, id) => sessionExistsAsync(containerName(clot), id),
+  },
+  prsForBranch: (clot, branch, repo) => prsForBranch(containerName(clot), { branch, repo, githubToken: config.githubToken }),
+  knows: (clot) => runners.has(clot),
+  repoOf: (clot) => repoOf.get(clot) ?? null,
+  limit: config.maxWorkers,
+  now: () => Date.now(),
+  newId: randomUUID,
+  random: () => randomBytes(2).toString("hex"),
+  every: (ms, fn) => {
+    const timer = setInterval(fn, ms);
+    return () => clearInterval(timer);
+  },
+  after: (ms, fn) => {
+    const timer = setTimeout(fn, ms);
+    return () => clearTimeout(timer);
+  },
+  toMain: async (clot, row) => clots.get(clot)?.queueFromWorker(row),
+  pause: async (clot, resetsAt) => clots.get(clot)?.pauseFor(resetsAt),
+  say,
+  postActivity: async (clot, activity) => {
+    const session = store.activeSession(clot);
+    if (session) await chat.postActivity(session.channelId, activity);
+  },
+});
+onPullRequest = (a) => workers.onPullRequest(a);
+// Database only, and before any Clot starts: their first turns can start workers.
+workers.recover();
+
 const writer = new RuleWriter({ rulebook, store });
 const proposals = new Proposals({ store, chat, writer, userId: config.userId, max: config.maxProposals, say });
 const toolDeps: ToolDeps = {
@@ -122,6 +163,7 @@ const toolDeps: ToolDeps = {
   senders: { github_comment: githubCommentSender(config.githubToken) },
   say,
   handOver: (from, eventId, to) => handOver({ store, clots, say }, from, eventId, to),
+  workers,
 };
 
 const memory = new GlobalMemory({
@@ -168,7 +210,6 @@ const sendReviews =
 await chat.start((m) => {
   void (async () => {
     // A reply in a temporary channel is an answer to the daemon's question there, not a message for the Clot.
-    if (await steering.onReply(m)) return;
     if (await proposals.onReply(m)) return;
     if (await sendReviews?.onReply(m)) return;
     if (await memory.onReply(m)) return;
@@ -181,6 +222,9 @@ await chat.start((m) => {
 // A question about a global memory whose channel was removed while the daemon was down can no longer
 // be answered. Closed before the home Clot's startup check, which then asks it again.
 await memory.closeOrphans();
+// Questions an earlier version opened about events have no one to answer them any more.
+for (const channelId of store.leftoverAskChannels()) await chat.deleteChannel(channelId).catch(() => undefined);
+store.clearLeftoverAsks();
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check. */
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Set up with the email sources. */
 const drafts = config.sources.email.length === 0 ? undefined : new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
@@ -194,35 +238,41 @@ for (const c of definitions) {
   const login = await ensureContainer({ clot: c.name, image: config.image, repoUrl: c.repoUrl, githubToken: config.githubToken });
   if (login) clotLogin = login;
   if (c.repoUrl !== undefined) repoToClot.set(repoSlug(c.repoUrl)!, c.name);
+  // A session a `docker exec` kept alive past the last daemon must not run beside the one resumed now.
+  await killStrayClaude(containerName(c.name));
   const ownLogin = hasOwnLogin(containerName(c.name));
   console.log(`[${c.name}] signing in with ${ownLogin ? "the container's own login" : "the token from .env"}`);
+  const runner = new SdkRunner({
+    clot: c.name,
+    env: sessionEnv({ claudeToken: config.claudeToken, githubToken: config.githubToken, ownLogin }),
+    testCommand: c.testCommand,
+    // The home Clot has no clone to start in, and a system prompt that names no project.
+    ...(c.repoUrl === undefined ? { cwd: "/workspace", systemPrompt: HOME_SYSTEM_PROMPT } : {}),
+  });
+  runners.set(c.name, runner);
   const clot = new Clot({
     name: c.name,
     store,
     chat,
     router,
-    runner: new SdkRunner({
-      clot: c.name,
-      env: sessionEnv({ claudeToken: config.claudeToken, githubToken: config.githubToken, ownLogin }),
-      testCommand: c.testCommand,
-      // The home Clot has no clone to start in, and a system prompt that names no project.
-      ...(c.repoUrl === undefined ? { cwd: "/workspace", systemPrompt: HOME_SYSTEM_PROMPT } : {}),
-    }),
+    runner,
+    workerLines: (name) => workers.lines(name),
+    onLimit: (resetsAt) => workers.onLimit(resetsAt),
     timeZone: config.timeZone,
     userId: config.userId,
     rolloverPercent: config.rolloverPercent,
     now: () => new Date(),
     newId: randomUUID,
     schedule: (ms, fn) => void setTimeout(fn, ms),
-    // When no turn is running, a question about "the running turn" has lapsed. After the home Clot's
-    // turns, and once at startup, its global memories are looked at.
+    // After the home Clot's turns, and once at startup, its global memories are looked at.
     onTurnEnd: async (name) => {
-      await steering.lapse(name);
       if (name === HOME_CLOT) await memory.afterHomeTurn();
     },
     beforeTurn: async (name) => {
       await drafts?.check(name);
       await memory.beforeTurn(name);
+      // The main session cannot pull, so the daemon keeps its clone on the latest default branch. Old code is better than none.
+      if (repoOf.get(name)) await refreshMainCheckout(containerName(name)).catch((error) => console.warn(`[${name}] refreshing the clone failed; reading the code as it was:`, error));
     },
     memory: { list: () => memory.list(), undo: () => memory.undo() },
     makeTools: (ctx) => makeTools(toolDeps, ctx),
@@ -240,6 +290,9 @@ for (const c of definitions) {
   await clot.init();
   console.log(`[${c.name}] ready`);
 }
+
+// Every Clot is ready: the workers' queue starts, after a check of their worktrees and pull requests.
+await workers.startUp();
 
 // A proposal whose channel was removed while the daemon was down can no longer be answered.
 await proposals.closeOrphans();
@@ -277,7 +330,7 @@ if (config.sources.stripe.length > 0) enrichers.stripe = stripeEnricher(config.s
 // Email: one connection per watched mailbox, held open and reopened when it drops.
 for (const account of config.sources.email) {
   for (const mailbox of account.mailboxes) {
-    const listener = new MailboxListener({ account, mailbox, client: () => imapflowClient(account), store, deliver, now: () => Date.now() });
+    const listener = new MailboxListener({ account, mailbox, client: () => imapflowClient(account), store, deliver, now: () => Date.now(), ownAddresses: config.sources.email.flatMap((a) => [a.address, ...a.addresses]) });
     supervisor.start({ name: `email ${account.account} (${mailbox})`, everyMs: 0, tell: tellAccount(account), run: (ready) => listener.run(ready) });
   }
 }
@@ -458,7 +511,6 @@ const pipeline = new Pipeline({
   chat,
   rulebook,
   triage: new SdkTriage(),
-  steering,
   clots,
   route: (event) => eventRouter.route(event),
   selfCaused: (event) => event.source === "github" && isSelfCaused(event, clotLogin),

@@ -104,6 +104,7 @@ export function watchEvent(recipe: WatchRecipe, entry: { id: string; item: unkno
     ref: entry.id,
     subject: recipe.name,
     automated: true,
+    outsider: false,
     receivedAt,
   };
 }

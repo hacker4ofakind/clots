@@ -7,7 +7,7 @@ import { emailReplySender, mailer } from "../src/sources/smtp.js";
 import { Store } from "../src/store.js";
 
 const account: EmailAccount = { account: "gmail", shared: true, address: "me@gmail.com", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["Clots"], tellAddress: true };
-const mail: ClotEvent = { id: "email:gmail:<m2@x.com>", source: "email", account: "gmail", kind: "email", place: "me+shop@gmail.com", actor: "jane@x.com", title: "Order 7", body: "", url: "https://mail.google.com/mail/u/0/#all/1", ref: "<m2@x.com>", subject: "thread:<m1@x.com>", automated: false, receivedAt: 0 };
+const mail: ClotEvent = { id: "email:gmail:<m2@x.com>", source: "email", account: "gmail", kind: "email", place: "me+shop@gmail.com", actor: "jane@x.com", title: "Order 7", body: "", url: "https://mail.google.com/mail/u/0/#all/1", ref: "<m2@x.com>", subject: "thread:<m1@x.com>", automated: false, outsider: false, receivedAt: 0 };
 
 let store: Store;
 let sent: any[];

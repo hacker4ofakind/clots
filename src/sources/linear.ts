@@ -45,6 +45,7 @@ export function normalizeLinear(account: LinearAccount, payload: unknown, delive
     ref,
     subject: `issue:${ref}`,
     automated: actorType !== "" && actorType !== "user",
+    outsider: false,
     receivedAt,
   };
   const actorId = text(p.actor?.id) || text(d.userId) || text(d.creatorId);

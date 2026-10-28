@@ -55,6 +55,35 @@ export interface IntakeDeps {
   /** Stores a new event; false when one with that ID is already stored. */
   insertEvent: (event: ClotEvent) => boolean;
   now: () => number;
+  /** Told of every pull request opened, reopened or closed, before anything is stored. */
+  onPullRequest?: (a: PullRequestChange) => Promise<void>;
+}
+
+export interface PullRequestChange {
+  /** owner/name, lowercased. */
+  repo: string;
+  branch: string;
+  /** The repository the head branch is in, lowercased: another one for a fork. */
+  headRepo: string;
+  number: number;
+  url: string;
+  action: "opened" | "closed";
+}
+
+function pullRequestChange(eventName: string, payload: unknown): PullRequestChange | undefined {
+  if (eventName !== "pull_request" || typeof payload !== "object" || payload === null) return undefined;
+  const p = payload as Record<string, any>;
+  const action = p.action === "opened" || p.action === "reopened" ? "opened" : p.action === "closed" ? "closed" : undefined;
+  const pr = p.pull_request;
+  if (action === undefined || typeof pr !== "object" || pr === null || typeof p.repository?.full_name !== "string") return undefined;
+  return {
+    repo: String(p.repository.full_name).toLowerCase(),
+    branch: String(pr.head?.ref ?? ""),
+    headRepo: String(pr.head?.repo?.full_name ?? "").toLowerCase(),
+    number: Number(pr.number ?? p.number),
+    url: String(pr.html_url ?? ""),
+    action,
+  };
 }
 
 /**
@@ -67,6 +96,10 @@ export function acceptGithub(d: Delivery, deps: IntakeDeps): Answer {
   if (!d.eventName || !d.deliveryId) return { status: 400, text: "missing GitHub headers" };
   const payload = jsonBody(d.rawBody);
   if (payload === undefined) return { status: 400, text: "body is not JSON" };
+  // A pull request's own lifecycle is the workers' business, and is read before the Clot's own events are dropped.
+  const pr = pullRequestChange(d.eventName, payload);
+  if (pr && deps.onPullRequest) void deps.onPullRequest(pr).catch((error) => console.error("[events] handling a pull request's change failed:", error));
+  if (pr?.action === "closed") return { status: 200, text: "pull request closed" };
   const event = normalizeGithub(d.eventName, d.deliveryId, payload, deps.now());
   if (!event) return { status: 200, text: "ignored" };
   return storeEvent(event, deps.insertEvent);

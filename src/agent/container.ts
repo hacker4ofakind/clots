@@ -143,3 +143,119 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl?
   });
   return typeof account?.login === "string" ? account.login : undefined;
 }
+
+// Workers. Every git command the daemon runs in a container goes through that container's own
+// chain, one at a time: git commands in one shared .git collide on its lock files.
+
+const REPO = "/workspace/repo";
+const EXEC_TIMEOUT_MS = 120_000;
+const chains = new Map<string, Promise<unknown>>();
+
+/** Where a worker works: a worktree of the clone, or a plain directory for the home Clot. */
+export function worktreePath(workerId: string, home: boolean): string {
+  return home ? `/workspace/workers/${workerId}` : `/workspace/worktrees/${workerId}`;
+}
+
+/**
+ * The docker arguments for each worker step. The branch and the path come from titles the model
+ * wrote, so they are passed as the script's positional arguments, never put into its text.
+ */
+export const workerExec = {
+  defaultBranch: (container: string) => ["exec", container, "git", "-C", REPO, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+  addWorktree: (container: string, path: string, branch: string, base: string) => [
+    "exec", container, "sh", "-c",
+    `git -C ${REPO} fetch origin && git -C ${REPO} worktree add --no-track -b "$1" "$2" "origin/$3"`,
+    "sh", branch, path, base,
+  ],
+  addDirectory: (container: string, path: string) => ["exec", container, "mkdir", "-p", path],
+  removeWorktree: (container: string, path: string) => [
+    "exec", container, "sh", "-c",
+    `if [ -e "$1" ]; then git -C ${REPO} worktree remove --force "$1"; fi && git -C ${REPO} worktree prune`,
+    "sh", path,
+  ],
+  removeDirectory: (container: string, path: string) => ["exec", container, "rm", "-rf", path],
+  exists: (container: string, path: string) => ["exec", container, "test", "-d", path],
+  refreshMain: (container: string, base: string) => [
+    "exec", container, "sh", "-c",
+    `git -C ${REPO} fetch origin && git -C ${REPO} checkout --detach --force "origin/$1"`,
+    "sh", base,
+  ],
+  killStray: (container: string) => ["exec", container, "pkill", "-x", "claude"],
+  sessionExists: (container: string, sessionId: string) => ["exec", container, "sh", "-c", 'ls /home/clot/.claude/projects/*/"$1".jsonl', "sh", sessionId],
+  prsForBranch: (container: string, branch: string, repo: string) => ["exec", "-e", "GH_TOKEN", container, "gh", "pr", "list", "-R", repo, "--head", branch, "--state", "all", "--json", "number,url,state"],
+};
+
+async function docker(args: string[], env?: Record<string, string>): Promise<string> {
+  try {
+    const { stdout } = await run("docker", args, { timeout: EXEC_TIMEOUT_MS, ...(env ? { env: { ...process.env, ...env } } : {}) });
+    return stdout;
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr?.trim();
+    throw new Error(stderr || (error instanceof Error ? error.message : String(error)));
+  }
+}
+
+/** Runs a git step in the container's chain. One that hits another git's lock is tried once more, two seconds later. */
+function gitStep(container: string, args: string[]): Promise<string> {
+  const attempt = () =>
+    docker(args).catch(async (error: Error) => {
+      if (!/index\.lock|cannot lock ref/.test(error.message)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      return docker(args);
+    });
+  const next = (chains.get(container) ?? Promise.resolve()).then(attempt, attempt);
+  chains.set(container, next.catch(() => undefined));
+  return next;
+}
+
+/** The repository's default branch, as the clone knows it; main when it cannot be read. */
+export async function defaultBranch(container: string): Promise<string> {
+  const ref = await gitStep(container, workerExec.defaultBranch(container)).catch(() => "");
+  return ref.trim().replace(/^origin\//, "") || "main";
+}
+
+/** Makes a worker's place and returns its path. With a base, a worktree on a new branch from it; without, an empty directory. */
+export async function addWorktree(container: string, o: { workerId: string; branch: string | null; base: string | null }): Promise<string> {
+  const path = worktreePath(o.workerId, o.base === null);
+  if (o.base === null || o.branch === null) await docker(workerExec.addDirectory(container, path));
+  else await gitStep(container, workerExec.addWorktree(container, path, o.branch, o.base));
+  return path;
+}
+
+/** Removes a worker's place. The branch is kept. Succeeds when it is already gone. */
+export async function removeWorktree(container: string, path: string): Promise<void> {
+  if (path.startsWith("/workspace/workers/")) await docker(workerExec.removeDirectory(container, path));
+  else await gitStep(container, workerExec.removeWorktree(container, path));
+}
+
+export async function worktreeExists(container: string, path: string): Promise<boolean> {
+  return docker(workerExec.exists(container, path)).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** Brings the main session's clone to the default branch's latest commit. It is never a worker's branch, so detaching it is safe. */
+export async function refreshMainCheckout(container: string): Promise<void> {
+  const base = await defaultBranch(container);
+  await gitStep(container, workerExec.refreshMain(container, base));
+}
+
+/** Stops every Claude Code process left in the container: a `docker exec` can outlive the daemon that started it. */
+export async function killStrayClaude(container: string): Promise<void> {
+  // pkill exits 1 when there was nothing to stop.
+  await docker(workerExec.killStray(container)).catch(() => undefined);
+}
+
+/** Whether Claude Code already holds a transcript for this session, without blocking the daemon. */
+export async function sessionExistsAsync(container: string, sessionId: string): Promise<boolean> {
+  return docker(workerExec.sessionExists(container, sessionId)).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** The pull requests GitHub has for a branch, open or not. */
+export async function prsForBranch(container: string, o: { branch: string; repo: string; githubToken: string }): Promise<{ number: number; url: string; state: string }[]> {
+  return JSON.parse(await docker(workerExec.prsForBranch(container, o.branch, o.repo), { GH_TOKEN: o.githubToken }));
+}

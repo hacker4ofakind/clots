@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildPrompt, CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT } from "../src/agent/prompts.js";
 
-const base = { text: "hello", mode: "action" as const, modeChanged: false, seed: null, interrupted: false };
+const base = { text: "hello", seed: null, interrupted: false };
 
 describe("buildPrompt, stage 2b", () => {
   it("is unchanged when there are no notes and no standing rules", () => {
@@ -28,6 +28,26 @@ describe("buildPrompt, stage 2b", () => {
 });
 
 describe("the system prompts", () => {
+  it("tell every Clot it is locked, works through workers, and trusts Sonnet 5.5 high", () => {
+    for (const prompt of [CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT]) {
+      expect(prompt).toContain("start_session");
+      expect(prompt).toContain("message_worker");
+      expect(prompt).toContain("Sonnet 5.5 high");
+      expect(prompt).toContain("you are locked in every turn");
+      expect(prompt).toContain("Haiku is never run at high");
+      expect(prompt).not.toContain("rainstorm");
+    }
+    expect(HOME_SYSTEM_PROMPT).toContain("give anything that needs a clone to a worker");
+  });
+
+  it("put the event note's three outcomes in an event's prompt, and nothing about brainstorming", () => {
+    const prompt = buildPrompt({ ...base, text: "<event>", event: true });
+    expect(prompt).toContain("start a worker right away");
+    expect(prompt).toContain("one or two options");
+    expect(prompt).not.toContain("rainstorm");
+    expect(prompt).not.toContain("Act on what was agreed");
+  });
+
   it("tell the home Clot that events no project Clot took come to it from every source", () => {
     expect(HOME_SYSTEM_PROMPT).toContain("from shared accounts that no rule and no routing call placed");
   });

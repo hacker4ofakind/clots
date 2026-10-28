@@ -129,6 +129,7 @@ export function normalizeStripe(account: StripeAccount, payload: unknown, receiv
     ref: id,
     subject: customer ? `customer:${customer}` : `${objectType}:${id}`,
     automated: true,
+    outsider: false,
     receivedAt,
   };
 }

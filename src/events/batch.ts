@@ -53,6 +53,7 @@ export function combine(events: ClotEvent[]): { event: ClotEvent; absorbed: Clot
       ref: name,
       subject: first.subject,
       automated: true,
+      outsider: kept.some((e) => e.outsider),
       receivedAt: first.receivedAt,
     },
     absorbed: events,

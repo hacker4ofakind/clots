@@ -14,18 +14,26 @@ import { parseWatch, parseWebhook, problemText, type Prefilter, type RoutingRule
 import { tryRecipe } from "./watch.js";
 import { checkSend, matchStanding, MAX_CHANGED_WORDS, mentionsNotify } from "./standing.js";
 import type { Store } from "./store.js";
+import type { Effort, WorkerModel } from "./types.js";
+import type { Workers } from "./workers.js";
 
-/** A working turn the user started, a turn in brainstorm mode, or the investigation of an event. */
-export type TurnKind = "work" | "brainstorm" | "investigation";
+/**
+ * A turn the user's message started, the investigation of an event, or a turn for a worker's
+ * report, question or failure. Only a chat turn carries the user's authority.
+ */
+export type TurnKind = "chat" | "event" | "worker";
 
 /** What the daemon's tools know about the turn they were made for. */
 export interface TurnContext {
   clot: string;
   kind: TurnKind;
-  /** Whether a steered event has joined the turn. Asked at each call: it can become true while the turn runs. */
-  steered: () => boolean;
   /** The event an investigation was started for. */
   event?: ClotEvent;
+}
+
+/** A worker's tools. Each returns the text the worker is given as the tool's result. */
+export interface WorkerTools {
+  askMain(a: { question: string }): Promise<string>;
 }
 
 /** The daemon's tools for one turn. Each returns the text the Clot is given as the tool's result. */
@@ -53,6 +61,9 @@ export interface DaemonTools {
   watchTry?(recipe: WatchRecipe): Promise<string>;
   watch(a: { action: "set" | "remove"; file: RuleScope; recipe?: WatchRecipe; name?: string }): Promise<string>;
   webhook(a: { action: "set" | "remove"; file: RuleScope; recipe?: WebhookRecipe; name?: string }): Promise<string>;
+  startSession(a: { title: string; brief: string; model: WorkerModel; effort: Effort }): Promise<string>;
+  messageWorker(a: { id: string; text: string }): Promise<string>;
+  stopWorker(a: { id: string }): Promise<string>;
 }
 
 export interface ToolDeps {
@@ -77,6 +88,8 @@ export interface ToolDeps {
     /** Calls an account's Apps Script. Absent when no calendar has one. */
     call?(account: string, req: ScriptRequest): Promise<ScriptResult>;
   };
+  /** The workers. Absent where nothing can start one. */
+  workers?: Pick<Workers, "start" | "message" | "stop">;
   /** The daemon's MCP servers. Absent when it has none. */
   mcp?: { describe(): Promise<string>; listTools?(server: string): Promise<ToolInfo[]>; callTool?(server: string, tool: string, args: Record<string, unknown>): Promise<ToolResult> };
 }
@@ -86,13 +99,13 @@ const MAX_SEND_TEXT = 4000;
 
 /**
  * Whether an edit must be put to the user instead of being applied. Applied at once is only a
- * pre-filter or a triage line in the Clot's own file, in a working turn the user started that
- * no steered event has joined. The Clot has no say in this.
+ * pre-filter or a triage line in the Clot's own file, in a turn the user's message started.
+ * The Clot has no say in this.
  */
 export function mustPropose(ctx: TurnContext, file: RuleScope, edit: RuleEdit): boolean {
   if (file === "global") return true;
   if (edit.op !== "add_prefilter" && edit.op !== "remove_prefilter" && edit.op !== "add_guidance" && edit.op !== "remove_guidance") return true;
-  return ctx.kind !== "work" || ctx.steered();
+  return ctx.kind !== "chat";
 }
 
 /** The rules in force for a Clot and its open proposals, as text for the Clot and for `&rules`. */
@@ -139,7 +152,7 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
 
     send: async ({ rule, text }) => {
       const event = ctx.event;
-      if (ctx.kind !== "investigation" || event === undefined) return "Refused: a standing rule can be used only while looking into the event that triggered it.";
+      if (ctx.kind !== "event" || event === undefined) return "Refused: a standing rule can be used only while looking into the event that triggered it.";
       const parts = event.kind === "batch" ? d.store.eventsMergedInto(event.id) : [];
       const match = matchStanding(d.rulebook.standingFor(ctx.clot), event, parts).find((candidate) => candidate.rule.name === rule);
       if (!match) return `Refused: no standing rule named "${rule}" applies to the event this turn is looking into.`;
@@ -171,7 +184,7 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
     routing: ({ action, rule }) => submit("global", { op: action === "add" ? "add_routing" : "remove_routing", rule }),
 
     routeCorrect: async ({ event, clot }) => {
-      if (ctx.kind !== "work") return "Refused: an event can be handed to another Clot only in a working turn, after the user has said where it belongs.";
+      if (ctx.kind !== "chat") return "Refused: an event can be handed to another Clot only in a turn the user's message started, after the user has said where it belongs.";
       return d.handOver(ctx.clot, event, clot);
     },
 
@@ -203,6 +216,16 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
         return `Not proposed: ${problemText(error)}.`;
       }
     },
+
+    // Opening a pull request needs no yes, so a worker can be started in any kind of turn.
+    // One started while looking into an urgent event goes ahead of the queue.
+    startSession: async (a) => {
+      if (!d.workers) return "Refused: workers are not available.";
+      const urgent = ctx.kind === "event" && ctx.event !== undefined && d.store.getEvent(ctx.event.id)?.urgent === true;
+      return d.workers.start(ctx.clot, { ...a, urgent });
+    },
+    messageWorker: async ({ id, text }) => (d.workers ? d.workers.message(ctx.clot, id, text) : "Refused: workers are not available."),
+    stopWorker: async ({ id }) => (d.workers ? d.workers.stop(ctx.clot, id) : "Refused: workers are not available."),
     ...(d.calendar?.call === undefined
       ? {}
       : {
@@ -222,9 +245,8 @@ function writableAccount(d: ToolDeps, name: string | undefined): CalendarAccount
 
 async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Parameters<NonNullable<DaemonTools["calendarWrite"]>>[0]>): Promise<string> {
   const calendar = d.calendar!;
-  if (ctx.kind !== "work") return "Refused: the calendar is changed in a working turn. While locked, describe the change in your reply.";
-  // A steered event is outside data in the user's turn: what it asks for is not the user's request.
-  if (ctx.steered()) return "Refused: an outside event has joined this turn, so the calendar is not changed in it. Say what you would change, and the user can ask for it in their next message.";
+  // An event's or a worker's text is not the user's request.
+  if (ctx.kind !== "chat") return "Refused: the calendar is changed only in a turn the user's message started. Describe the change in your reply.";
   const account = writableAccount(d, a.account);
   if (typeof account === "string") return account;
   const zone = calendar.timeZone;
@@ -261,12 +283,12 @@ async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Param
 }
 
 /**
- * Puts the removal of an event to the user. Allowed only in a working turn the user started with
- * no steered event in it: the turn in which the user can have said yes in chat, as the system
- * prompt requires before this is called. The user's second yes is given to the daemon.
+ * Puts the removal of an event to the user. Allowed only in a turn the user's message started:
+ * the turn in which the user can have said yes in chat, as the system prompt requires before
+ * this is called. The user's second yes is given to the daemon.
  */
 async function calendarRemove(d: ToolDeps, ctx: TurnContext, a: { account?: string; uid: string }): Promise<string> {
-  if (ctx.kind !== "work" || ctx.steered()) return "Refused: removing an event needs a working turn of the user's own. Ask the user in chat first, and call this only after their yes.";
+  if (ctx.kind !== "chat") return "Refused: removing an event needs a turn the user's message started. Ask the user in chat first, and call this only after their yes.";
   const account = writableAccount(d, a.account);
   if (typeof account === "string") return account;
   return d.proposals.openRemoval!(ctx.clot, { account: account.account, uid: a.uid });
@@ -338,11 +360,11 @@ function buildMail(d: ToolDeps, ctx: TurnContext, a: EmailArgs): { account: Emai
 
 /**
  * Puts an email to the user, who sends it, drops it, has it saved as a draft, or gives feedback.
- * Nothing leaves without the user's yes, so it works in every kind of turn; an investigation
- * may only answer the email it is looking into.
+ * Nothing leaves without the user's yes, so it works in every kind of turn; a turn the user's
+ * message did not start may only answer the email it is looking into.
  */
 async function emailSend(d: ToolDeps, ctx: TurnContext, a: EmailArgs): Promise<string> {
-  if (ctx.kind === "investigation") {
+  if (ctx.kind !== "chat") {
     const event = ctx.event;
     const looking = event === undefined ? [] : [event.id, ...(event.kind === "batch" ? d.store.eventsMergedInto(event.id).map((part) => part.id) : [])];
     if (a.event === undefined || !looking.includes(a.event)) return "Refused: while looking into an event, you can only ask to answer that email. Give its id. A new message can be asked for in a turn the user started.";
@@ -354,7 +376,7 @@ async function emailSend(d: ToolDeps, ctx: TurnContext, a: EmailArgs): Promise<s
 
 async function emailDraft(d: ToolDeps, ctx: TurnContext, a: EmailArgs): Promise<string> {
   const email = d.email!;
-  if (ctx.kind !== "work") return "Refused: drafts are saved in a working turn. While locked, write the draft in your reply; the user's go-ahead lets you save it.";
+  if (ctx.kind !== "chat") return "Refused: drafts are saved in a turn the user's message started. Write the draft in your reply; the user's go-ahead lets you save it.";
   const built = buildMail(d, ctx, a);
   if (typeof built === "string") return built;
   const { account, mail } = built;

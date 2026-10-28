@@ -143,6 +143,14 @@ describe("emailEvent", () => {
     expect(event.body).toContain("Attachments (not read): receipt.pdf (application/pdf, 117 KB)");
   });
 
+  it("marks mail from an address that is not one of the user's as an outsider's", async () => {
+    const m = await mail();
+    expect(emailEvent({ account, mailbox: "Clots", uid: 4, uidValidity: "9", mail: m, tooLarge: false }, 0).outsider).toBe(true);
+    const own = { ...m, from: { address: "Me@Gmail.com", name: "Me" } };
+    expect(emailEvent({ account: { ...account, address: "me@gmail.com" }, mailbox: "Clots", uid: 4, uidValidity: "9", mail: own, tooLarge: false }, 0).outsider).toBe(false);
+    expect(emailEvent({ account, mailbox: "Clots", uid: 4, uidValidity: "9", mail: m, tooLarge: false, ownAddresses: ["jane@example.com"] }, 0).outsider).toBe(false);
+  });
+
   it("says when only the headers were read, and names a message with no Message-ID by its place in the mailbox", async () => {
     const m: Mail = { ...(await mail()), messageId: undefined, text: "" };
     const event = emailEvent({ account, mailbox: "Clots", uid: 4, uidValidity: "9", mail: m, tooLarge: true }, 1000);

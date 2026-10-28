@@ -233,6 +233,8 @@ export interface MailboxListenerDeps {
   /** Hands a stored event on; with a reason, it goes no further. */
   deliver: (event: ClotEvent, dropped?: string) => void;
   now: () => number;
+  /** Every address of every configured account: mail from any other is an outsider's. Defaults to this account's own. */
+  ownAddresses?: string[];
 }
 
 /**
@@ -285,7 +287,7 @@ export class MailboxListener {
   private async handle(fetched: FetchedMail, uidValidity: string): Promise<void> {
     const { store, account, mailbox } = this.d;
     const mail = fromParsed(await simpleParser(fetched.source ?? fetched.headers ?? Buffer.alloc(0)));
-    const event = emailEvent({ account, mailbox, uid: fetched.uid, uidValidity, threadId: fetched.threadId, mail, tooLarge: fetched.source === undefined }, this.d.now());
+    const event = emailEvent({ account, mailbox, uid: fetched.uid, uidValidity, threadId: fetched.threadId, mail, tooLarge: fetched.source === undefined, ownAddresses: this.d.ownAddresses }, this.d.now());
     if (!store.insertEvent(event)) return;
     store.setState(emailMetaKey(event.id), JSON.stringify(metaOf(mail)));
     const own = mail.messageId !== undefined && store.getState(ownMessageKey(mail.messageId)) !== undefined;

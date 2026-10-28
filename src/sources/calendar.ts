@@ -207,6 +207,7 @@ export function reminderEvent(account: CalendarAccount, o: Occurrence, lead: num
     ref: o.uid,
     subject: `event:${o.uid}`,
     automated: false,
+    outsider: false,
     receivedAt,
   };
 }

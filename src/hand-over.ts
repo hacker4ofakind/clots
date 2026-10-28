@@ -1,4 +1,4 @@
-import type { ClotPort } from "./steering.js";
+import type { ClotPort } from "./pipeline.js";
 import type { Store } from "./store.js";
 
 export interface HandOverDeps {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ClotEvent } from "../src/events/types.js";
 import { jsonBody, startIntake, storeEvent, type Answer, type Handler } from "../src/intake.js";
 
-const event: ClotEvent = { id: "x:1", source: "x", account: "a", kind: "comment", place: "p", actor: "someone", title: "t", body: "", url: "", ref: "1", subject: "s", automated: false, receivedAt: 0 };
+const event: ClotEvent = { id: "x:1", source: "x", account: "a", kind: "comment", place: "p", actor: "someone", title: "t", body: "", url: "", ref: "1", subject: "s", automated: false, outsider: false, receivedAt: 0 };
 
 let close: (() => void) | undefined;
 afterEach(() => close?.());

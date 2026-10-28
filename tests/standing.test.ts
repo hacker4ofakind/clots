@@ -18,6 +18,7 @@ function event(overrides: Partial<ClotEvent> = {}): ClotEvent {
     ref: "7",
     subject: "issue:7",
     automated: false,
+    outsider: false,
     receivedAt: 0,
     ...overrides,
   };

@@ -8,7 +8,7 @@ let released: { clot: string; ids: string[] }[];
 let hold: Hold;
 
 function event(id: string, subject = "pr:14"): ClotEvent {
-  return { id, source: "github", kind: "ci_failed", account: "github", place: "octo/widgets", actor: "widgets-clot", title: "CI failed: CI on main", body: "", url: "u", ref: "main", subject, automated: true, receivedAt: 0 };
+  return { id, source: "github", kind: "ci_failed", account: "github", place: "octo/widgets", actor: "widgets-clot", title: "CI failed: CI on main", body: "", url: "u", ref: "main", subject, automated: true, outsider: false, receivedAt: 0 };
 }
 
 /** Moves the clock on and runs the waits that have run out. */

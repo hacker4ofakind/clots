@@ -31,6 +31,9 @@ const tools: DaemonTools = {
   routeCorrect: async () => "unused",
   watch: async () => "unused",
   webhook: async () => "unused",
+  startSession: async () => "unused",
+  messageWorker: async () => "unused",
+  stopWorker: async () => "unused",
 };
 
 const runner = new SdkRunner({ clot, env: { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN! } });
@@ -43,7 +46,8 @@ const result = await runner.startTurn({
     `3. Run \`touch ${CWD}/a.txt\` with Bash. ` +
     "Report one line per step: what came back, or REFUSED.",
   effort: "low",
-  locked: true,
+  role: "main",
+  model: "claude-opus-5-5",
   tools,
   onText: (t) => console.log("[clot]", t),
 }).done;

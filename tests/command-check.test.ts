@@ -206,6 +206,23 @@ describe("lockDecision", () => {
       expect(lockDecision(tool, {}).ok).toBe(false);
     }
   });
+
+  it("lets Edit and Write reach only Markdown files directly in the memory folder", () => {
+    expect(lockDecision("Write", { file_path: "/home/clot/.claude/projects/-workspace-repo/memory/user-prefs.md" })).toEqual({ ok: true });
+    expect(lockDecision("Edit", { file_path: "/home/clot/.claude/projects/-workspace/memory/MEMORY.md" })).toEqual({ ok: true });
+    for (const file_path of [
+      "/home/clot/.claude/projects/x/memory/../settings.json",
+      "/home/clot/.claude/projects/x/memory/../../x/memory/a.md",
+      "/workspace/repo/a.md",
+      "/home/clot/.claude/projects/x/memory/notes.json",
+      "/home/clot/.claude/projects/x/memory/sub/a.md",
+      "home/clot/.claude/projects/x/memory/a.md",
+      "memory/a.md",
+    ]) {
+      expect(lockDecision("Write", { file_path })).toEqual({ ok: false, reason: "Refused: while locked, only files in your memory folder can be written." });
+    }
+    expect(lockDecision("NotebookEdit", { notebook_path: "/home/clot/.claude/projects/x/memory/a.md" }).ok).toBe(false);
+  });
 });
 
 describe("lockHookAnswer", () => {

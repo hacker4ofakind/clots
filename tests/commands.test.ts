@@ -22,11 +22,12 @@ describe("parseCommand", () => {
   });
 
   it("reads &effort alone and with a message", () => {
-    expect(parseCommand("&effort high")).toEqual({ kind: "effort", effort: "high", rest: "" });
+    expect(parseCommand("&effort medium")).toEqual({ kind: "effort", effort: "medium", rest: "" });
     expect(parseCommand("&effort low check the link\nand the footer")).toEqual({ kind: "effort", effort: "low", rest: "check the link\nand the footer" });
   });
 
-  it("rejects an effort level that is not low, medium or high", () => {
+  it("rejects an effort level that is not low or medium", () => {
+    expect(parseCommand("&effort high fix it")).toEqual({ kind: "invalid", name: "effort" });
     expect(parseCommand("&effort max do it")).toEqual({ kind: "invalid", name: "effort" });
     expect(parseCommand("&effort")).toEqual({ kind: "invalid", name: "effort" });
   });

@@ -145,8 +145,10 @@ export function metaOf(mail: Mail): EmailMeta {
 const kb = (bytes: number) => `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
 /** A message as the common event. */
-export function emailEvent(o: { account: EmailAccount; mailbox: string; uid: number; uidValidity: string; threadId?: string; mail: Mail; tooLarge: boolean }, receivedAt: number): ClotEvent {
+export function emailEvent(o: { account: EmailAccount; mailbox: string; uid: number; uidValidity: string; threadId?: string; mail: Mail; tooLarge: boolean; ownAddresses?: string[] }, receivedAt: number): ClotEvent {
   const { account, mail } = o;
+  const own = (o.ownAddresses ?? [account.address, ...account.addresses]).map((a) => a.toLowerCase());
+  const sender = mail.from?.address.toLowerCase();
   const where = `${o.mailbox}:${o.uidValidity}:${o.uid}`;
   const from = mail.from === undefined ? "(no sender)" : mail.from.name ? `${mail.from.name} <${mail.from.address}>` : mail.from.address;
   const lines = [
@@ -172,6 +174,7 @@ export function emailEvent(o: { account: EmailAccount; mailbox: string; uid: num
     ref: mail.messageId ?? "",
     subject: threadSubject(mail, where),
     automated: isAutomatedMail(mail),
+    outsider: sender === undefined || !own.includes(sender),
     receivedAt,
   };
 }
