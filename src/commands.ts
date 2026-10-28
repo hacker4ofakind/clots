@@ -1,4 +1,4 @@
-import type { Effort } from "./types.js";
+import type { MainEffort } from "./types.js";
 
 /**
  * Commands start with "&" and are handled by the daemon. They never reach the
@@ -7,14 +7,14 @@ import type { Effort } from "./types.js";
 export type Command =
   | { kind: "none" }
   | { kind: "close"; summary: boolean }
-  | { kind: "effort"; effort: Effort; rest: string }
+  | { kind: "effort"; effort: MainEffort; rest: string }
   | { kind: "rules"; undo: boolean }
   | { kind: "memory"; undo: boolean }
   | { kind: "invalid"; name: string };
 
-export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium|high [message]`, `&rules`, `&rules undo`, `&memory`, `&memory undo`.";
+export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium [message]`, `&rules`, `&rules undo`, `&memory`, `&memory undo`.";
 
-const EFFORTS: Effort[] = ["low", "medium", "high"];
+const EFFORTS: MainEffort[] = ["low", "medium"];
 
 export function parseCommand(text: string): Command {
   const match = /^&([a-z]+)(?:\s+([\s\S]*))?$/i.exec(text.trim());

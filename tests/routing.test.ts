@@ -4,7 +4,7 @@ import { buildRoutingPrompt, parseRoutingAnswer, type RoutingCall, type RoutingI
 import { bindingResolver, EventRouter, type Binding } from "../src/routing.js";
 import type { RoutingRule } from "../src/rulebook.js";
 
-const mail: ClotEvent = { id: "email:gmail:<m1@x>", source: "email", account: "gmail", kind: "email", place: "me+shop@gmail.com", actor: "jane@example.com", title: "Refund?", body: "", url: "", ref: "<m1@x>", subject: "thread:<m1@x>", automated: false, receivedAt: 0 };
+const mail: ClotEvent = { id: "email:gmail:<m1@x>", source: "email", account: "gmail", kind: "email", place: "me+shop@gmail.com", actor: "jane@example.com", title: "Refund?", body: "", url: "", ref: "<m1@x>", subject: "thread:<m1@x>", automated: false, outsider: false, receivedAt: 0 };
 
 class FakeCall implements RoutingCall {
   inputs: RoutingInput[] = [];

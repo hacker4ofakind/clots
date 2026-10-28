@@ -53,6 +53,7 @@ describe("normalizeNotion", () => {
         ref: PAGE,
         subject: `page:${PAGE}`,
         automated: false,
+        outsider: false,
         receivedAt: NOW,
       },
     });

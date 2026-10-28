@@ -11,7 +11,7 @@ import { Store } from "../src/store.js";
 /** What the pipeline checks for a Clot: the global pre-filters, then the Clot's own. */
 const isDroppedFor = (rulebook: Rulebook, clot: string, event: ClotEvent) => rulebook.dropsIn("global", event) || rulebook.dropsIn(clot, event);
 
-const event: ClotEvent = { id: "d-1", source: "github", kind: "pr_opened", account: "github", place: "octo/widgets", actor: "dependabot[bot]", title: "Bump lodash", body: "", url: "u", ref: "9", subject: "pr:9", automated: true, receivedAt: 0 };
+const event: ClotEvent = { id: "d-1", source: "github", kind: "pr_opened", account: "github", place: "octo/widgets", actor: "dependabot[bot]", title: "Bump lodash", body: "", url: "u", ref: "9", subject: "pr:9", automated: true, outsider: false, receivedAt: 0 };
 
 let dir: string;
 let rulebook: Rulebook;

@@ -29,6 +29,8 @@ export interface ClotEvent {
   subject: string;
   /** Produced by a machine, not written by a person. */
   automated: boolean;
+  /** Written by someone outside the project: not the repository's owner, members or collaborators, or mail from an address not the user's. */
+  outsider: boolean;
   /** Unix milliseconds. */
   receivedAt: number;
 }
@@ -39,9 +41,4 @@ export interface TriageResult {
   message: string;
   urgent: boolean;
   suspicious: boolean;
-  /** Bears on what the Clot is doing at this moment. Always false when no turn is running. */
-  relevantNow: boolean;
 }
-
-/** What the user chose for an event that arrived during a turn. */
-export type ReplyOutcome = "steer" | "queue" | "drop";

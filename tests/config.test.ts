@@ -26,6 +26,7 @@ it("merges the config file and the environment", () => {
     rolloverPercent: 65,
     home: false,
     maxProposals: 3,
+    maxWorkers: 3,
     publicUrl: "",
     sendReview: { enabled: true, maxMs: 3 * 86_400_000 },
     sources: { stripe: [], email: [], calendar: [], linear: [], notion: [] },
@@ -162,4 +163,10 @@ it("reads what a Clot is about", () => {
 
 it("refuses a credential written into the file instead of the name of its .env key", () => {
   expect(() => loadConfig(withSources({ linear: [{ account: "team", shared: true, webhookSecret: "lin_wh_abc123", apiKey: "K" }] }), { ...env, K: "k" })).toThrow();
+});
+
+it("reads the worker limit, from 1 to 20, and names CLOTS_MAX_WORKERS when it is wrong", () => {
+  expect(loadConfig(json, { ...env, CLOTS_MAX_WORKERS: "1" }).maxWorkers).toBe(1);
+  expect(loadConfig(json, { ...env, CLOTS_MAX_WORKERS: "20" }).maxWorkers).toBe(20);
+  for (const bad of ["0", "21", "2.5", "many"]) expect(() => loadConfig(json, { ...env, CLOTS_MAX_WORKERS: bad })).toThrow("CLOTS_MAX_WORKERS");
 });

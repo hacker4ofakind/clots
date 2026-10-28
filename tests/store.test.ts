@@ -12,8 +12,8 @@ beforeEach(() => {
 });
 
 describe("Store", () => {
-  it("creates a clot in action mode, not paused", () => {
-    expect(store.getClot("graphite")).toEqual({ name: "graphite", categoryId: "cat-1", mode: "action", pausedUntil: null });
+  it("creates a clot, not paused", () => {
+    expect(store.getClot("graphite")).toEqual({ name: "graphite", categoryId: "cat-1", pausedUntil: null });
   });
 
   it("keeps one active session per clot", () => {
@@ -53,9 +53,14 @@ describe("Store", () => {
 
   it("hands out a one-off effort override exactly once", () => {
     expect(store.takeNextEffort("graphite")).toBeNull();
-    store.setNextEffort("graphite", "high");
-    expect(store.takeNextEffort("graphite")).toBe("high");
+    store.setNextEffort("graphite", "medium");
+    expect(store.takeNextEffort("graphite")).toBe("medium");
     expect(store.takeNextEffort("graphite")).toBeNull();
+  });
+
+  it("reads a stored one-off effort that is no longer allowed as none", () => {
+    store.setNextEffort("graphite", "high" as never);
+    expect(store.nextEffort("graphite")).toBeNull();
   });
 
   it("shows a one-off effort override without using it up", () => {
@@ -107,6 +112,7 @@ describe("Store", () => {
       ref: "7",
       subject: "issue:7",
       automated: false,
+      outsider: false,
       receivedAt: 1000,
     };
 
@@ -174,12 +180,6 @@ describe("Store", () => {
       expect(store.eventsWithStatus("held")).toEqual([]);
     });
 
-    it("lets only one caller close a question", () => {
-      store.createAsk({ eventId: "d-1", clot: "graphite", channelId: "ask-1" });
-      expect(store.deleteAsk("d-1")).toBe(true);
-      expect(store.deleteAsk("d-1")).toBe(false);
-    });
-
     it("lists events by status, oldest first", () => {
       store.insertEvent(event);
       store.insertEvent({ ...event, id: "d-2" });
@@ -188,15 +188,25 @@ describe("Store", () => {
       expect(store.eventsWithStatus("received").map((e) => e.id)).toEqual(["d-1", "d-3"]);
     });
 
-    it("keeps open steering questions by channel and by Clot", () => {
-      store.createAsk({ eventId: "d-1", clot: "graphite", channelId: "ask-1" });
-      store.createAsk({ eventId: "d-2", clot: "graphite", channelId: "ask-2" });
-      expect(store.askByChannel("ask-2")).toEqual({ eventId: "d-2", clot: "graphite", channelId: "ask-2" });
-      expect(store.openAsks("graphite").map((a) => a.eventId)).toEqual(["d-1", "d-2"]);
-      store.deleteAsk("d-1");
-      expect(store.askByChannel("ask-1")).toBeUndefined();
-      expect(store.openAsks("graphite").map((a) => a.eventId)).toEqual(["d-2"]);
-      expect(store.openAsks("other")).toEqual([]);
+    it("on opening an older database, runs an event a question was open on again, and drops one fed into a turn", async () => {
+      const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clots-store-")), "clots.db");
+      const old = new Store(file);
+      old.insertEvent(event);
+      old.insertEvent({ ...event, id: "d-2" });
+      old.close();
+      const raw = new Database(file);
+      raw.prepare("UPDATE events SET status = 'asking' WHERE id = 'd-1'").run();
+      raw.prepare("UPDATE events SET status = 'steered' WHERE id = 'd-2'").run();
+      raw.prepare("INSERT INTO asks (event_id, clot, channel_id) VALUES ('d-1', 'graphite', 'ask-1')").run();
+      raw.close();
+
+      const reopened = new Store(file);
+      expect(reopened.getEvent("d-1")!.status).toBe("received");
+      expect(reopened.getEvent("d-2")).toMatchObject({ status: "dropped", note: "fed into a turn" });
+      expect(reopened.leftoverAskChannels()).toEqual(["ask-1"]);
+      reopened.clearLeftoverAsks();
+      expect(reopened.leftoverAskChannels()).toEqual([]);
+      reopened.close();
     });
   });
 
@@ -278,7 +288,7 @@ describe("Store, stage 2b", () => {
 
   it("lists the events a batch was made from, oldest first", () => {
     const store = new Store(":memory:");
-    const event = (id: string) => ({ id, source: "github" as const, kind: "comment" as const, account: "github", place: "octo/widgets", actor: "vercel[bot]", title: "t", body: "", url: "u", ref: "14", subject: "pr:14", automated: true, receivedAt: 0 });
+    const event = (id: string) => ({ id, source: "github" as const, kind: "comment" as const, account: "github", place: "octo/widgets", actor: "vercel[bot]", title: "t", body: "", url: "u", ref: "14", subject: "pr:14", automated: true, outsider: false, receivedAt: 0 });
     store.insertEvent(event("d-1"));
     store.insertEvent(event("d-2"));
     store.insertEvent(event("d-3"));
@@ -350,5 +360,49 @@ describe("Store, global memory", () => {
     expect(store.memoryRestores()).toEqual(["global-clot-a.md", "global-clot-b.md"]);
     store.clearMemoryRestores(["global-clot-a.md"]);
     expect(store.memoryRestores()).toEqual(["global-clot-b.md"]);
+  });
+});
+
+describe("workers", () => {
+  const worker = (id: string, urgent = false) =>
+    store.createWorker({ id, clot: "graphite", title: `Fix ${id}`, brief: "b", model: "sonnet", effort: "high", branch: `clot/fix-${id}`, base: "main", worktree: `/workspace/worktrees/${id}`, urgent });
+
+  it("starts an urgent worker queued later before an ordinary one queued earlier", () => {
+    worker("a");
+    worker("b", true);
+    store.queueWorker("a");
+    store.queueWorker("b");
+    expect(store.nextQueuedWorker()!.id).toBe("b");
+    store.setWorker("b", { status: "running" });
+    expect(store.nextQueuedWorker()!.id).toBe("a");
+  });
+
+  it("returns stored messages in order, once", () => {
+    worker("a");
+    store.addWorkerMessage("a", "one");
+    store.addWorkerMessage("a", "two");
+    expect(store.hasWorkerMessages("a")).toBe(true);
+    expect(store.takeWorkerMessages("a")).toEqual(["one", "two"]);
+    expect(store.takeWorkerMessages("a")).toEqual([]);
+  });
+
+  it("lists queued, running and idle workers only, and finds an open one by branch", () => {
+    worker("a");
+    worker("b");
+    worker("c");
+    store.queueWorker("a");
+    store.setWorker("b", { status: "idle", prUrl: "https://x/pull/1", started: true });
+    store.setWorker("c", { status: "closed" });
+    expect(store.listedWorkers("graphite").map((w) => w.id)).toEqual(["a", "b"]);
+    expect(store.getWorker("b")).toMatchObject({ status: "idle", prUrl: "https://x/pull/1", started: true });
+    expect(store.workerByBranch("graphite", "clot/fix-b")!.id).toBe("b");
+    expect(store.workerByBranch("graphite", "clot/fix-c")).toBeUndefined();
+  });
+
+  it("gives back an inbox row of kind worker with its worker", () => {
+    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: null });
+    store.enqueue({ id: "worker:a:1", clot: "graphite", channelId: "ch-1", text: "report", receivedAt: 1, kind: "worker", workerId: "a" });
+    expect(store.nextPending("graphite")).toMatchObject({ kind: "worker", workerId: "a", text: "report" });
+    expect(store.enqueue({ id: "worker:a:1", clot: "graphite", channelId: "ch-1", text: "report", receivedAt: 1, kind: "worker", workerId: "a" })).toBe(false);
   });
 });

@@ -1,11 +1,10 @@
 import Database from "better-sqlite3";
 import type { ClotEvent } from "./events/types.js";
-import type { Effort, Mode, SeedReason, TailMessage } from "./types.js";
+import type { Effort, MainEffort, SeedReason, TailMessage, WorkerModel } from "./types.js";
 
 export interface ClotRow {
   name: string;
   categoryId: string;
-  mode: Mode;
   /** Unix seconds, or null when not paused. */
   pausedUntil: number | null;
 }
@@ -22,15 +21,94 @@ export interface SessionRow {
   interruptedKind: InboxKind;
   /** The event the cut-off turn was looking into, when it was an investigation. */
   interruptedEvent: string | null;
-  /** Whether a steered event joined the turn that is running, or that was cut off and is still to be picked up. */
-  steered: boolean;
   active: boolean;
 }
 
 export type InboxStatus = "pending" | "running" | "done";
 
-/** A message from the user, or an event waiting for its own locked turn. */
-export type InboxKind = "message" | "event";
+/** A message from the user, an event waiting for its own turn, or a worker's report, question or failure. */
+export type InboxKind = "message" | "event" | "worker";
+
+export type WorkerStatus = "queued" | "running" | "idle" | "stopped" | "closed" | "failed";
+
+/** A worker session the daemon started for a Clot's main session. */
+export interface WorkerRow {
+  /** A UUID, which is also its session ID. */
+  id: string;
+  clot: string;
+  title: string;
+  brief: string;
+  model: WorkerModel;
+  effort: Effort;
+  branch: string | null;
+  /** The default branch the worktree was made from; null for a home Clot worker. */
+  base: string | null;
+  worktree: string;
+  status: WorkerStatus;
+  urgent: boolean;
+  queuedSeq: number | null;
+  /** Its session exists on disk. */
+  started: boolean;
+  interrupted: boolean;
+  /** A question asked with ask_main in the turn that is running or just ended. */
+  asked: string | null;
+  prUrl: string | null;
+  prNumber: number | null;
+  prRepo: string | null;
+  lastStep: string | null;
+  turnSeq: number;
+  failure: string | null;
+  /** Turns in a row that failed before any model response. */
+  retries: number;
+  /** Unix milliseconds since it became idle, or null. */
+  idleSince: number | null;
+}
+
+export type WorkerChange = Partial<Pick<WorkerRow, "status" | "started" | "interrupted" | "asked" | "prUrl" | "prNumber" | "prRepo" | "lastStep" | "turnSeq" | "failure" | "retries" | "idleSince" | "base">>;
+
+const WORKER_COLUMNS: Record<keyof WorkerChange, string> = {
+  status: "status",
+  started: "started",
+  interrupted: "interrupted",
+  asked: "asked",
+  prUrl: "pr_url",
+  prNumber: "pr_number",
+  prRepo: "pr_repo",
+  lastStep: "last_step",
+  turnSeq: "turn_seq",
+  failure: "failure",
+  retries: "retries",
+  idleSince: "idle_since",
+  base: "base",
+};
+
+function toWorker(r: any): WorkerRow {
+  return {
+    id: r.id,
+    clot: r.clot,
+    title: r.title,
+    brief: r.brief,
+    model: r.model,
+    effort: r.effort,
+    branch: r.branch,
+    base: r.base,
+    worktree: r.worktree,
+    status: r.status,
+    urgent: r.urgent === 1,
+    queuedSeq: r.queued_seq,
+    started: r.started === 1,
+    interrupted: r.interrupted === 1,
+    asked: r.asked,
+    prUrl: r.pr_url,
+    prNumber: r.pr_number,
+    prRepo: r.pr_repo,
+    lastStep: r.last_step,
+    turnSeq: r.turn_seq,
+    failure: r.failure,
+    retries: r.retries,
+    idleSince: r.idle_since,
+  };
+}
 
 export interface InboxRow {
   id: string;
@@ -42,6 +120,8 @@ export interface InboxRow {
   kind: InboxKind;
   /** The event this row's turn is for, when it is an investigation. */
   eventId: string | null;
+  /** The worker this row is about, when it is a worker's report, question or failure. */
+  workerId: string | null;
 }
 
 /** A rule change waiting for the user's yes or no, in a temporary channel of its own. */
@@ -114,10 +194,9 @@ export interface MemoryChangeRow {
  * Where an event stands. "received": stored, the pipeline has not finished with it.
  * "held": an automated event waiting a short while for others about the same subject.
  * "merged": gathered into a batch event, or a repeat of another; the note names it.
- * "asking": a steering question is open. "queued": waiting for, or given, its own turn.
- * "steered": fed into a running turn. "dropped": will not be acted on; the note says why.
+ * "queued": waiting for, or given, its own turn. "dropped": will not be acted on; the note says why.
  */
-export type EventStatus = "received" | "held" | "merged" | "asking" | "queued" | "steered" | "dropped";
+export type EventStatus = "received" | "held" | "merged" | "queued" | "dropped";
 
 export interface EventRow extends ClotEvent {
   clot: string | null;
@@ -125,13 +204,6 @@ export interface EventRow extends ClotEvent {
   note: string | null;
   triageMessage: string | null;
   urgent: boolean;
-}
-
-/** An open steering question: the temporary channel in which the user is asked about an event. */
-export interface AskRow {
-  eventId: string;
-  clot: string;
-  channelId: string;
 }
 
 const SCHEMA = `
@@ -246,6 +318,36 @@ CREATE TABLE IF NOT EXISTS memory_changes (
 CREATE TABLE IF NOT EXISTS memory_restores (
   file TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS workers (
+  id TEXT PRIMARY KEY,
+  clot TEXT NOT NULL,
+  title TEXT NOT NULL,
+  brief TEXT NOT NULL,
+  model TEXT NOT NULL,
+  effort TEXT NOT NULL,
+  branch TEXT,
+  base TEXT,
+  worktree TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  urgent INTEGER NOT NULL DEFAULT 0,
+  queued_seq INTEGER,
+  started INTEGER NOT NULL DEFAULT 0,
+  interrupted INTEGER NOT NULL DEFAULT 0,
+  asked TEXT,
+  pr_url TEXT,
+  pr_number INTEGER,
+  pr_repo TEXT,
+  last_step TEXT,
+  turn_seq INTEGER NOT NULL DEFAULT 0,
+  failure TEXT,
+  retries INTEGER NOT NULL DEFAULT 0,
+  idle_since INTEGER
+);
+CREATE TABLE IF NOT EXISTS worker_messages (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  worker_id TEXT NOT NULL,
+  text TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -263,13 +365,12 @@ function toSession(r: any): SessionRow {
     interrupted: r.interrupted === 1,
     interruptedKind: r.interrupted_kind,
     interruptedEvent: r.interrupted_event ?? null,
-    steered: r.steered === 1,
     active: r.active === 1,
   };
 }
 
 function toInbox(r: any): InboxRow {
-  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind, eventId: r.event_id ?? null };
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind, eventId: r.event_id ?? null, workerId: r.worker_id ?? null };
 }
 
 function toProposal(r: any): ProposalRow {
@@ -294,6 +395,7 @@ function toEvent(r: any): EventRow {
     ref: r.ref,
     subject: r.subject,
     automated: r.automated === 1,
+    outsider: r.outsider === 1,
     receivedAt: r.received_at,
     clot: r.clot,
     status: r.status,
@@ -301,10 +403,6 @@ function toEvent(r: any): EventRow {
     triageMessage: r.triage_message,
     urgent: r.urgent === 1,
   };
-}
-
-function toAsk(r: any): AskRow {
-  return { eventId: r.event_id, clot: r.clot, channelId: r.channel_id };
 }
 
 export class Store {
@@ -323,13 +421,102 @@ export class Store {
     this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("inbox", "event_id", "TEXT");
     this.addColumn("sessions", "interrupted_event", "TEXT");
-    this.addColumn("sessions", "steered", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("proposals", "session_id", "TEXT");
     this.addColumn("send_reviews", "state", "TEXT NOT NULL DEFAULT 'open'");
     this.addColumn("events", "account", "TEXT NOT NULL DEFAULT 'github'");
     this.addColumn("events", "place", "TEXT NOT NULL DEFAULT ''");
+    this.addColumn("events", "outsider", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("inbox", "worker_id", "TEXT");
     // Every event stored before 2c came from GitHub, and its place is its repository.
     this.db.exec("UPDATE events SET place = repo WHERE place = ''");
+    // Events can no longer be asked about or fed into a running turn: one a question was open on runs from the start again; one fed into a turn is done.
+    this.db.exec("UPDATE events SET status = 'received' WHERE status = 'asking'");
+    this.db.exec("UPDATE events SET status = 'dropped', note = 'fed into a turn' WHERE status = 'steered'");
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  /** Runs fn in one transaction: everything it writes is stored, or nothing is. */
+  inTransaction<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
+  }
+
+  createWorker(w: Pick<WorkerRow, "id" | "clot" | "title" | "brief" | "model" | "effort" | "branch" | "base" | "worktree" | "urgent">): void {
+    this.db
+      .prepare("INSERT INTO workers (id, clot, title, brief, model, effort, branch, base, worktree, urgent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(w.id, w.clot, w.title, w.brief, w.model, w.effort, w.branch, w.base, w.worktree, w.urgent ? 1 : 0);
+  }
+
+  getWorker(id: string): WorkerRow | undefined {
+    const r = this.db.prepare("SELECT * FROM workers WHERE id = ?").get(id);
+    return r ? toWorker(r) : undefined;
+  }
+
+  /** The workers a Clot's main session is shown: queued, running and idle, oldest first. */
+  listedWorkers(clot: string): WorkerRow[] {
+    return this.db.prepare("SELECT * FROM workers WHERE clot = ? AND status IN ('queued', 'running', 'idle') ORDER BY rowid").all(clot).map(toWorker);
+  }
+
+  /** Every worker a Clot has had, oldest first. */
+  workersOf(clot: string): WorkerRow[] {
+    return this.db.prepare("SELECT * FROM workers WHERE clot = ? ORDER BY rowid").all(clot).map(toWorker);
+  }
+
+  /** Every worker on a branch, of any Clot, newest first. */
+  workersOnBranch(branch: string): WorkerRow[] {
+    return this.db.prepare("SELECT * FROM workers WHERE branch = ? ORDER BY rowid DESC").all(branch).map(toWorker);
+  }
+
+  workersWithStatus(status: WorkerStatus): WorkerRow[] {
+    return this.db.prepare("SELECT * FROM workers WHERE status = ? ORDER BY rowid").all(status).map(toWorker);
+  }
+
+  /** The queue across every Clot, in the order workers start: urgent first, then oldest. */
+  queuedWorkers(): WorkerRow[] {
+    return this.db.prepare("SELECT * FROM workers WHERE status = 'queued' ORDER BY urgent DESC, queued_seq ASC").all().map(toWorker);
+  }
+
+  nextQueuedWorker(): WorkerRow | undefined {
+    return this.queuedWorkers()[0];
+  }
+
+  setWorker(id: string, change: WorkerChange): void {
+    const entries = Object.entries(change) as [keyof WorkerChange, unknown][];
+    if (entries.length === 0) return;
+    const values = entries.map(([, value]) => (typeof value === "boolean" ? (value ? 1 : 0) : value));
+    this.db.prepare(`UPDATE workers SET ${entries.map(([key]) => `${WORKER_COLUMNS[key]} = ?`).join(", ")} WHERE id = ?`).run(...values, id);
+  }
+
+  /** Puts a worker at the back of the queue. */
+  queueWorker(id: string): void {
+    const seq = Number(this.getState("worker-queue-seq") ?? "0") + 1;
+    this.setState("worker-queue-seq", String(seq));
+    this.db.prepare("UPDATE workers SET status = 'queued', queued_seq = ? WHERE id = ?").run(seq, id);
+  }
+
+  addWorkerMessage(id: string, text: string): void {
+    this.db.prepare("INSERT INTO worker_messages (worker_id, text) VALUES (?, ?)").run(id, text);
+  }
+
+  hasWorkerMessages(id: string): boolean {
+    return this.db.prepare("SELECT 1 FROM worker_messages WHERE worker_id = ? LIMIT 1").get(id) !== undefined;
+  }
+
+  /** Returns the messages stored for a worker, in order, and deletes them. */
+  takeWorkerMessages(id: string): string[] {
+    return this.inTransaction(() => {
+      const rows = this.db.prepare("SELECT text FROM worker_messages WHERE worker_id = ? ORDER BY seq").all(id) as { text: string }[];
+      this.db.prepare("DELETE FROM worker_messages WHERE worker_id = ?").run(id);
+      return rows.map((r) => r.text);
+    });
+  }
+
+  /** The worker of a Clot on a branch, unless it is closed. */
+  workerByBranch(clot: string, branch: string): WorkerRow | undefined {
+    const r = this.db.prepare("SELECT * FROM workers WHERE clot = ? AND branch = ? AND status != 'closed' ORDER BY rowid DESC LIMIT 1").get(clot, branch);
+    return r ? toWorker(r) : undefined;
   }
 
   /** Columns added after the first release, so a database created by an earlier version keeps working. */
@@ -339,18 +526,18 @@ export class Store {
   }
 
   /** Sets the effort for the next message only. */
-  setNextEffort(name: string, effort: Effort | null): void {
+  setNextEffort(name: string, effort: MainEffort | null): void {
     this.db.prepare("UPDATE clots SET next_effort = ? WHERE name = ?").run(effort, name);
   }
 
-  /** The one-off effort, if any, left in place. */
-  nextEffort(name: string): Effort | null {
+  /** The one-off effort, if any, left in place. One an earlier version stored that is no longer allowed reads as none. */
+  nextEffort(name: string): MainEffort | null {
     const r: any = this.db.prepare("SELECT next_effort FROM clots WHERE name = ?").get(name);
-    return r?.next_effort ?? null;
+    return r?.next_effort === "low" || r?.next_effort === "medium" ? r.next_effort : null;
   }
 
   /** Returns the one-off effort, if any, and clears it. */
-  takeNextEffort(name: string): Effort | null {
+  takeNextEffort(name: string): MainEffort | null {
     const effort = this.nextEffort(name);
     if (effort !== null) this.setNextEffort(name, null);
     return effort;
@@ -372,11 +559,7 @@ export class Store {
 
   getClot(name: string): ClotRow | undefined {
     const r: any = this.db.prepare("SELECT * FROM clots WHERE name = ?").get(name);
-    return r && { name: r.name, categoryId: r.category_id, mode: r.mode, pausedUntil: r.paused_until };
-  }
-
-  setMode(name: string, mode: Mode): void {
-    this.db.prepare("UPDATE clots SET mode = ? WHERE name = ?").run(mode, name);
+    return r && { name: r.name, categoryId: r.category_id, pausedUntil: r.paused_until };
   }
 
   setPausedUntil(name: string, pausedUntil: number | null): void {
@@ -412,15 +595,10 @@ export class Store {
       .run(interrupted ? 1 : 0, interrupted ? kind : "message", interrupted ? eventId : null, id);
   }
 
-  /** Records whether a steered event has joined the session's turn. It outlasts a cut-off turn and a restart, so the turn that picks the work up is still treated as one. */
-  setSteered(id: string, steered: boolean): void {
-    this.db.prepare("UPDATE sessions SET steered = ? WHERE id = ?").run(steered ? 1 : 0, id);
-  }
-
-  enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind; eventId?: string | null }): boolean {
+  enqueue(m: { id: string; clot: string; channelId: string; text: string; receivedAt: number; kind?: InboxKind; eventId?: string | null; workerId?: string | null }): boolean {
     const info = this.db
-      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at, kind, event_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt, m.kind ?? "message", m.eventId ?? null);
+      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at, kind, event_id, worker_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt, m.kind ?? "message", m.eventId ?? null, m.workerId ?? null);
     return info.changes === 1;
   }
 
@@ -430,8 +608,8 @@ export class Store {
    */
   insertEvent(e: ClotEvent): boolean {
     const info = this.db
-      .prepare("INSERT OR IGNORE INTO events (id, source, account, kind, repo, place, actor, title, body, url, ref, subject, automated, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(e.id, e.source, e.account, e.kind, e.place, e.place, e.actor, e.title, e.body, e.url, e.ref, e.subject, e.automated ? 1 : 0, e.receivedAt);
+      .prepare("INSERT OR IGNORE INTO events (id, source, account, kind, repo, place, actor, title, body, url, ref, subject, automated, outsider, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(e.id, e.source, e.account, e.kind, e.place, e.place, e.actor, e.title, e.body, e.url, e.ref, e.subject, e.automated ? 1 : 0, e.outsider ? 1 : 0, e.receivedAt);
     return info.changes === 1;
   }
 
@@ -494,23 +672,13 @@ export class Store {
     this.db.prepare("UPDATE events SET triage_message = ?, urgent = ? WHERE id = ?").run(message, urgent ? 1 : 0, id);
   }
 
-  createAsk(a: AskRow): void {
-    this.db.prepare("INSERT INTO asks (event_id, clot, channel_id) VALUES (?, ?, ?)").run(a.eventId, a.clot, a.channelId);
+  /** Channels of questions an earlier version left open, which nothing answers any more. */
+  leftoverAskChannels(): string[] {
+    return (this.db.prepare("SELECT channel_id FROM asks ORDER BY rowid").all() as { channel_id: string }[]).map((r) => r.channel_id);
   }
 
-  askByChannel(channelId: string): AskRow | undefined {
-    const r = this.db.prepare("SELECT * FROM asks WHERE channel_id = ?").get(channelId);
-    return r ? toAsk(r) : undefined;
-  }
-
-  /** Open steering questions for a Clot, oldest first. */
-  openAsks(clot: string): AskRow[] {
-    return this.db.prepare("SELECT * FROM asks WHERE clot = ? ORDER BY rowid").all(clot).map(toAsk);
-  }
-
-  /** Closes a question. Returns false when it was closed already: only the caller that gets true may carry out its outcome. */
-  deleteAsk(eventId: string): boolean {
-    return this.db.prepare("DELETE FROM asks WHERE event_id = ?").run(eventId).changes === 1;
+  clearLeftoverAsks(): void {
+    this.db.prepare("DELETE FROM asks").run();
   }
 
   nextPending(clot: string): InboxRow | undefined {

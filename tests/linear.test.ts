@@ -55,6 +55,7 @@ describe("normalizeLinear", () => {
         ref: "ENC-12",
         subject: "issue:ENC-12",
         automated: false,
+        outsider: false,
         receivedAt: NOW,
       },
     });

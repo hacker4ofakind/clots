@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { isTurnActivity, TurnTracker } from "../src/agent/turn-tracker.js";
 import { parseRateLimit } from "../src/agent/usage.js";
 import { buildPrompt, CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "../src/agent/prompts.js";
+import { stepOf, turnOptions, workerHookAnswer } from "../src/agent/runner.js";
+import { workerExec, worktreePath } from "../src/agent/container.js";
+import { prLink, ReportBuffer, workerBranch, workerPrompt } from "../src/worker-turn.js";
 import { containerName, containerStep, dockerExecArgs, gitIdentity, noreplyEmail, pickSdkEnv, sessionEnv, toContainerCommand } from "../src/agent/container.js";
 
 describe("TurnTracker", () => {
@@ -69,31 +72,32 @@ describe("parseRateLimit", () => {
 });
 
 describe("buildPrompt", () => {
-  const base = { text: "fix the footer", mode: "action" as const, modeChanged: false, seed: null, interrupted: false };
+  const base = { text: "fix the footer", seed: null, interrupted: false };
 
-  it("passes plain text through in action mode", () => {
+  it("passes plain text through", () => {
     expect(buildPrompt(base)).toBe("fix the footer");
   });
 
-  it("adds the brainstorm note on every brainstorm turn", () => {
-    const prompt = buildPrompt({ ...base, mode: "brainstorm" });
-    expect(prompt).toContain("Brainstorm mode is ON");
-    expect(prompt).toContain("read-only commands");
-    expect(prompt.endsWith("fix the footer")).toBe(true);
+  it("marks an event as untrusted and says what to do with it", () => {
+    const prompt = buildPrompt({ ...base, text: "<event>...</event>", event: true });
+    expect(prompt).toContain("An event arrived from outside this chat");
+    expect(prompt).toContain("start a worker right away");
+    expect(prompt).not.toContain("Brainstorm");
+    expect(prompt).not.toContain("OUTSIDE");
+    expect(prompt).not.toContain("someone outside the project");
+    expect(prompt.endsWith("<event>...</event>")).toBe(true);
   });
 
-  it("adds the action note only when the mode just changed back", () => {
-    expect(buildPrompt({ ...base, modeChanged: true })).toContain("Brainstorm mode is OFF");
+  it("adds the outsider note to an outsider's event only", () => {
+    expect(buildPrompt({ ...base, text: "<event>", event: true, outsider: true })).toContain("This event comes from someone outside the project.");
+    expect(buildPrompt({ ...base, outsider: true })).not.toContain("someone outside the project");
   });
 
-  it("marks an event as untrusted and says the turn is locked, whatever the mode", () => {
-    for (const mode of ["action", "brainstorm"] as const) {
-      const prompt = buildPrompt({ ...base, mode, text: "<event>...</event>", event: true });
-      expect(prompt).toContain("An event arrived from outside this chat");
-      expect(prompt).toContain("nothing can be changed");
-      expect(prompt).not.toContain("Brainstorm mode");
-      expect(prompt.endsWith("<event>...</event>")).toBe(true);
-    }
+  it("lists the workers after the notes, and leaves the block out when there are none", () => {
+    const prompt = buildPrompt({ ...base, notes: ["N"], workers: ['- 1a2b3c4d "Fix X": idle, Sonnet 5.5 high, branch clot/fix-x-1a2b, pull request none yet'] });
+    expect(prompt).toContain('[Your workers:\n- 1a2b3c4d "Fix X"');
+    expect(prompt.indexOf("Since your last turn")).toBeLessThan(prompt.indexOf("Your workers"));
+    expect(buildPrompt({ ...base, workers: [] })).toBe("fix the footer");
   });
 
   it("tells a new session why it was started", () => {
@@ -186,5 +190,120 @@ describe("container helpers", () => {
 
   it("keeps the container when the image cannot be read", () => {
     expect(containerStep("true sha256:old", undefined)).toBe("none");
+  });
+});
+
+describe("the runner's worker turns", () => {
+  const guard = { branch: "clot/fix-a1b2", base: "main", repo: "o/r" };
+
+  it("names a step by the program and a plain subcommand only, or by the tool", () => {
+    expect(stepOf({ name: "Bash", input: { command: "npm test -- --run\nsecond line" } })).toBe("npm test");
+    expect(stepOf({ name: "Bash", input: { command: "/usr/bin/git status" } })).toBe("git status");
+    expect(stepOf({ name: "Bash", input: { command: "printf hello" } })).toBe("printf");
+    expect(stepOf({ name: "Edit", input: { file_path: "a.ts" } })).toBe("Edit");
+  });
+
+  it("keeps assignments, URLs and argument values out of a step", () => {
+    for (const command of [
+      "DATABASE_URL=postgres://user:s3cr3t-synthetic@host/db npm test",
+      `psql postgres://user:s3cr3t-synthetic@db/x -c "select 1"`,
+      "curl -H 'Authorization: Bearer s3cr3t-synthetic' https://api.example.com",
+      "export TOKEN=s3cr3t-synthetic",
+      "s3cr3t-synthetic=1",
+      "printf s3cr3t-synthetic",
+      "echo s3cr3t-synthetic > .env",
+      "npm s3cr3t-synthetic",
+      "mytool s3cr3t-synthetic",
+      `${"x".repeat(200)} y`,
+    ]) {
+      const step = stepOf({ name: "Bash", input: { command } });
+      expect(step).not.toContain("s3cr3t");
+      expect(step).not.toContain("://");
+      expect(step.length).toBeLessThanOrEqual(81);
+    }
+    expect(stepOf({ name: "Bash", input: { command: "DATABASE_URL=postgres://u:p@h/db npm test" } })).toBe("npm test");
+  });
+
+  it("denies what the guard refuses, and lets the rest through", () => {
+    expect(workerHookAnswer("Bash", { command: "gh pr merge 3" }, guard).hookSpecificOutput).toMatchObject({ permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("gh pr merge") });
+    expect(workerHookAnswer("Bash", { command: "npm test" }, guard)).toEqual({});
+    expect(workerHookAnswer("Edit", { file_path: "a.ts" }, guard)).toEqual({});
+  });
+
+  it("denies every MCP tool but the worker's own", () => {
+    expect(workerHookAnswer("mcp__claude_ai_Slack__send_message", {}, guard).hookSpecificOutput?.permissionDecision).toBe("deny");
+    expect(workerHookAnswer("mcp__clots__start_session", {}, guard).hookSpecificOutput?.permissionDecision).toBe("deny");
+    expect(workerHookAnswer("mcp__clots_worker__ask_main", { question: "?" }, guard)).toEqual({});
+  });
+
+  it("runs a worker without permission prompts, on its own model and effort, in its own directory, with auto memory off", () => {
+    const options = turnOptions(
+      { role: "worker", prompt: "x", effort: "xhigh", model: "claude-opus-5-5", cwd: "/workspace/worktrees/w1", systemPrompt: "WORKER", guard, workerTools: { askMain: async () => "" }, onText: () => undefined, onStep: () => undefined },
+      { clot: "graphite", env: {} },
+    );
+    expect(options).toMatchObject({ permissionMode: "bypassPermissions", model: "claude-opus-5-5", effort: "xhigh", cwd: "/workspace/worktrees/w1", disallowedTools: ["AskUserQuestion"] });
+    expect(options.systemPrompt).toMatchObject({ append: "WORKER" });
+    expect(options.settings).toMatchObject({ autoMemoryEnabled: false });
+    expect(Object.keys(options.mcpServers ?? {})).toEqual(["clots_worker"]);
+    expect(options.canUseTool).toBeUndefined();
+  });
+
+  it("runs a main session turn under the lock, with only NotebookEdit removed", () => {
+    const options = turnOptions({ role: "main", prompt: "x", effort: "low", model: "claude-opus-5-5", onText: () => undefined }, { clot: "graphite", env: {} });
+    expect(options).toMatchObject({ permissionMode: "default", model: "claude-opus-5-5", cwd: "/workspace/repo", disallowedTools: ["AskUserQuestion", "NotebookEdit"] });
+    expect(options.canUseTool).toBeDefined();
+  });
+});
+
+describe("worker steps in the container", () => {
+  it("passes the branch and the path as the script's arguments, never in its text", () => {
+    const args = workerExec.addWorktree("clot-g", "/workspace/worktrees/w1", "clot/x-$(rm -rf)-1a2b", "main");
+    expect(args.slice(0, 6)).toEqual(["exec", "-e", "GH_TOKEN", "clot-g", "sh", "-c"]);
+    expect(args[6]).toBe('git -C /workspace/repo fetch origin && git -C /workspace/repo worktree add --no-track -b "$1" "$2" "origin/$3"');
+    expect(args.slice(7)).toEqual(["sh", "clot/x-$(rm -rf)-1a2b", "/workspace/worktrees/w1", "main"]);
+    expect(workerExec.removeWorktree("clot-g", "/workspace/worktrees/w1").slice(-2)).toEqual(["sh", "/workspace/worktrees/w1"]);
+    expect(workerExec.refreshMain("clot-g", "main").slice(0, 3)).toEqual(["exec", "-e", "GH_TOKEN"]);
+    expect(workerExec.refreshMain("clot-g", "main").slice(-2)).toEqual(["sh", "main"]);
+    // Unfinished work in a clone an earlier version edited is stashed before the forced checkout.
+    const refresh = workerExec.refreshMain("clot-g", "main")[6];
+    expect(refresh.indexOf("stash push --include-untracked")).toBeGreaterThan(-1);
+    expect(refresh.indexOf("stash push")).toBeLessThan(refresh.indexOf("checkout --detach --force"));
+    expect(workerExec.prsForBranch("clot-g", "clot/x", "o/r").at(-1)).toBe("number,url,state,isCrossRepository");
+    expect(workerExec.defaultBranch("clot-g")).toEqual(["exec", "clot-g", "git", "-C", "/workspace/repo", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  });
+
+  it("gives a home Clot worker a plain directory", () => {
+    expect(worktreePath("w1", true)).toBe("/workspace/workers/w1");
+    expect(worktreePath("w1", false)).toBe("/workspace/worktrees/w1");
+    expect(workerExec.addDirectory("clot-home", "/workspace/workers/w1")).toEqual(["exec", "clot-home", "mkdir", "-p", "/workspace/workers/w1"]);
+  });
+});
+
+describe("worker turn helpers", () => {
+  it("names a branch after the title", () => {
+    expect(workerBranch("Fix the login redirect!!", () => "a1b2")).toBe("clot/fix-the-login-redirect-a1b2");
+    const long = workerBranch("word ".repeat(20), () => "a1b2");
+    const slug = long.slice("clot/".length, -"-a1b2".length);
+    expect(slug.length).toBeLessThanOrEqual(40);
+    expect(slug.endsWith("-")).toBe(false);
+  });
+
+  it("keeps only what was written after the last step as the report", () => {
+    const buffer = new ReportBuffer();
+    buffer.onText("Looking.");
+    buffer.onStep();
+    buffer.onText("Changed\n- a.ts");
+    buffer.onText("Pull request\nhttps://github.com/o/r/pull/3");
+    expect(buffer.report()).toBe("Changed\n- a.ts\n\nPull request\nhttps://github.com/o/r/pull/3");
+    expect(prLink(buffer.report())).toBe("https://github.com/o/r/pull/3");
+    buffer.onStep();
+    expect(buffer.report()).toBe("Pull request\nhttps://github.com/o/r/pull/3");
+    expect(buffer.lastLine()).toBe("Pull request");
+  });
+
+  it("builds the next prompt from the cut-off note, the brief and the stored messages", () => {
+    expect(workerPrompt({ interrupted: false, brief: "Do X.", messages: ["Also Y."] })).toBe("Do X.\n\n[From the main session]\nAlso Y.");
+    expect(workerPrompt({ interrupted: true, messages: [], continueText: "Continue." }).endsWith("Continue.")).toBe(true);
+    expect(workerPrompt({ interrupted: true, messages: [] }).startsWith("[Your previous turn was cut off")).toBe(true);
   });
 });

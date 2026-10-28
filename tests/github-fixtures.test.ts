@@ -39,6 +39,19 @@ describe("recorded GitHub deliveries", () => {
     expect(event.automated).toBe(true);
   });
 
+  it("marks an issue as an outsider's unless its author is the owner, a member or a collaborator", () => {
+    const recording = JSON.parse(fs.readFileSync(`${DIR}/issues.opened.json`, "utf8"));
+    const withAssociation = (association: string) => {
+      const payload = { ...recording.payload, issue: { ...recording.payload.issue, author_association: association } };
+      return normalizeGithub(recording.event, recording.delivery, payload, 0)!.outsider;
+    };
+    expect(withAssociation("NONE")).toBe(true);
+    expect(withAssociation("CONTRIBUTOR")).toBe(true);
+    expect(withAssociation("OWNER")).toBe(false);
+    expect(withAssociation("COLLABORATOR")).toBe(false);
+    expect(withAssociation("MEMBER")).toBe(false);
+  });
+
   it("finds a review's ID in its link, and does not take a person for a bot", () => {
     const recording = JSON.parse(fs.readFileSync(`${DIR}/pull_request_review.submitted.json`, "utf8"));
     const event = normalizeGithub(recording.event, recording.delivery, recording.payload, 0)!;

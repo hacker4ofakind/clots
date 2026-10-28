@@ -169,6 +169,8 @@ export interface Config {
   home: boolean;
   /** How many rule proposals a Clot may have waiting for the user at once. */
   maxProposals: number;
+  /** How many worker turns run at once across the daemon. */
+  maxWorkers: number;
   /** The tunnel's address, without a trailing slash; "" when not set. */
   publicUrl: string;
   /** Emails a Clot asks to send, sent on the user's yes in a review channel. `maxMs`: how long a request waits for the answer. */
@@ -189,6 +191,8 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
   const file = FileSchema.parse(json);
   const maxProposals = Number(env.CLOTS_MAX_PROPOSALS || "3");
   if (!Number.isInteger(maxProposals) || maxProposals < 1) throw new Error("CLOTS_MAX_PROPOSALS must be a whole number of at least 1");
+  const maxWorkers = Number(env.CLOTS_MAX_WORKERS || "3");
+  if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 20) throw new Error("CLOTS_MAX_WORKERS must be a whole number from 1 to 20");
 
   const clotNames = new Set([...file.clots.map((c) => c.name), ...(file.home ? [HOME_CLOT] : [])]);
   const base = (source: string, a: { account: string; clot?: string; shared?: true }): AccountBase => {
@@ -249,6 +253,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     rolloverPercent: Number(env.CLOTS_ROLLOVER_PERCENT ?? "65"),
     home: file.home,
     maxProposals,
+    maxWorkers,
     publicUrl,
     sendReview: { enabled: file.sendReview.enabled, maxMs: file.sendReview.days * 86_400_000 },
     sources,

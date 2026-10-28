@@ -1,13 +1,13 @@
-export type Effort = "low" | "medium" | "high";
-export type Mode = "action" | "brainstorm";
-export type ModeChange = "enter_brainstorm" | "exit_brainstorm" | "none";
+export type Effort = "low" | "medium" | "high" | "xhigh";
+/** The main session only ever runs at these. */
+export type MainEffort = "low" | "medium";
+export type WorkerModel = "opus" | "sonnet" | "haiku";
 
 /** Why a session was started: the previous one filled its context, or the user asked for a fresh one. */
 export type SeedReason = "context" | "user";
 
 export interface RouterDecision {
-  effort: Effort;
-  modeChange: ModeChange;
+  effort: MainEffort;
 }
 
 export interface TailMessage {

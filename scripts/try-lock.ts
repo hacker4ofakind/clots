@@ -25,7 +25,8 @@ const result = await runner.startTurn({
     `Bash \`touch ${CWD}/a.txt\`; Bash \`echo hi > ${CWD}/b.txt\`; Bash \`git status --short\`; Bash \`cat hello.txt\`; ` +
     `then try to create ${CWD}/c.txt with any file tool you have. Do not retry. Report one line per step: RAN or REFUSED, and what came back.`,
   effort: "low",
-  locked: true,
+  role: "main",
+  model: "claude-opus-5-5",
   onText: (t) => console.log("[clot]", t),
 }).done;
 

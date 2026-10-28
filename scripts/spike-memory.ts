@@ -29,7 +29,7 @@ put(`${MEMORY}/MEMORY.md`, block(["- [Favourite colour](global-clot-colour.md) â
 const runner = new SdkRunner({ clot, env: { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN! } });
 const id = randomUUID();
 const ask = async (prompt: string, resume: boolean) => {
-  const result = await runner.startTurn({ ...(resume ? { resume: id } : { newSessionId: id }), prompt, effort: "low", locked: true, onText: (t) => console.log("[clot]", t) }).done;
+  const result = await runner.startTurn({ ...(resume ? { resume: id } : { newSessionId: id }), prompt, effort: "low", role: "main", model: "claude-opus-5-5", onText: (t) => console.log("[clot]", t) }).done;
   console.log("ok:", result.ok);
 };
 

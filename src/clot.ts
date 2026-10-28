@@ -5,11 +5,12 @@ import { sessionChannelName } from "./chat/names.js";
 import { COMMAND_USAGE, parseCommand, type Command } from "./commands.js";
 import { formatEvent, linkTo } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
-import { nextMode, type Router } from "./router.js";
+import { OPUS } from "./models.js";
+import type { Router } from "./router.js";
 import type { InboxRow, SessionRow, Store } from "./store.js";
 import type { StandingMatch } from "./standing.js";
-import type { DaemonTools, TurnContext } from "./tools.js";
-import type { Mode, SeedReason } from "./types.js";
+import type { DaemonTools, TurnContext, TurnKind } from "./tools.js";
+import type { SeedReason } from "./types.js";
 
 export interface ClotDeps {
   name: string;
@@ -37,6 +38,12 @@ export interface ClotDeps {
   beforeTurn?: (clot: string) => Promise<void>;
   /** Answers `&memory` and `&memory undo`. */
   memory?: { list(): string; undo(): Promise<string> };
+  /** One line per listed worker, for every prompt and the recap. */
+  workerLines?: (clot: string) => string[];
+  /** Called when a turn of this Clot hits the usage limit. resetsAt is in Unix seconds. */
+  onLimit?: (resetsAt: number) => void;
+  /** Called when this Clot's pause ends. */
+  onResume?: (clot: string) => void;
 }
 
 /** A command the daemon answers at once, without a turn and without the session. */
@@ -64,12 +71,8 @@ const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: 
 
 export class Clot {
   private live?: TurnHandle;
-  /** Whether the running turn is under the lock. An investigation is, whatever the mode. */
-  private liveLocked = false;
-  /** Whether a steered event has joined the running turn. From then on the turn holds text the user did not write. */
-  private liveSteered = false;
-  /** Whether the running turn is the investigation of an event. */
-  private liveIsEvent = false;
+  /** What the running turn is for. Only a chat turn takes in the user's messages while it runs. */
+  private liveKind: TurnKind = "chat";
   /** The last of the daemon's notes that the running turn was given, or 0 when it was given none. */
   private liveNotes = 0;
   private draining = false;
@@ -121,26 +124,21 @@ export class Clot {
         await chat.post(session.channelId, "I'll close this session when the current turn finishes.");
         return;
       }
-      // An earlier message is waiting for this turn to end (a close, a mode change, a refused push).
+      // An earlier message is waiting for this turn to end (a close, a refused push).
       // This one waits behind it, so it is not delivered ahead of what the user sent first.
       const earlier = store.nextPending(name);
       if (earlier && earlier.id !== m.id) return;
+      // A turn's authority is fixed when it starts. A message that arrives during an event's or a
+      // worker's turn stays pending and gets a chat turn of its own, so it keeps the user's.
+      if (this.liveKind !== "chat") return;
       const live = this.live;
       const text = command.kind === "effort" ? command.rest : m.text;
-      const mode = store.getClot(name)!.mode;
-      const decision = await this.d.router.decide({ text, mode, tail: store.tail(name, 4) });
+      const decision = await this.d.router.decide({ text, tail: store.tail(name, 4) });
       if (this.live !== live) {
         // The turn ended while routing. The message is still pending; handle it as a normal turn.
         await this.drain();
         return;
       }
-      // A turn's permissions are fixed when it starts, so a message that changes the mode
-      // stays pending and gets a turn of its own, in the new mode, right after this one.
-      if (nextMode(mode, decision.modeChange) !== mode) return;
-      // The same goes for the lock. An investigation is locked even in action mode, so a message
-      // that is owed a working turn stays pending and gets one, instead of being used up in a
-      // turn that can change nothing.
-      if (this.liveLocked !== (mode === "brainstorm")) return;
       const oneOff = store.nextEffort(name);
       const effort = (command.kind === "effort" ? command.effort : oneOff) ?? decision.effort;
       // Refused once the turn's input has closed; the message then stays pending for the next turn,
@@ -157,21 +155,6 @@ export class Clot {
   /** Whether a turn is running. */
   isBusy(): boolean {
     return this.live !== undefined;
-  }
-
-  /**
-   * Feeds text into the running turn. Returns false when it was not delivered: no turn
-   * is running, the turn no longer accepts input, or something the user sent earlier is
-   * still waiting for the turn to end and must not be overtaken.
-   */
-  steerEvent(text: string): boolean {
-    if (!this.live || this.d.store.nextPending(this.d.name)) return false;
-    if (!this.live.push(text)) return false;
-    this.liveSteered = true;
-    // Kept with the session while the user's own work is what it joined: if that turn is cut off,
-    // the turn that picks the work up holds the event too. An investigation proposes anyway.
-    if (!this.liveIsEvent) this.d.store.setSteered(this.d.store.activeSession(this.d.name)!.id, true);
-    return true;
   }
 
   /**
@@ -233,11 +216,10 @@ export class Clot {
   private async process(row: InboxRow): Promise<boolean> {
     const { store, chat, name } = this.d;
     const session = store.activeSession(name)!;
-    const mode = store.getClot(name)!.mode;
 
-    // An event is data: text in it that looks like a command is not one.
+    // An event or a worker's report is data: text in it that looks like a command is not one.
     const isEvent = row.kind === "event";
-    const command: Command = isEvent ? { kind: "none" } : parseCommand(row.text);
+    const command: Command = row.kind !== "message" ? { kind: "none" } : parseCommand(row.text);
     const instant = instantCommand(command);
     if (instant) {
       await this.runInstant(row.id, session.channelId, instant);
@@ -252,7 +234,6 @@ export class Clot {
       } else if (!command.summary && session.seed !== null) {
         // A new session that still carries an unused recap: drop the recap in place.
         store.clearSeed(session.id);
-        store.setMode(name, "action");
         store.clearTail(name);
         store.clearNotes(name);
         await chat.post(session.channelId, "Recap discarded. This session now starts from scratch.");
@@ -268,7 +249,7 @@ export class Clot {
     await this.d.beforeTurn?.(name).catch((error) => console.error(`[${name}] syncing global memories failed:`, error));
     let result: TurnResult;
     try {
-      result = isEvent ? await this.runEventTurn(row, session, mode) : await this.runTurn(row, session, mode, command);
+      result = isEvent ? await this.runEventTurn(row, session) : row.kind === "worker" ? await this.runWorkerTurn(row, session) : await this.runTurn(row, session, command);
     } finally {
       this.live = undefined;
       stopTyping();
@@ -285,21 +266,24 @@ export class Clot {
     // The session exists on disk once any model response has come back.
     if (result.ok || result.contextPercent > 0) store.markSessionStarted(session.id);
     store.setInterrupted(session.id, false);
-    // The user's work that a steered event joined is over when a turn of the user's own ends: one
-    // the usage limit cut off is picked up again, and an investigation in between is not that work.
-    if (!isEvent && !result.limit) store.setSteered(session.id, false);
     store.finishRunning(name);
 
     if (!result.ok && !result.limit) {
       await chat.post(
         session.channelId,
-        isEvent ? "Looking into that event ended with an error. Ask me about it to try again." : "That turn ended with an error. Send your message again to retry.",
+        isEvent
+          ? "Looking into that event ended with an error. Ask me about it to try again."
+          : row.kind === "worker"
+            ? "Reading a worker's report ended with an error. Ask me about the worker to try again."
+            : "That turn ended with an error. Send your message again to retry.",
       );
       return true;
     }
 
     if (result.limit) {
       store.setInterrupted(session.id, true, row.kind, row.eventId);
+      // The limit is the account's: the workers wait for the same reset.
+      this.d.onLimit?.(result.limit.resetsAt);
       return (await this.pause(session.channelId, result.limit.resetsAt)) === "resumed";
     }
 
@@ -337,39 +321,78 @@ export class Clot {
   }
 
   /**
-   * Runs an event as a turn of its own, under the lock. The router still picks the
-   * effort. An event cannot change the mode, and does not use up a one-off effort:
-   * both belong to the user's own messages.
+   * Runs an event as a turn of its own. The router still picks the effort. An event does
+   * not use up a one-off effort: that belongs to the user's own messages.
    */
-  private async runEventTurn(row: InboxRow, session: SessionRow, mode: Mode): Promise<TurnResult> {
+  private async runEventTurn(row: InboxRow, session: SessionRow): Promise<TurnResult> {
     const { store, name } = this.d;
-    const decision = await this.d.router.decide({ text: row.text, mode, tail: store.tail(name, 4) });
+    const decision = await this.d.router.decide({ text: row.text, tail: store.tail(name, 4) });
     // The event this turn is for. A turn that picks up a cut-off investigation is for the same one.
     const event = row.eventId === null ? undefined : store.getEvent(row.eventId);
     const standing = event === undefined ? [] : (this.d.standingFor?.(name, event) ?? []);
     store.setInboxStatus(row.id, "running");
-    this.liveLocked = true;
-    this.liveIsEvent = true;
-    this.liveSteered = false;
+    this.liveKind = "event";
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt: buildPrompt({
         text: row.text,
-        mode,
-        modeChanged: false,
         seed: session.seed,
         seedReason: session.seedReason,
         interrupted: session.interrupted,
         event: true,
+        outsider: event?.outsider === true,
         notes: this.takeNotes(),
         standing: standing.map((match) => ({ name: match.rule.name, text: match.filled })),
+        workers: this.workerLines(),
       }),
       effort: decision.effort,
-      locked: true,
-      tools: this.d.makeTools?.({ clot: name, kind: "investigation", steered: () => this.liveSteered, event }),
+      role: "main",
+      model: OPUS,
+      tools: this.d.makeTools?.({ clot: name, kind: "event", event }),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
+  }
+
+  /**
+   * Runs a worker's report, question or failure as a turn of its own, at low effort, without the
+   * router. It carries none of the user's authority: a report can quote outside text.
+   */
+  private runWorkerTurn(row: InboxRow, session: SessionRow): Promise<TurnResult> {
+    const { store, name } = this.d;
+    store.setInboxStatus(row.id, "running");
+    this.liveKind = "worker";
+    this.live = this.d.runner.startTurn({
+      ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
+      prompt: buildPrompt({ text: row.text, seed: session.seed, seedReason: session.seedReason, interrupted: session.interrupted, notes: this.takeNotes(), workers: this.workerLines() }),
+      effort: "low",
+      role: "main",
+      model: OPUS,
+      tools: this.d.makeTools?.({ clot: name, kind: "worker" }),
+      onText: this.sayIn(session.channelId),
+    });
+    return this.live.done;
+  }
+
+  private workerLines(): string[] {
+    return this.d.workerLines?.(this.d.name) ?? [];
+  }
+
+  /** Pauses this Clot until the usage limit resets, telling the user in its live channel. For a limit a worker hit. */
+  async pauseFor(resetsAt: number): Promise<void> {
+    const session = this.d.store.activeSession(this.d.name);
+    if (!session) return;
+    const paused = this.d.store.getClot(this.d.name)!.pausedUntil;
+    if (paused !== null && paused >= resetsAt) return;
+    await this.pause(session.channelId, resetsAt);
+  }
+
+  /** Queues a worker's report, question or failure for a turn of its own, and starts draining. */
+  async queueFromWorker(row: { id: string; text: string; workerId: string }): Promise<void> {
+    const { store, name } = this.d;
+    const session = store.activeSession(name)!;
+    store.enqueue({ id: row.id, clot: name, channelId: session.channelId, text: row.text, receivedAt: this.d.now().getTime(), kind: "worker", workerId: row.workerId });
+    void this.drain().catch((error) => console.error(`[${name}]`, error));
   }
 
   /** The daemon's notes for the turn that is about to start, remembered so that they are cleared when it has read them. */
@@ -387,44 +410,35 @@ export class Clot {
     };
   }
 
-  /** Routes the message, applies any mode change and runs the turn to its end. */
-  private async runTurn(row: InboxRow, session: SessionRow, mode: Mode, command: Command): Promise<TurnResult> {
-    const { store, chat, name } = this.d;
+  /** Routes the message and runs the turn to its end. */
+  private async runTurn(row: InboxRow, session: SessionRow, command: Command): Promise<TurnResult> {
+    const { store, name } = this.d;
     const text = command.kind === "effort" ? command.rest : row.text;
-    const decision = await this.d.router.decide({ text, mode, tail: store.tail(name, 4) });
+    const decision = await this.d.router.decide({ text, tail: store.tail(name, 4) });
     // The user's own choice of effort wins over the router's: given with this message, or set for it beforehand.
     // A one-off effort is spent on this message either way.
     const oneOff = store.takeNextEffort(name);
     const effort = (command.kind === "effort" ? command.effort : oneOff) ?? decision.effort;
-    const newMode = nextMode(mode, decision.modeChange);
-    if (newMode !== mode) {
-      store.setMode(name, newMode);
-      await chat.post(session.channelId, newMode === "brainstorm" ? "Brainstorm mode on." : "Brainstorm mode off. Back to work.");
-    }
 
     store.appendTail(name, "user", text);
     store.setInboxStatus(row.id, "running");
     const prompt = buildPrompt({
       text,
-      mode: newMode,
-      modeChanged: newMode !== mode,
       seed: session.seed,
       seedReason: session.seedReason,
       interrupted: session.interrupted,
       notes: this.takeNotes(),
+      workers: this.workerLines(),
     });
 
-    this.liveLocked = newMode === "brainstorm";
-    this.liveIsEvent = false;
-    // Still set when the work a steered event had joined was cut off, by the usage limit or a
-    // restart, and has not ended since: this turn picks that work up, whatever ran in between.
-    this.liveSteered = session.steered;
+    this.liveKind = "chat";
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt,
       effort,
-      locked: newMode === "brainstorm",
-      tools: this.d.makeTools?.({ clot: name, kind: newMode === "brainstorm" ? "brainstorm" : "work", steered: () => this.liveSteered }),
+      role: "main",
+      model: OPUS,
+      tools: this.d.makeTools?.({ clot: name, kind: "chat" }),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -435,6 +449,7 @@ export class Clot {
     const delay = Math.max(0, resetsAt * 1000 - this.d.now().getTime());
     this.d.schedule(delay, () => {
       store.setPausedUntil(name, null);
+      this.d.onResume?.(name);
       // A drain is active: either a message that arrived after the reset has already resumed
       // the session, or pause() is still posting its notice and will see the pause was lifted.
       if (this.draining) return;
@@ -462,15 +477,19 @@ export class Clot {
       const parts: string[] = [];
       const recapTurn = this.d.runner.startTurn({
         resume: old.id,
-        prompt: recapPrompt(reason),
+        prompt: recapPrompt(reason, this.workerLines()),
         effort: "medium",
-        locked: true,
+        role: "main",
+        model: OPUS,
         onText: (text) => void parts.push(text),
       });
       await chat.post(old.channelId, words.notice).catch(() => undefined);
       const stopTyping = chat.startTyping(old.channelId);
       const recapResult = await recapTurn.done.finally(stopTyping);
-      if (recapResult.limit) return this.pause(old.channelId, recapResult.limit.resetsAt);
+      if (recapResult.limit) {
+        this.d.onLimit?.(recapResult.limit.resetsAt);
+        return this.pause(old.channelId, recapResult.limit.resetsAt);
+      }
       if (!recapResult.ok || parts.length === 0) {
         await chat.post(old.channelId, words.failed);
         return "failed";
@@ -482,10 +501,7 @@ export class Clot {
     // Saved before anything is announced: from here the new channel is the live one,
     // and the recap is kept, even if a call below fails or the daemon stops.
     store.createSession({ id: this.d.newId(), clot: name, channelId, seed: recap, seedReason: reason });
-    if (!summary) {
-      store.setMode(name, "action");
-      store.clearTail(name);
-    }
+    if (!summary) store.clearTail(name);
     // A proposal lasts as long as its session. The new session is told which were withdrawn,
     // unless it starts with nothing carried over.
     await this.d.onSessionClosed?.(name).catch((error) => console.error(`[${name}] closing the session's proposals failed:`, error));

@@ -4,8 +4,8 @@ import { FakeChat } from "../src/chat/fake.js";
 import type { ClotEvent, TriageResult } from "../src/events/types.js";
 import { acceptGithub, githubHandler, startIntake } from "../src/intake.js";
 import { isSelfCaused } from "../src/events/github.js";
-import { Pipeline } from "../src/pipeline.js";
-import type { ClotPort } from "../src/steering.js";
+
+import { Pipeline, type ClotPort } from "../src/pipeline.js";
 import { Store } from "../src/store.js";
 import type { Triage, TriageInput } from "../src/triage.js";
 
@@ -14,9 +14,6 @@ class FakePort implements ClotPort {
   queued: { id: string; notice: string }[] = [];
   isBusy(): boolean {
     return this.busy;
-  }
-  steerEvent(): boolean {
-    return false;
   }
   async queueEvent(event: ClotEvent, notice: string): Promise<void> {
     this.queued.push({ id: event.id, notice });
@@ -30,7 +27,7 @@ class FakeTriage implements Triage {
   async judge(input: TriageInput): Promise<TriageResult> {
     this.inputs.push(input);
     if (this.fail) throw new Error("model unavailable");
-    return { needsAction: true, message: "Login fails. Looking into it.", urgent: false, suspicious: false, relevantNow: false, ...this.next };
+    return { needsAction: true, message: "Login fails. Looking into it.", urgent: false, suspicious: false, ...this.next };
   }
 }
 
@@ -38,8 +35,6 @@ let store: Store;
 let chat: FakeChat;
 let port: FakePort;
 let triage: FakeTriage;
-let asked: { clot: string; id: string; message: string }[];
-let canAsk: boolean;
 let dropRule: (event: ClotEvent) => boolean;
 let ownDropRule: (event: ClotEvent) => boolean;
 let pipeline: Pipeline;
@@ -73,6 +68,7 @@ function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
     ref: "7",
     subject: "issue:7",
     automated: false,
+    outsider: false,
     receivedAt: 0,
     ...overrides,
   };
@@ -85,8 +81,6 @@ beforeEach(async () => {
   chat = new FakeChat();
   port = new FakePort();
   triage = new FakeTriage();
-  asked = [];
-  canAsk = true;
   dropRule = () => false;
   ownDropRule = () => false;
   clock = 0;
@@ -102,12 +96,6 @@ beforeEach(async () => {
     chat,
     rulebook: { dropsIn: (name, e) => (name === "global" ? dropRule(e) : ownDropRule(e)), guidance: () => "Ignore typo reports." },
     triage,
-    steering: {
-      ask: async (clot, e, message) => {
-        if (canAsk) asked.push({ clot, id: e.id, message });
-        return canAsk;
-      },
-    },
     clots: new Map([["graphite", port]]),
     route: async (e) => (e.place === "octo/widgets" ? { clot: "graphite", how: "bound" } : { how: "no Clot is bound to this repository" }),
     selfCaused: (e) => e.source === "github" && isSelfCaused(e, "widgets-clot"),
@@ -128,7 +116,7 @@ describe("Pipeline", () => {
     await pipeline.handle(event("d-1"));
     expect(port.queued).toEqual([{ id: "d-1", notice: "Login fails. Looking into it." }]);
     expect(store.getEvent("d-1")).toMatchObject({ clot: "graphite", triageMessage: "Login fails. Looking into it.", urgent: true });
-    expect(triage.inputs[0]).toMatchObject({ guidance: "Ignore typo reports.", tail: null });
+    expect(triage.inputs[0]).toMatchObject({ guidance: "Ignore typo reports." });
   });
 
   it("drops what the Clot caused itself, before triage is asked", async () => {
@@ -229,33 +217,11 @@ describe("Pipeline", () => {
     expect(store.getEvent("d-1")).toMatchObject({ status: "dropped", note: "triage: suspicious" });
   });
 
-  it("gives triage the conversation only while a turn is running", async () => {
+  it("queues an event that needs action while a turn is running, without asking anything", async () => {
     port.busy = true;
-    await pipeline.handle(event("d-1"));
-    expect(triage.inputs[0].tail).toEqual([{ role: "user", text: "fix the login page" }]);
-  });
-
-  it("asks the user when a turn is running and triage says the event bears on it", async () => {
-    port.busy = true;
-    triage.next = { relevantNow: true };
-    await pipeline.handle(event("d-1"));
-    expect(asked).toEqual([{ clot: "graphite", id: "d-1", message: "Login fails. Looking into it." }]);
-    expect(port.queued).toEqual([]);
-  });
-
-  it("queues without asking when the event does not bear on the running turn", async () => {
-    port.busy = true;
-    await pipeline.handle(event("d-1"));
-    expect(asked).toEqual([]);
-    expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
-  });
-
-  it("queues when the question could not be asked", async () => {
-    port.busy = true;
-    canAsk = false;
-    triage.next = { relevantNow: true };
     await pipeline.handle(event("d-1"));
     expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
+    expect(chat.postsIn(live)).toEqual([]);
   });
 
   it("leaves an event as received when processing fails, and picks it up again on resume", async () => {
@@ -443,6 +409,25 @@ describe("acceptGithub", () => {
     expect(answer).toMatchObject({ status: 202, text: "accepted" });
     expect(answer.event).toMatchObject({ id: "d-1", kind: "issue_opened", receivedAt: 1234 });
     expect(store.getEvent("d-1")!.status).toBe("received");
+  });
+
+  it("tells the workers of a closed pull request and stores nothing; an opened one is told and stored", () => {
+    const changes: unknown[] = [];
+    const withPr = () => ({ ...deps(), onPullRequest: async (a: unknown) => void changes.push(a) });
+    const pr = (action: string) => ({
+      action,
+      number: 3,
+      repository: { full_name: "O/R" },
+      sender: { login: "someone" },
+      pull_request: { number: 3, title: "Fix", body: "", html_url: "https://github.com/o/r/pull/3", head: { ref: "clot/x-1a2b", repo: { full_name: "O/R" } } },
+    });
+    expect(acceptGithub(delivery(body(pr("closed")), { eventName: "pull_request", deliveryId: "d-9" }), withPr())).toEqual({ status: 200, text: "pull request closed" });
+    expect(store.getEvent("d-9")).toBeUndefined();
+    expect(changes).toEqual([{ repo: "o/r", branch: "clot/x-1a2b", headRepo: "o/r", number: 3, url: "https://github.com/o/r/pull/3", action: "closed" }]);
+
+    expect(acceptGithub(delivery(body(pr("opened")), { eventName: "pull_request", deliveryId: "d-10" }), withPr())).toMatchObject({ status: 202 });
+    expect(store.getEvent("d-10")).toBeDefined();
+    expect(changes[1]).toMatchObject({ action: "opened", branch: "clot/x-1a2b" });
   });
 
   it("acknowledges a repeated delivery without handing it on", () => {

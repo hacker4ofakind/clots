@@ -23,6 +23,7 @@ export function formatEvent(event: ClotEvent, timeZone: string): string {
     `kind: ${safe(event.kind)}`,
     `place: ${safe(event.place)}`,
     `actor: ${safe(event.actor)}`,
+    ...(event.outsider ? ["from: an outsider"] : []),
     `title: ${safe(event.title)}`,
     `url: ${safe(event.url)}`,
     `ref: ${safe(event.ref)}`,

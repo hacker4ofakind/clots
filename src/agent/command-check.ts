@@ -1,6 +1,8 @@
+import path from "node:path";
+
 /**
- * Decides what a locked turn may do. A locked turn (investigating an event,
- * or brainstorming) can read and look things up, and can change nothing.
+ * Decides what a locked turn may do. A locked turn (every main session turn)
+ * can read and look things up, and can change nothing but its memory folder.
  */
 export type Verdict = { ok: true } | { ok: false; reason: string };
 
@@ -13,7 +15,7 @@ const no = (reason: string): Verdict => ({ ok: false, reason });
  * It understands quotes and backslashes, and nothing cleverer: anything it is
  * not sure about is refused.
  */
-function split(line: string): string[][] | string {
+export function splitCommandLine(line: string): string[][] | string {
   const commands: string[][] = [];
   let words: string[] = [];
   let word = "";
@@ -173,7 +175,7 @@ export function checkCommand(line: string, testCommand?: string): Verdict {
   if (testCommand !== undefined && testCommand.trim() !== "" && trimmed === testCommand.trim()) return OK;
   // Merging or discarding error output changes nothing, and is too common to refuse.
   const cleaned = trimmed.replace(/(^|\s)2>&1(?=\s|$)/g, "$1").replace(/(^|\s)2>\s?\/dev\/null(?=\s|$)/g, "$1");
-  const commands = split(cleaned);
+  const commands = splitCommandLine(cleaned);
   if (typeof commands === "string") return no(`it uses ${commands}`);
   for (const words of commands) {
     const verdict = checkWords(words);
@@ -190,7 +192,16 @@ const LOCKED_TOOLS = new Set([
 ]);
 
 /** Tools removed from a locked turn altogether, so the model does not reach for them. */
-export const LOCK_REMOVED_TOOLS = ["Edit", "Write", "NotebookEdit"];
+export const LOCK_REMOVED_TOOLS = ["NotebookEdit"];
+
+/** A Markdown file directly in a session's memory folder, where Claude Code keeps its auto memory. */
+const MEMORY_FILE = /^\/home\/clot\/\.claude\/projects\/[^/]+\/memory\/[^/]+\.md$/;
+
+/** Whether a locked turn may write this file: one in its memory folder, named plainly. */
+export function isMemoryFile(filePath: unknown): boolean {
+  if (typeof filePath !== "string" || !filePath.startsWith("/") || filePath.split("/").includes("..")) return false;
+  return MEMORY_FILE.test(path.posix.normalize(filePath));
+}
 
 /** The name under which the daemon's own tools are given to a turn. */
 export const DAEMON_TOOL_SERVER = "clots";
@@ -210,6 +221,8 @@ export function lockDecision(toolName: string, input: Record<string, unknown>, t
     return verdict.ok ? OK : no(`Refused: ${verdict.reason}. While locked, only read-only commands run; nothing can be changed or sent.`);
   }
   if (LOCKED_TOOLS.has(toolName) || toolName.startsWith(DAEMON_TOOL_PREFIX)) return OK;
+  // The session keeps its own memory, and the home Clot the global memories, while locked.
+  if (toolName === "Edit" || toolName === "Write") return isMemoryFile(input.file_path) ? OK : no("Refused: while locked, only files in your memory folder can be written.");
   return no(`Refused: ${toolName} is not available while locked. Nothing can be changed or sent until the lock is off.`);
 }
 

@@ -17,6 +17,7 @@ function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
     ref: "14",
     subject: "pr:14",
     automated: true,
+    outsider: false,
     receivedAt: 1000,
     ...overrides,
   };
@@ -53,6 +54,11 @@ describe("combine", () => {
     expect(combine([event("d-1"), event("d-2")]).event.kind).toBe("batch");
   });
 
+  it("makes a batch an outsider's event when any part is", () => {
+    expect(combine([event("d-1"), event("d-2", { outsider: true })]).event.outsider).toBe(true);
+    expect(combine([event("d-1"), event("d-2")]).event.outsider).toBe(false);
+  });
+
   it("makes several events into one batch event that lists them", () => {
     const events = [event("d-1"), event("d-2", { actor: "netlify[bot]", body: "" }), ci("1"), ci("2")];
     const { event: batch, absorbed } = combine(events);
@@ -69,6 +75,7 @@ describe("combine", () => {
       ref: "14",
       subject: "pr:14",
       automated: true,
+      outsider: false,
       receivedAt: 1000,
     });
     expect(batch.body).toBe(

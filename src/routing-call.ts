@@ -2,6 +2,7 @@ import os from "node:os";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { formatEvent } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
+import { HAIKU } from "./models.js";
 
 export interface RoutingInput {
   event: ClotEvent;
@@ -21,6 +22,9 @@ export interface RoutingAnswer {
 export interface RoutingCall {
   decide(input: RoutingInput): Promise<RoutingAnswer>;
 }
+
+export const ROUTING_MODEL = HAIKU;
+export const ROUTING_EFFORT = "medium";
 
 const NOT_SURE: RoutingAnswer = { clot: null, confident: false };
 
@@ -58,8 +62,8 @@ export class SdkRoutingCall implements RoutingCall {
       const run = query({
         prompt: buildRoutingPrompt(input),
         options: {
-          model: "claude-sonnet-5-5",
-          effort: "low",
+          model: ROUTING_MODEL,
+          effort: ROUTING_EFFORT,
           cwd: os.tmpdir(),
           systemPrompt: ROUTING_SYSTEM_PROMPT,
           settingSources: [],

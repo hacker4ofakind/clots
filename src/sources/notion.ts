@@ -61,6 +61,7 @@ export function normalizeNotion(account: NotionAccount, payload: unknown, receiv
       ref: page,
       subject: `page:${page}`,
       automated: authors.length > 0 && authors.every((a) => a.type === "bot"),
+      outsider: false,
       receivedAt,
     },
   };

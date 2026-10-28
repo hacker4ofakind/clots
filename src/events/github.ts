@@ -18,6 +18,9 @@ export function repoSlug(repoUrl: string): string | undefined {
   return match ? `${match[1]}/${match[2]}`.toLowerCase() : undefined;
 }
 
+/** The author associations that make someone part of the project. */
+const INSIDERS = ["OWNER", "MEMBER", "COLLABORATOR"];
+
 function text(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -37,8 +40,10 @@ export function normalizeGithub(eventName: string, deliveryId: string, payload: 
   const actor = text(p.sender?.login);
   const action = text(p.action);
   if (repo === "" || actor === "") return undefined;
-  const base = { id: deliveryId, source: "github", account: "github", place: repo, actor, receivedAt };
+  const base = { id: deliveryId, source: "github", account: "github", place: repo, actor, receivedAt, outsider: false };
   const bot = p.sender?.type === "Bot" || actor.endsWith("[bot]");
+  /** Whether the author of an issue, comment or review has no standing in the repository. */
+  const outsider = (thing: Record<string, unknown> | undefined) => !INSIDERS.includes(text(thing?.author_association));
 
   if (eventName === "issues" && (action === "opened" || action === "reopened") && p.issue) {
     return {
@@ -50,6 +55,7 @@ export function normalizeGithub(eventName: string, deliveryId: string, payload: 
       ref: String(p.issue.number),
       subject: `issue:${p.issue.number}`,
       automated: bot,
+      outsider: outsider(p.issue),
     };
   }
 
@@ -65,6 +71,7 @@ export function normalizeGithub(eventName: string, deliveryId: string, payload: 
       ref: String(p.issue.number),
       subject: `${p.issue.pull_request ? "pr" : "issue"}:${p.issue.number}`,
       automated: bot,
+      outsider: outsider(p.comment),
     };
   }
 
@@ -78,6 +85,7 @@ export function normalizeGithub(eventName: string, deliveryId: string, payload: 
       ref: String(p.pull_request.number),
       subject: `pr:${p.pull_request.number}`,
       automated: bot,
+      outsider: outsider(p.review),
     };
   }
 

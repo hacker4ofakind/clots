@@ -20,6 +20,7 @@ const event: ClotEvent = {
   ref: "9",
   subject: "pr:9",
   automated: true,
+  outsider: false,
   receivedAt: 0,
 };
 
