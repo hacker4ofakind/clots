@@ -268,11 +268,21 @@ The main session's daemon tools:
 - **Report**: a worker ends with what changed, the checks it ran and their
   results, the pull request's link and anything it is unsure of. The report is
   queued as a turn for the main session, which tells the user in a line or two.
+  That turn carries none of the user's authority: the daemon's tools treat it as
+  they treat an event's turn, because a report can quote outside text.
 - **Later events**: a review comment or a failed CI run on a worker's pull request
   is triaged in the main session and passed to the same worker. A commit that
   answers a review is low; a reply comment on GitHub is high.
 - **Lifetime**: a worker's session can be resumed until its pull request is merged
   or closed. Then the daemon removes the worktree; the transcript stays on disk.
+  The daemon learns of the pull request from GitHub (its webhook, and an hourly
+  check with `gh`, since a missed delivery is not sent again), never from the
+  worker's text, and ignores a pull request from a fork. A worker idle for 7 days
+  with no open pull request is closed the same way. A Clot has at most 20 workers
+  listed at once.
+- **The main session's clone** is brought up to date with the default branch
+  before each of its turns, by the daemon: the main session cannot pull, and would
+  otherwise investigate old code.
 - **Progress**: the worker posts nothing itself. The daemon posts in the Clot's
   live channel when a worker starts (title, model and effort), every 20 minutes
   with its latest step, and when it ends, followed by the turn summary.
@@ -621,9 +631,13 @@ own permission rules, and nothing can pre-approve a call past it. It refuses:
 - `gh` commands that comment, review, merge, close or reopen an issue, release, or
   change a repository's settings; a worker's own pull request is the exception:
   creating it, editing its description, and closing it;
-- `git push` to the default branch, a forced push to a branch the worker did not
-  create, and pushing a tag;
+- every `git push` except to the worker's own branch, named explicitly; a forced
+  push other than `--force-with-lease`; pushing a tag; and changing git's
+  configuration or remotes;
 - commands that send mail or messages.
+
+It also refuses every MCP tool other than the worker's own `ask_main`, since a
+connector brought in by the container's login could send unchecked.
 
 A refusal tells the worker why and that the action belongs to the main session.
 The guard's lists, and the ways of hiding a command it refuses, are tested against
@@ -1030,6 +1044,9 @@ If any of these fails, stop and bring the finding to the user before continuing.
 - A worker can reach another person in ways the worker guard cannot see: a
   `curl` to an address of its choosing, and, once the browser is built, a click
   that posts or accepts terms. Only the worker's instructions stand in the way.
+- A worker's branch runs the repository's CI with its Actions secrets, as any
+  collaborator's pull request does. The Clots' token cannot change workflow files,
+  but the scripts CI runs are the worker's to change.
 - Five workers per host, plus Chromium, on an 8 GB Pi is unmeasured. Stage 3's
   check on the Pi runs exactly that load.
 - Acting without asking means a wrong low action is noticed later: a pre-filter
