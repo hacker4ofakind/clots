@@ -68,7 +68,7 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Session manager | Start a Clot's process for a turn, resume its session, apply effort, stop the process afterwards. Enforce one heavy job at a time per host. | Agent SDK, Docker |
 | Workers | Start a worker session in a new worktree when the main session asks, queue it while the host's limit is reached, pass messages between it and the main session, post its progress lines, remove its worktree when its pull request is merged or closed. | Session manager |
 | Axes | A fixed rating, in code, of every daemon tool on the four axes. An action high on any axis becomes an ask. | None |
-| Asks and choices | Put a high action to the user in a temporary channel and carry out the answer; post a choice and, after 10 minutes with no reply, start a turn that goes with the Clot's pick. Keep the pinned list in `clots-waiting`. | Chat adapter, axes |
+| Asks | One component for every question put to the user in a temporary channel: standing rules, emails to send, merges and choices. Each kind has its handler; all share the channel, reply matching, closing exactly once, withdrawal and the pinned list in `clots-waiting`. | Chat adapter, axes |
 | Clot container | The Clot's computer: repo clone, Chromium with a persistent profile, live view, scoped credentials, its own Claude login, a copy of the user's Claude setup. | Image for arm64 and x64 |
 | Commands | Messages that start with `&`. Handled by the daemon before routing; never passed to the model. | Session manager |
 | Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container, and are made for each turn, so each call knows what kind of turn it is in. | Rulebook, chat adapter |
@@ -340,9 +340,11 @@ The daemon decides whether an edit is applied or put to the user, by the axes
 (section 7). The Clot cannot choose.
 
 - **Applied at once:** pre-filters, triage lines, urgency markers and routing
-  rules, in the Clot's own file or in `global.yaml`, whoever raised them, and
-  watch and webhook recipes. Each is reversible with `&rules undo` and seen only by
-  the user. The daemon posts the resulting rule in the Clot's live channel with a
+  rules, in the Clot's own file or in `global.yaml`, whoever raised them, in any
+  kind of turn, and watch and webhook recipes. Each is reversible with
+  `&rules undo` and seen only by the user. The exception is a turn started by an
+  outsider's event (section 7): there every rulebook edit is an ask, so a
+  stranger's text cannot silence the alerts the user relies on. The daemon posts the resulting rule in the Clot's live channel with a
   reminder of `&rules undo`. After a pre-filter is applied, the daemon also posts
   the first event it drops, so a filter that hides too much is seen without being
   looked for.
@@ -353,9 +355,9 @@ The daemon decides whether an edit is applied or put to the user, by the axes
 - **What the Clot learns:** the tool returns at once and the Clot does not wait.
   The outcome of an ask is posted in its live channel and placed as a note in
   front of the main session's next turn. A note starts no turn.
-- **Limits:** an ask about a standing rule lasts as long as its session and is
-  closed as unanswered when the session closes or rolls over. A Clot may have
-  three open, or the number in `CLOTS_MAX_PROPOSALS`.
+- **Limits:** an ask about a rule stays open until the user answers it, across
+  rollovers: the rule does not depend on the session. A Clot may have three open,
+  or the number in `CLOTS_MAX_PROPOSALS`.
 - **When a Clot adds a rule unasked:** only on a clear pattern (the same kind of
   event dismissed more than once, or a stated standing preference), with the
   reason in one line, and never again once undone.
@@ -529,9 +531,18 @@ asking, and asks only for what is high on any one.
 | Price | Less than $5 at stake | $5 or more at stake |
 | Committing the user | Nothing | Terms accepted or promises made in the user's name |
 
-- **The daemon rates, not the model.** Every daemon tool carries a fixed rating in
-  code. A call that is high on any axis is never carried out directly: it becomes
-  an ask. The model cannot argue an action down.
+- **The daemon rates, not the model.** Every daemon tool declares its rating on
+  the four axes in code. A call that is high on any axis is never carried out
+  directly: it becomes an ask. The model cannot argue an action down.
+- **Who started the turn does not matter.** A low action runs in every kind of
+  main session turn: one the user's message started, an event's, or a worker's
+  report. So a client's email can get a tentative event in the user's calendar
+  with no question asked. The one exception is a rulebook edit in a turn started
+  by an outsider's event, which is an ask (section 5).
+- **The Clot knows the axes too.** The main prompt carries a short version: do
+  without asking whatever is free to undo, seen only by the user, under $5 and
+  commits them to nothing; anything else the daemon puts to the user; prepare
+  everything up to that step, then wait. This is guidance; the ratings enforce it.
 - **Low, done without asking:**
   - investigating, under the lock;
   - starting, messaging and stopping workers;
@@ -556,48 +567,68 @@ asking, and asks only for what is high on any one.
     `merge_pull_request(number)`, which only the main session has. It may call it
     on its own, for example to suggest shipping a pull request once the user has
     checked it; the daemon then opens the ask, showing the pull request's title,
-    link and checks, and merges only on the user's yes there. The tool refuses a
-    pull request that is not on one of the Clot's own `clot/` branches or is a
-    draft;
+    link, checks and head commit, and on the user's yes there squash-merges it
+    under the Clots' account. A refusal from GitHub, such as a branch rule, is
+    posted as it came. The tool refuses a pull request that is not on one of the
+    Clot's own `clot/` branches or is a draft;
   - anything that spends $5 or more, and anything that accepts terms or makes a
     promise in the user's name.
 
 ### Asks
 
-- The daemon opens a temporary channel in the Clot's category (`<clot>-ask`, or
-  `<clot>-rule` for a standing rule), mentions the user once and shows exactly what
-  would be done. The ask is listed in `clots-waiting` (section 6).
-- The reply is matched exactly, after lowercasing and removing punctuation: `yes`,
-  `sure`, `do that` or `yeah` carries it out; `no`, `dont` or `not at all` declines
-  it; anything else repeats the question. The reply never reaches the model.
+One component puts every question to the user. Each ask has a kind, and the kind
+decides its channel, what an exact reply does, what any other reply does, and when
+it is withdrawn:
+
+| Kind | Channel | Exact yes | Exact no | Any other reply | Withdrawn when |
+|---|---|---|---|---|---|
+| Standing rule | `<clot>-rule` | applies it | declines it | repeats the question | never |
+| Email to send | `<clot>-mail` | sends it | saves it as a draft | goes to the main session as the user's feedback, and the review closes | its review window passes |
+| Merge | `<clot>-ask` | merges | declines | repeats the question | the pull request gets a new commit, or closes |
+| Choice | `<clot>-choice` | `1`, `2`, `one`, `two`, `first` or `second` decide it; `your pick` or `go ahead` take the Clot's pick | none | goes to the main session as a turn of the user's own, with the choice attached, and the choice closes | never: the timeout decides it |
+
+What every ask shares:
+
+- The daemon opens the channel in the Clot's category, mentions the user once and
+  shows exactly what would be done. The ask is listed in `clots-waiting`
+  (section 6).
+- A reply is matched exactly, after lowercasing and removing punctuation. A yes is
+  `yes`, `sure`, `do that` or `yeah`; a no is `no`, `dont` or `not at all`. An
+  exact reply never reaches the model.
 - The tool returns at once and the Clot does not wait. The outcome is posted in
   the live channel and placed as a note in front of the main session's next turn.
   The channel is deleted when the answer has been carried out, and the ask leaves
   `clots-waiting`.
-- An ask has no timeout. Silence never answers it.
+- An ask is closed exactly once, whichever comes first: the reply, the timeout, or
+  the withdrawal.
+- **Silence never approves an ask.** An ask is withdrawn when what it would act on
+  changes, so a yes always means what the user saw. A withdrawn ask leaves
+  `clots-waiting`, its channel is deleted, and the main session gets a note, so it
+  can ask again if that still makes sense.
+- Open asks survive a restart. One whose channel is gone is closed as withdrawn.
 
 ### Choices
 
 When there are meaningfully different ways to do something, the main session puts
-one or two options to the user with the daemon tool `ask_choice(options, pick)`,
+two options to the user with the daemon tool `ask_choice(question, options, pick)`,
 naming its own pick.
 
-- The daemon rates each option on the axes, posts the options in the live channel
-  with a mention, and lists the choice in `clots-waiting` with the time it will be
-  decided. The main session's turn ends, so it stays free for other events.
-- The user's next message in the live channel answers the choice and starts a turn
-  with it.
-- **No reply within 10 minutes** (or `CLOTS_CHOICE_TIMEOUT_MINUTES`):
-  - when the pick is low on every axis, the daemon starts a turn telling the main
-    session the user appears to be busy and to go with its pick. The Clot posts
-    which option it took and that a reply switches it;
-  - when the pick includes a high step, the Clot does the low part (the branch,
-    the draft) and the high step becomes an ask.
-- **A late answer for the other option**: the main session redirects or replaces
-  the worker, and closes the pull request made for the first option.
-- A choice is decided exactly once, by the reply or by the timeout, whichever
-  comes first. After a restart, a choice whose 10 minutes have passed is decided by
-  the timeout at once.
+- The daemon opens a choice ask, which lists the deadline in `clots-waiting`. The
+  main session's turn ends, so it stays free for other events.
+- **No reply within 10 minutes** (or `CLOTS_CHOICE_TIMEOUT_MINUTES`): the daemon
+  starts a turn telling the main session the user appears to be busy, and to go
+  with its pick. The Clot posts which option it took and that a reply switches it.
+- **The daemon rates no option.** An option is a sentence the model wrote, so
+  there is nothing to rate. The axes hold at each tool call instead: when the pick
+  leads to a high step, such as sending an email or merging, that call becomes an
+  ask, and the Clot has done everything up to it.
+- That timeout turn carries none of the user's authority, as a worker's report
+  does not.
+- **A late answer for the other option**, in the live channel, is an ordinary
+  message: the main session redirects or replaces the worker, and closes the pull
+  request made for the first option.
+- After a restart, a choice whose deadline has passed is decided by the timeout
+  at once.
 
 ### Enforcement
 
@@ -888,7 +919,10 @@ onboarding can be resumed.
 
 - Unit tests for pure logic: pre-filters, routing, gates, the five-word check,
   schedules, channel naming, reply matching, the hold's timing, each daemon tool's
-  rating on the axes, the choice's timeout on a fake clock, the worker queue and
+  rating on the axes, the gates by kind of turn with the outsider exception, reply
+  matching for each kind of ask, closing an ask exactly once when a reply races
+  the timeout or a withdrawal, a merge ask withdrawn by a new commit, the choice's
+  timeout on a fake clock, the worker queue and
   its limit, the `clots-waiting` message, and the undo of every action that is
   applied with one.
 - The lock's command checker and the worker guard are each tested against two
@@ -973,8 +1007,10 @@ Each stage gets its own specification and plan.
      limit, and triage and the routing call on Haiku 5.5.
    - **Autonomy**, built after that: the axes and each daemon tool's rating, asks,
      the actions applied with an undo (rulebook edits, global memories, removing a
-     calendar event and `&calendar undo`), choices with their timeout, and
-     `clots-waiting`.
+     calendar event and `&calendar undo`), low actions in every kind of turn, one
+     component for every ask (replacing the separate proposal, send review and
+     memory question channels), `merge_pull_request`, choices with their timeout,
+     and `clots-waiting`.
    - **2d. Gates and sweep**, with the spend log and rollover re-grounding. The
      gates also hold back worker starts.
 3. **Pi deployment and onboarding.**
