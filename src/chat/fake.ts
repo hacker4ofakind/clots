@@ -101,8 +101,17 @@ export class FakeChat implements ChatAdapter {
     return id;
   }
 
+  /** Set to make pins fail, as without the Pin Messages permission. */
+  pinFails = false;
+
   async pin(_channelId: string, messageId: string): Promise<void> {
+    if (this.pinFails) throw Object.assign(new Error("Missing Permissions"), { code: 50013 });
     this.pinned.push(messageId);
+  }
+
+  async isPinned(_channelId: string, messageId: string): Promise<boolean> {
+    if (!this.messages.has(messageId)) throw Object.assign(new Error("Unknown Message"), { code: 10008 });
+    return this.pinned.includes(messageId);
   }
 
   async editMessage(_channelId: string, messageId: string, text: string): Promise<void> {

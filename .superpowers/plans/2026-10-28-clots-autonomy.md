@@ -226,7 +226,7 @@ These override anything above that they contradict.
   - **Shared helper:** `github-api.ts` has one request helper that sets the token, accept and API-version headers, and never puts the token in an error. `githubCommentSender` moves onto it.
 - **The calendar removal snapshot** comes from the `check` call made before `remove`, and is stored before `remove` is called. A removal whose answer is lost still leaves an undo. `&calendar undo` runs one at a time per Clot, and marks the row as being restored before `create`, so two quick undos restore once.
 - **`clots-waiting` robustness:**
-  - **Storing the message:** store the message id right after posting; the pin is best-effort.
+  - **Storing the message:** store the message id right after posting; the pin is best-effort. At every `init()`, and after each change until a check succeeds, `isPinned` (a fifth adapter method) is asked and the message pinned if it is not, so a pin that failed before the bot had Pin Messages is made later.
   - **When to post a new message:** only when Discord says the message or the channel is unknown (codes 10008 or 10003). Any other error is retried at 5, 30 and 120 seconds, and the stored "last text" is updated only after an edit succeeds.
   - **Summaries are made safe:** one line, at most 100 characters, with links and mentions neutralised (`<@` becomes `<\@`, and `[text](url)` becomes the text).
   - **No pings:** the post and edits send with no allowed mentions.
@@ -239,6 +239,7 @@ These override anything above that they contradict.
 - **The calendar under the axes:**
   - **One `calendar_changes` log** replaces `calendar_removals`. Columns: `id`, `clot`, `account`, `op` (`create` | `update` | `remove`), `uid`, `before` (the event's JSON, or null for a create), `after` (the JSON, or null for a remove), `by_clot` (1), `outsider`, `at`, `restoring`.
   - **What `&calendar undo` does:** it reverses this Clot's newest row. A create's event is removed, an update gets its `before` fields written back, and a removed event is created again from `before`, with the new-copy line. Then the row is deleted.
+  - **Finding a fresh event:** the iCal feed can lag by hours, so `calendar_list` adds a section from `calendar_changes` of the last two days (each event with its id, marked added, changed or removed by a Clot), and the prompt says to use the id from the daemon's post when there is one.
   - **Repeating events:** the script's `check` result gains `recurring: boolean` (`setup/calendar.gs` and `ScriptEvent`). `calendar_remove` refuses a recurring event in every turn, because the undo could not restore the series. `calendar_write` refuses a series change in any turn not started by the user's message.
   - **In a tainted turn:** `calendar_write` may `create`, at most 3 per Clot per day, counted from the log's tainted creates. `update` and `remove` are allowed only for a `uid` with a `create` row in the log, so only events a Clot added. Refusals say why.
 - **The hourly sweep** also fires any choice whose deadline has passed, in case a timer was lost.
@@ -513,7 +514,7 @@ These override anything above that they contradict.
 
 ## Implementation Notes
 
-Built as planned in one pass; 985 tests (was 941). Names and shapes that differ, or that the plan left open:
+Built as planned in one pass; 985 tests at first (was 941). Names and shapes that differ, or that the plan left open:
 
 - **`gate(ctx, tool, run?, ask?)`**: a high tool with no direct way passes no `run`, a low one no `ask`. `TOOL_AXES` is keyed by `RatedTool` (`Exclude<keyof DaemonTools, "emailAccounts">`); high: `standing`, `emailSend`, `mergePullRequest`.
 - **`ToolDeps.asks`** is a set of openers, `{ rule, email?, merge?, choice? }`, each `(clot, args, outsider) => Promise<string>`, so tools tests use fakes. The daemon builds them from `askRule`, `askEmail`, `askMerge`, `askChoice` in `src/asks/*.ts`.
@@ -528,6 +529,8 @@ Built as planned in one pass; 985 tests (was 941). Names and shapes that differ,
 - **`clots-waiting`**: `Waiting` keeps `waiting.channel`, `waiting.message` and `waiting.text` in `state`; `isUnknown(error)` in `chat/adapter.ts` reads Discord's 10003/10008.
 - **Choice answers** post a short line in the live channel (`You picked 2 for "…": …`); free-text answers and timeouts post none (the Clot's own turn says what it did).
 
-Startup check (`npm run daemon`, 2026-10-29): both Clots reached `ready` and `[events] ready`; `clots-waiting` was created and its message posted, but pinning failed with Discord's `50013 Missing Permissions`. The bot needs the Pin Messages permission (or Manage Messages) on the server; pinning is best-effort, so the list works unpinned until then.
+Startup check (`npm run daemon`, 2026-10-29): both Clots reached `ready` and `[events] ready`; `clots-waiting` was created and its message posted, but pinning failed with Discord's `50013 Missing Permissions`. The bot needs the Pin Messages permission (or Manage Messages) on the server. Since that run, every start (and each change, until it works) checks the pin and makes it.
+
+After the live checks: the worker prompt says to update the PR description with `gh pr edit --body-file` when the approach changes, and the project Clots' memory note no longer says global memories were approved. 988 tests.
 
 For the next stage: the `proposals`, `send_reviews` and `memory_questions` tables are still in the schema, empty after the migration.

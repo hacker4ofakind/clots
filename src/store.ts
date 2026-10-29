@@ -887,6 +887,11 @@ export class Store {
     this.db.prepare("DELETE FROM calendar_changes WHERE id = ?").run(id);
   }
 
+  /** Every Clot's calendar changes since a time, oldest first. */
+  calendarChangesSince(since: number): CalendarChangeRow[] {
+    return this.db.prepare("SELECT * FROM calendar_changes WHERE at >= ? ORDER BY id").all(since).map(toCalendarChange);
+  }
+
   /** Whether any Clot added this event: only such an event may an outsider's turn change. */
   clotCreated(account: string, uid: string): boolean {
     return this.db.prepare("SELECT 1 FROM calendar_changes WHERE account = ? AND uid = ? AND op = 'create' LIMIT 1").get(account, uid) !== undefined;

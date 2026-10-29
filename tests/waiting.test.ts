@@ -105,6 +105,24 @@ describe("clots-waiting", () => {
     expect(pinnedText()).toContain("• graphite: a");
   });
 
+  it("pins the stored message at the next start, and after a change, when an earlier pin failed", async () => {
+    const message = store.getState("waiting.message")!;
+    chat.pinned = [];
+    chat.pinFails = true;
+    waiting = new Waiting({ store, chat, after });
+    await waiting.init();
+    expect(chat.pinned).toEqual([]);
+    chat.pinFails = false;
+    waiting.refresh();
+    await advance(2_000);
+    expect(chat.pinned).toEqual([message]);
+    // Known to be pinned: nothing is pinned twice, and a restart only checks.
+    waiting = new Waiting({ store, chat, after });
+    await waiting.init();
+    expect(chat.pinned).toEqual([message]);
+    expect(store.getState("waiting.message")).toBe(message);
+  });
+
   it("does not list an ask still being shown", () => {
     const row = { id: 1, kind: "rule", clot: "graphite", channelId: "c", channelName: "n", payload: {}, summary: "s", state: "posting" as const, openedAt: 0, deadline: null, dedupe: "d", outsider: false };
     expect(renderWaiting([row], (id) => `<#${id}>`)).toBe("Nothing is waiting for you.");

@@ -45,6 +45,8 @@ export class Waiting {
   private debounce?: () => void;
   private retry?: () => void;
   private chain: Promise<unknown> = Promise.resolve();
+  /** The stored message is known to be pinned. */
+  private pinned = false;
 
   constructor(private d: WaitingDeps) {}
 
@@ -74,6 +76,28 @@ export class Waiting {
   }
 
   private async sync(attempt: number): Promise<void> {
+    await this.syncText(attempt);
+    await this.ensurePinned();
+  }
+
+  /**
+   * Pins the stored message unless it is pinned already. Checked at startup and again after each
+   * change until a check succeeds, so a pin that failed before the bot could pin is made later. Best-effort.
+   */
+  private async ensurePinned(): Promise<void> {
+    const { store, chat } = this.d;
+    const channel = store.getState(CHANNEL_KEY);
+    const message = store.getState(MESSAGE_KEY);
+    if (this.pinned || channel === undefined || message === undefined) return;
+    try {
+      if (!(await chat.isPinned(channel, message))) await chat.pin(channel, message);
+      this.pinned = true;
+    } catch (error) {
+      console.warn("[waiting] pinning the clots-waiting message failed; it is tried again at the next change:", error);
+    }
+  }
+
+  private async syncText(attempt: number): Promise<void> {
     const { store, chat } = this.d;
     this.retry?.();
     this.retry = undefined;
@@ -113,6 +137,7 @@ export class Waiting {
     store.setState(CHANNEL_KEY, channel);
     store.setState(MESSAGE_KEY, message);
     store.setState(TEXT_KEY, text);
-    await chat.pin(channel, message).catch((error) => console.warn("[waiting] pinning the clots-waiting message failed:", error));
+    // A new message is not pinned yet: ensurePinned pins it.
+    this.pinned = false;
   }
 }

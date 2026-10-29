@@ -108,6 +108,11 @@ export class DiscordChat implements ChatAdapter {
     await (await channel.messages.fetch(messageId)).pin();
   }
 
+  async isPinned(channelId: string, messageId: string): Promise<boolean> {
+    const channel = await this.textChannel(channelId);
+    return (await channel.messages.fetch(messageId)).pinned;
+  }
+
   async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
     const channel = await this.textChannel(channelId);
     await channel.messages.edit(messageId, { content: text, allowedMentions: { parse: [] } });

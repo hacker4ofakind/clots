@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AXES_NOTE, buildPrompt, CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT } from "../src/agent/prompts.js";
+import { AXES_NOTE, buildPrompt, CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT, workerSystemPrompt } from "../src/agent/prompts.js";
 
 const base = { text: "hello", seed: null, interrupted: false };
 
@@ -62,6 +62,12 @@ describe("the system prompts", () => {
     expect(CLOT_SYSTEM_PROMPT).toContain("Nothing goes to another person without the user's yes.");
     expect(CLOT_SYSTEM_PROMPT).toContain("email_draft");
     expect(CLOT_SYSTEM_PROMPT).toContain("sends it only on their yes");
+  });
+
+  it("say no global memory waits for approval, and tell workers to keep the description current", () => {
+    for (const prompt of [CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT]) expect(prompt).not.toMatch(/approved them|asks the user before|until you approve/);
+    expect(workerSystemPrompt("graphite", "clot/x")).toContain("gh pr edit --body-file");
+    expect(CLOT_SYSTEM_PROMPT).toContain("use the id from the daemon's post");
   });
 
   it("carry the four axes, and no proposal wording", () => {

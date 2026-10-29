@@ -546,6 +546,14 @@ describe("calendar_list", () => {
     expect(text).toContain("1 guest");
   });
 
+  it("shows an event a Clot added minutes ago, which the feed does not have yet, by its id", async () => {
+    scriptAnswers.create = { ok: true, event: { ...scriptEvent, uid: "fresh@google.com", title: "Invoice review" } };
+    await allCalendarTools("chat").calendarWrite!({ action: "create", title: "Invoice review", start: "2026-10-16T14:00", end: "2026-10-16T15:00" });
+    const text = await calendarTools("event")({});
+    expect(text).toContain("Changes the Clots made lately");
+    expect(text).toContain('"Invoice review", Fri 16 Oct 2026, 14:00–15:00 (Europe/Zurich) [id: fresh@google.com] (added by a Clot)');
+  });
+
   it("reads the range it is given, and refuses one longer than 31 days", async () => {
     await calendarTools("chat")({ from: "2026-10-16", to: "2026-10-17" });
     expect(asked[0]).toMatchObject({ from: "2026-10-15T22:00:00.000Z", to: "2026-10-16T22:00:00.000Z" });

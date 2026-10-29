@@ -30,6 +30,8 @@ export interface ChatAdapter {
   /** Posts one message, pinging no one, and returns its ID. */
   postMessage(channelId: string, text: string): Promise<string>;
   pin(channelId: string, messageId: string): Promise<void>;
+  /** Whether a message is pinned. Throws when that cannot be found out; see `isUnknown`. */
+  isPinned(channelId: string, messageId: string): Promise<boolean>;
   /** Replaces a message's text, pinging no one. Throws when the message is gone; see `isUnknown`. */
   editMessage(channelId: string, messageId: string, text: string): Promise<void>;
 }

@@ -458,7 +458,9 @@ design is in `.superpowers/specs/2026-10-14-clots-global-memory-design.md`.
   answered; an open choice also shows the time it will be decided without the
   user. The message is edited only when the list changes, and it pings no one: the
   ask or choice itself mentions the user once. One look at it shows whether
-  anything is waiting.
+  anything is waiting. At every start, and after each change until it succeeds,
+  the daemon checks that the message is pinned and pins it if not, so a pin that
+  failed before the bot had the Pin Messages permission is made later.
 - One category per Clot.
 - One channel per session, named `project-DDMM` (for example `graphite-1010`). A
   second rollover on the same day adds a suffix: `graphite-1010-2`.
@@ -549,7 +551,8 @@ asking, and asks only for what is high on any one.
   - investigating, under the lock;
   - starting, messaging and stopping workers;
   - in a worker: editing, testing, committing, pushing its own branch, opening a
-    pull request, pushing further commits to it, rebasing it, and closing it;
+    pull request, pushing further commits to it, rebasing it, and closing it, and
+    updating its description when the approach changes;
   - drafts, including an email draft saved in the user's own Drafts folder;
   - sending under a standing rule the user approved;
   - rulebook edits other than standing rules, and recipes (section 5), and global
@@ -559,8 +562,10 @@ asking, and asks only for what is high on any one.
     series is changed only in a turn the user's message started. In a turn an
     outsider's text started, the Clot may only add events, at most 3 a day per
     Clot, and change or remove only events a Clot added. Every add, change and
-    removal is logged with what it replaced and posted, and `&calendar undo`
-    reverses the most recent one.
+    removal is logged with what it replaced and posted, with the event's id, and
+    `&calendar undo` reverses the most recent one. The calendar's feed can lag by
+    hours, so `calendar_list` also shows the Clots' changes of the last two days
+    from that log, marked as added, changed or removed by a Clot.
 - **High, an ask:**
   - adding, replacing or removing a standing rule;
   - sending an email, through send review: the daemon shows the email and sends it
