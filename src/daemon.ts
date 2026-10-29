@@ -172,7 +172,7 @@ const emailAsk =
     ? undefined
     : emailKind({ store, accounts: config.sources.email, maxMs: config.sendReview.maxMs, now: () => Date.now(), send: sendMail, saveDraft, say });
 let memory: GlobalMemory;
-const memoryAsk = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload) });
+const memoryAsk = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload), inForce: (payload) => memory.inForce(payload) });
 const mergeAsk = mergeKind({ token: config.githubToken });
 const choiceAsk = choiceKind({ timeoutMinutes: config.choiceTimeoutMinutes });
 const after = (ms: number, fn: () => void) => {

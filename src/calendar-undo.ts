@@ -1,4 +1,4 @@
-import { describeScriptEvent, type ScriptEvent, type ScriptRequest, type ScriptResult } from "./sources/calendar-script.js";
+import { describeScriptEvent, isMissing, type ScriptEvent, type ScriptRequest, type ScriptResult } from "./sources/calendar-script.js";
 import type { Store } from "./store.js";
 
 export interface CalendarUndoDeps {
@@ -41,15 +41,21 @@ export class CalendarUndo {
       const b = before!;
       // A removal whose answer was lost may not have happened: an event still there is not made twice.
       const still = await this.d.call(change.account, { action: "check", uid: change.uid });
-      if (!still.ok && !still.reached) {
-        store.releaseCalendarChange(change.id);
-        return `Not undone just now: ${still.reason}. Nothing was changed; send the command again.`;
-      }
       if (still.ok) {
         store.deleteCalendarChange(change.id);
         return `Nothing to put back: ${describe(still.event)} is still in the calendar.`;
       }
+      // Created again only once the script has said the event is not there; any other answer could hide it.
+      if (!isMissing(still)) {
+        store.releaseCalendarChange(change.id);
+        return `Not undone just now: ${still.reason}. Nothing was changed; send the command again.`;
+      }
       done = await this.d.call(change.account, { action: "create", title: b.title, start: b.start, end: b.end, allDay: b.allDay, description: b.description, location: b.location });
+      if (!done.ok) {
+        // The kept copy is the only one left: it stays the next one to undo.
+        store.releaseCalendarChange(change.id);
+        return `Not undone: ${done.reason}. The copy of ${describe(b)} is kept; send the command again.`;
+      }
       answer = (event) => `Put back: ${describe(event)}.\n(It is a new copy; links to the old event will not find it.)`;
     }
     if (!done.ok && !done.reached) {

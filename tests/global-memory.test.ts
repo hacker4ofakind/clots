@@ -69,7 +69,7 @@ let n: number;
 
 function build(): void {
   const say = async (clot: string, text: string) => void said.push({ clot, text });
-  const kind = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload) });
+  const kind = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload), inForce: (payload) => memory.inForce(payload) });
   asks = new Asks({ store, chat, userId: USER, now: () => 0, kick: () => undefined, say, after: () => () => undefined, kinds: [kind] });
   memory = new GlobalMemory({
     store,
@@ -225,6 +225,29 @@ describe("a global memory written in a turn an outsider's text started", () => {
     expect(store.approvedMemories().size).toBe(0);
     expect(folders.file("home", DEPLOY)).toBeUndefined();
     expect(notes("home").at(-1)).toContain("It is not in force, and your copy was put back.");
+  });
+
+  it("says a yes carried out before a stop stands", async () => {
+    await tainted(DEPLOY, deployV1);
+    const [ask] = questions();
+    await memory.resolve(ask.payload as never, "yes");
+    store.moveAsk(ask.id, "open", "busy");
+    await asks.sweep(true);
+    expect(store.approvedMemories().get(DEPLOY)).toBe(deployV1);
+    expect(said.at(-1)!.text).toContain("is in force for every Clot");
+  });
+
+  it("puts the copy back when a question about it cannot be asked, so no later check applies it", async () => {
+    const create = chat.createChannel.bind(chat);
+    chat.createChannel = async () => {
+      throw new Error("Discord is down");
+    };
+    await tainted(DEPLOY, deployV1);
+    chat.createChannel = create;
+    expect(questions()).toEqual([]);
+    await memory.afterHomeTurn({ outsider: false });
+    expect(store.approvedMemories().size).toBe(0);
+    expect(folders.file("home", DEPLOY)).toBeUndefined();
   });
 
   it("is not applied by a later check when its channel was removed: the copy is put back", async () => {

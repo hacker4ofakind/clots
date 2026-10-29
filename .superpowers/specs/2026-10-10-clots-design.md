@@ -440,7 +440,8 @@ design is in `.superpowers/specs/2026-10-14-clots-global-memory-design.md`.
   reversible with `&memory undo`, so it needs no yes. The exception is a memory
   written in a home Clot turn that an outsider's text started: every Clot would
   trust it from then on, so it is put to the user as an ask first. If that ask ends
-  any way but a yes (a no, a withdrawal, a stop part-way), the home Clot's copy is
+  any way but a yes (a no, a withdrawal, a stop part-way, or the question could
+  not be asked), the home Clot's copy is
   put back, so the text never goes in force unasked. The daemon notices a new,
   changed or deleted file after each home Clot turn, applies it, and posts it in
   the home Clot's live channel with a reminder of `&memory undo`.
@@ -565,9 +566,9 @@ asking, and asks only for what is high on any one.
     outsider's text started, the Clot may only add events, at most 3 a day per
     Clot, and change or remove only events a Clot added. Every add, change and
     removal is logged with what it replaced and posted, with the event's id, and
-    `&calendar undo` reverses the most recent one; an event it would put back that
-    is still in the calendar (a removal whose answer was lost and did not happen)
-    is not made twice. The calendar's feed can lag by
+    `&calendar undo` reverses the most recent one; a removed event is created
+    again only once the calendar confirms it is gone, so one whose removal did
+    not happen is not made twice, and the kept copy stays until it is put back. The calendar's feed can lag by
     hours, so `calendar_list` also shows the Clots' changes of the last two days
     from that log, marked as added, changed or removed by a Clot.
 - **High, an ask:**

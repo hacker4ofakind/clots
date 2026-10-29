@@ -47,8 +47,8 @@ export interface AskKind<P> {
   interrupted?(ask: AskRow<P>, io: AskIo<P>): Promise<void>;
   /** Hourly, at startup and before an answer is carried out: a reason withdraws it. */
   stale?(ask: AskRow<P>, now: number): string | undefined;
-  /** After it was withdrawn, with the reason. */
-  withdrawn?(ask: AskRow<P>, reason: string): Promise<void>;
+  /** Store writes that go with a withdrawal, in its transaction: a stop cannot fall between them. */
+  withdrawn?(ask: AskRow<P>, reason: string): void;
   /** When its deadline passes. */
   onDeadline?(ask: AskRow<P>, io: AskIo<P>): Promise<void>;
 }
@@ -180,9 +180,8 @@ export class Asks {
   async withdraw(id: number, reason: string): Promise<boolean> {
     const ask = this.d.store.askById(id);
     if (!ask || ask.state !== "open") return false;
-    if (!(await this.finish(ask, `Withdrawn: ${ask.summary} (${reason}). Ask again if it still makes sense.`, `Withdrawn: ${ask.summary} (${reason})`, { onlyOpen: true }))) return false;
-    await this.kinds.get(ask.kind)?.withdrawn?.(ask, reason);
-    return true;
+    const kind = this.kinds.get(ask.kind);
+    return this.finish(ask, `Withdrawn: ${ask.summary} (${reason}). Ask again if it still makes sense.`, `Withdrawn: ${ask.summary} (${reason})`, { onlyOpen: true, also: () => kind?.withdrawn?.(ask, reason) });
   }
 
   /** Withdraws every open ask of a kind whose payload matches. */
@@ -284,7 +283,7 @@ export class Asks {
   }
 
   /** Closes an ask, then deletes its channel, posts the line, tells clots-waiting and kicks the Clot. False when it was closed already. */
-  private async finish(ask: AskRow, note: string | null, line: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean }): Promise<boolean> {
+  private async finish(ask: AskRow, note: string | null, line: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean; also?: () => void }): Promise<boolean> {
     if (!this.d.store.closeAsk(ask.id, ask.clot, note, o)) return false;
     this.closed.add(ask.channelId);
     this.timers.get(ask.id)?.();

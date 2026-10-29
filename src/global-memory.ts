@@ -111,11 +111,15 @@ export class GlobalMemory {
   }
 
   /** Puts the home Clot's copy of a file asked about back to the text in force, now or after its running turn. */
-  restore(p: MemoryPayload): Promise<void> {
-    // Recorded at once; the folder is written after the step running now, which may be the check that withdrew it.
+  restore(p: MemoryPayload): void {
+    // Recorded at once, in the caller's transaction; the folder is written after the step running now, which may be the check that withdrew it.
     this.d.store.addMemoryRestore(p.file);
     void this.serial(() => this.restoreHomeNow());
-    return Promise.resolve();
+  }
+
+  /** Whether this text of the file is the one in force. */
+  inForce(p: MemoryPayload): boolean {
+    return this.d.store.approvedMemories().get(p.file) === p.text;
   }
 
   private openAsks(): AskRow<MemoryPayload>[] {
@@ -195,6 +199,8 @@ export class GlobalMemory {
     if (outsider || open) {
       // Written in an outsider's turn, or changed again while one was asked: the user is asked about the new text.
       await this.d.asks.open({ file: action.file, text: action.text, ...(action.approved === undefined ? {} : { approved: action.approved }) });
+      // Not asked (Discord down, the limit reached): the copy is put back, so no later check applies it unasked.
+      if (!this.openAsks().some((ask) => ask.payload.file === action.file && ask.payload.text === action.text)) this.restore({ file: action.file, text: action.text });
       return;
     }
     this.apply(action.file, action.text, action.approved);

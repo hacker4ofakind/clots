@@ -31,8 +31,10 @@ export const CHANGED_AGAIN = "the home Clot changed it again";
 
 export function memoryKind(d: {
   resolve(payload: MemoryPayload, answer: "yes" | "no"): Promise<{ note: string | null; line: string }>;
-  /** Puts the home Clot's copy back to the text in force. */
-  restore(payload: MemoryPayload): Promise<void>;
+  /** Marks the home Clot's copy to be put back to the text in force; the folder is written soon after. Store writes only, so it can join a transaction. */
+  restore(payload: MemoryPayload): void;
+  /** Whether this very text is in force: a yes was carried out. */
+  inForce(payload: MemoryPayload): boolean;
 }): AskKind<MemoryPayload> {
   return {
     kind: "memory",
@@ -61,15 +63,20 @@ export function memoryKind(d: {
     // An outsider's text never goes in force without a yes: a question that ends any other way puts
     // the home Clot's copy back, so a later check cannot take it for a change of the user's own.
     async interrupted(ask, io) {
-      await d.restore(ask.payload);
+      // A yes carried out before the stop stands, and is said so.
+      if (d.inForce(ask.payload)) {
+        await io.close(`The user approved the global memory ${ask.payload.file}. It is now in every Clot's memory.`, `Approved. Global memory \`${ask.payload.file}\` is in force for every Clot.`);
+        return;
+      }
+      d.restore(ask.payload);
       await io.close(
         `The daemon stopped while carrying out the user's answer about the global memory ${ask.payload.file}. It is not in force, and your copy was put back. Write it again only if the user asks.`,
         `The daemon stopped while carrying out your answer, so global memory \`${ask.payload.file}\` is not in force and the home Clot's copy was put back.`,
       );
     },
 
-    async withdrawn(ask, reason) {
-      if (reason !== CHANGED_AGAIN) await d.restore(ask.payload);
+    withdrawn(ask, reason) {
+      if (reason !== CHANGED_AGAIN) d.restore(ask.payload);
     },
   };
 }

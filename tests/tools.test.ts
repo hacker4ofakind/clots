@@ -514,6 +514,20 @@ describe("calendar_list", () => {
       expect(await undo()).toBe("Nothing to put back.");
     });
 
+    it("creates a removed event again only when the script says it is not there, and keeps the copy when creating fails", async () => {
+      scriptAnswers.check = { ok: true, event: scriptEvent };
+      scriptAnswers.remove = { ok: true, event: scriptEvent };
+      await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" });
+      calls = [];
+      scriptAnswers.check = { ok: false, reason: "wrong secret", reached: true };
+      expect(await undo()).toContain("Not undone just now: wrong secret");
+      scriptAnswers.check = { ok: false, reason: "there is no event with that ID in this calendar", reached: true, missing: true };
+      scriptAnswers.create = { ok: false, reason: "the calendar named by CALENDAR_ID was not found", reached: true };
+      expect(await undo()).toContain("The copy of");
+      expect(calls.map((c) => c.req.action)).toEqual(["check", "check", "create"]);
+      expect(store.latestCalendarChange("graphite")).toMatchObject({ op: "remove" });
+    });
+
     it("makes no second copy when a removal whose answer was lost did not happen", async () => {
       scriptAnswers.check = { ok: true, event: scriptEvent };
       scriptAnswers.remove = { ok: false, reason: "the calendar script could not be reached (timeout)", reached: false };

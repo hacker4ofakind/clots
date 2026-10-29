@@ -818,17 +818,18 @@ export class Store {
   }
 
   /**
-   * Closes an ask, with the note for its Clot and the inbox row that hands it over, in one
+   * Closes an ask, with the note for its Clot, the inbox row that hands it over and any other store writes in `also`, in one
    * transaction. Returns false when it was closed already, or (with onlyOpen) is not open, or the
    * inbox row already exists: then nothing is written. Only the caller that gets true carries on.
    */
-  closeAsk(id: number, clot: string, note: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean } = {}): boolean {
+  closeAsk(id: number, clot: string, note: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean; also?: () => void } = {}): boolean {
     try {
       return this.db.transaction(() => {
         const deleted = o.onlyOpen ? this.db.prepare("DELETE FROM user_asks WHERE id = ? AND state = 'open'").run(id) : this.db.prepare("DELETE FROM user_asks WHERE id = ?").run(id);
         if (deleted.changes !== 1) return false;
         if (note !== null) this.addNote(clot, note);
         if (o.inbox !== undefined && !this.enqueue(o.inbox)) throw new RowExists();
+        o.also?.();
         return true;
       })();
     } catch (error) {
