@@ -40,15 +40,19 @@ export class CalendarUndo {
     } else {
       const b = before!;
       // A removal whose answer was lost may not have happened: an event still there is not made twice.
-      const still = await this.d.call(change.account, { action: "check", uid: change.uid });
-      if (still.ok) {
-        store.deleteCalendarChange(change.id);
-        return `Nothing to put back: ${describe(still.event)} is still in the calendar.`;
-      }
-      // Created again only once the script has said the event is not there; any other answer could hide it.
-      if (!isMissing(still)) {
-        store.releaseCalendarChange(change.id);
-        return `Not undone just now: ${still.reason}. Nothing was changed; send the command again.`;
+      // One the script confirmed is gone, whatever its check says: Apps Script's getEventById goes on
+      // returning a deleted event for a while.
+      if (!change.confirmed) {
+        const still = await this.d.call(change.account, { action: "check", uid: change.uid });
+        if (still.ok) {
+          store.deleteCalendarChange(change.id);
+          return `Nothing to put back: ${describe(still.event)} is still in the calendar.`;
+        }
+        // Created again only once the script has said the event is not there; any other answer could hide it.
+        if (!isMissing(still)) {
+          store.releaseCalendarChange(change.id);
+          return `Not undone just now: ${still.reason}. Nothing was changed; send the command again.`;
+        }
       }
       done = await this.d.call(change.account, { action: "create", title: b.title, start: b.start, end: b.end, allDay: b.allDay, description: b.description, location: b.location });
       if (!done.ok) {
@@ -63,8 +67,14 @@ export class CalendarUndo {
       store.releaseCalendarChange(change.id);
       return `Not undone just now: ${done.reason}. Nothing was changed; send the command again.`;
     }
-    store.deleteCalendarChange(change.id);
-    if (!done.ok) return `Could not undo the change to ${describe(after ?? before!)}: ${done.reason}. It is skipped; send the command again to step further back.`;
+    if (!done.ok) {
+      store.deleteCalendarChange(change.id);
+      return `Could not undo the change to ${describe(after ?? before!)}: ${done.reason}. It is skipped; send the command again to step further back.`;
+    }
+    // Kept as the state the undo left, for calendar_list: the feed can be hours behind.
+    const left = JSON.stringify(done.event);
+    if (change.op === "create") store.settleCalendarChange(change.id, { op: "remove", uid: change.uid, before: left, after: null, restored: true });
+    else store.settleCalendarChange(change.id, { op: change.op === "update" ? "update" : "create", uid: done.event.uid, before: null, after: left, restored: true });
     return answer(done.event);
   }
 }

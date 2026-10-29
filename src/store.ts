@@ -187,6 +187,10 @@ export interface CalendarChangeRow {
   after: string | null;
   outsider: boolean;
   at: number;
+  /** For a removal: the script said the event was removed. Its check can still find a deleted event for a while, so this is what an undo trusts. */
+  confirmed: boolean;
+  /** The row now records what an undo left: the event put back, or the event an undo removed. */
+  restored: boolean;
 }
 
 /** Something the daemon has to tell a Clot at the start of its next turn. */
@@ -443,7 +447,7 @@ function toAsk(r: any): AskRow {
 }
 
 function toCalendarChange(r: any): CalendarChangeRow {
-  return { id: r.id, clot: r.clot, account: r.account, op: r.op, uid: r.uid, before: r.before, after: r.after, outsider: r.outsider === 1, at: r.at };
+  return { id: r.id, clot: r.clot, account: r.account, op: r.op, uid: r.uid, before: r.before, after: r.after, outsider: r.outsider === 1, at: r.at, confirmed: r.confirmed === 1, restored: r.restored === 1 };
 }
 
 function toEvent(r: any): EventRow {
@@ -497,6 +501,8 @@ export class Store {
     this.addColumn("workers", "outsider", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("rule_edits", "edit", "TEXT");
     this.addColumn("sessions", "channel_removed", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("calendar_changes", "confirmed", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("calendar_changes", "restored", "INTEGER NOT NULL DEFAULT 0");
     // Every event stored before 2c came from GitHub, and its place is its repository.
     this.db.exec("UPDATE events SET place = repo WHERE place = ''");
     // Events can no longer be asked about or fed into a running turn: one a question was open on runs from the start again; one fed into a turn is done.
@@ -856,12 +862,25 @@ export class Store {
   }
 
   /** Logs a calendar change a Clot made. Returns its ID. */
-  addCalendarChange(c: Omit<CalendarChangeRow, "id">): number {
+  addCalendarChange(c: Omit<CalendarChangeRow, "id" | "confirmed" | "restored">): number {
     return Number(
       this.db
         .prepare("INSERT INTO calendar_changes (clot, account, op, uid, before, after, outsider, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
         .run(c.clot, c.account, c.op, c.uid, c.before, c.after, c.outsider ? 1 : 0, c.at).lastInsertRowid,
     );
+  }
+
+  /**
+   * Records an undone change as the state it left, so calendar_list can show it before the feed
+   * does. It stays claimed, so the next undo steps past it.
+   */
+  settleCalendarChange(id: number, s: { op: CalendarChangeRow["op"]; uid: string; before: string | null; after: string | null; restored: boolean }): void {
+    this.db.prepare("UPDATE calendar_changes SET op = ?, uid = ?, before = ?, after = ?, restored = ?, restoring = 1 WHERE id = ?").run(s.op, s.uid, s.before, s.after, s.restored ? 1 : 0, id);
+  }
+
+  /** Records that the script said a removal was done. */
+  confirmCalendarChange(id: number): void {
+    this.db.prepare("UPDATE calendar_changes SET confirmed = 1 WHERE id = ?").run(id);
   }
 
   /** Records what a change led to, once its answer is known. */

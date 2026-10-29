@@ -507,16 +507,17 @@ describe("calendar_list", () => {
       scriptAnswers.check = { ok: false, reason: "there is no event with that ID", reached: true };
       scriptAnswers.create = { ok: true, event: { ...scriptEvent, uid: "new@google.com" } };
       expect(await undo()).toBe('Put back: "Demo with ACME", Fri 16 Oct 2026, 14:00–15:00 (Europe/Zurich) [id: new@google.com].\n(It is a new copy; links to the old event will not find it.)');
-      expect(calls[1].req).toEqual({ action: "create", title: "Demo with ACME", start: scriptEvent.start, end: scriptEvent.end, allDay: false, description: "", location: "" });
+      // The script confirmed the removal, so the undo creates the copy without checking first.
+      expect(calls[0].req).toEqual({ action: "create", title: "Demo with ACME", start: scriptEvent.start, end: scriptEvent.end, allDay: false, description: "", location: "" });
 
       expect(await undo()).toContain("Removed:");
-      expect(calls[2].req).toEqual({ action: "remove", uid: "demo@google.com" });
+      expect(calls[1].req).toEqual({ action: "remove", uid: "demo@google.com" });
       expect(await undo()).toBe("Nothing to put back.");
     });
 
-    it("creates a removed event again only when the script says it is not there, and keeps the copy when creating fails", async () => {
+    it("after a removal whose answer was lost, creates the event again only when the script says it is not there, and keeps the copy when creating fails", async () => {
       scriptAnswers.check = { ok: true, event: scriptEvent };
-      scriptAnswers.remove = { ok: true, event: scriptEvent };
+      scriptAnswers.remove = { ok: false, reason: "the calendar script could not be reached (timeout)", reached: false };
       await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" });
       calls = [];
       scriptAnswers.check = { ok: false, reason: "wrong secret", reached: true };
@@ -546,6 +547,29 @@ describe("calendar_list", () => {
       scriptAnswers.update = { ok: true, event: scriptEvent };
       expect(await undo()).toContain("Put back:");
       expect(calls[0].req).toEqual({ action: "update", uid: "demo@google.com", title: "Demo with ACME", start: scriptEvent.start, end: scriptEvent.end, allDay: false, description: "", location: "" });
+    });
+
+    it("puts back a removal the script confirmed, even when the script still finds the deleted event", async () => {
+      // Apps Script's getEventById goes on returning an event for a while after it was deleted.
+      scriptAnswers.check = { ok: true, event: scriptEvent };
+      scriptAnswers.remove = { ok: true, event: scriptEvent };
+      await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" });
+      calls = [];
+      scriptAnswers.create = { ok: true, event: { ...scriptEvent, uid: "copy@google.com" } };
+      expect(await undo()).toContain("Put back:");
+      expect(calls.map((c) => c.req.action)).toEqual(["create"]);
+    });
+
+    it("lists the copy an undo restored before the feed has it, and the next undo steps past it", async () => {
+      scriptAnswers.check = { ok: true, event: scriptEvent };
+      scriptAnswers.remove = { ok: true, event: scriptEvent };
+      await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" });
+      scriptAnswers.create = { ok: true, event: { ...scriptEvent, uid: "copy@google.com" } };
+      expect(await undo()).toContain("Put back:");
+      const text = await calendarTools("event")({});
+      expect(text).toContain("[id: copy@google.com] (put back by a Clot)");
+      expect(text).not.toContain("[id: demo@google.com] (removed by a Clot");
+      expect(await undo()).toBe("Nothing to put back.");
     });
 
     it("keeps the change when the script cannot be reached, and reverses it once when undone twice at the same time", async () => {
