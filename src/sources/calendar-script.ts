@@ -11,7 +11,12 @@ export interface ScriptEvent {
   description: string;
   guests: number;
   repeats: boolean;
+  /** Part of a series. A script deployed before this field gives only `repeats`, which says the same. */
+  recurring?: boolean;
 }
+
+/** Whether an event is part of a series. */
+export const isRecurring = (event: ScriptEvent) => event.recurring ?? event.repeats;
 
 export type ScriptRequest =
   | { action: "create"; title: string; start: string; end: string; allDay?: boolean; description?: string; location?: string }

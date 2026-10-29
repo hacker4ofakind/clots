@@ -45,8 +45,8 @@ export interface WorkersDeps {
   every(ms: number, fn: () => void): () => void;
   /** A one-off timer; returns its cancel. */
   after(ms: number, fn: () => void): () => void;
-  /** Queues an inbox row for the Clot's main session and kicks its drain. */
-  toMain(clot: string, row: { id: string; text: string; workerId: string }): Promise<void>;
+  /** Starts the Clot's drain, so a row stored for its main session runs. */
+  kick(clot: string): void;
   /** Pauses the Clot until the usage limit resets, posting the notice in its channel. */
   pause(clot: string, resetsAt: number): Promise<void>;
   /** Posts in the Clot's live channel. Never throws. */
@@ -86,7 +86,7 @@ export class Workers {
   constructor(private d: WorkersDeps) {}
 
   /** The main session's start_session. Returns the text the tool gives back. */
-  async start(clot: string, a: { title: string; brief: string; model: WorkerModel; effort: Effort; urgent: boolean }): Promise<string> {
+  async start(clot: string, a: { title: string; brief: string; model: WorkerModel; effort: Effort; urgent: boolean; outsider?: boolean }): Promise<string> {
     const { store } = this.d;
     const title = a.title.trim();
     if (title.length < 3 || title.length > 80) return "Refused: the title must be 3 to 80 characters.";
@@ -98,7 +98,7 @@ export class Workers {
     const id = this.d.newId();
     const home = this.d.repoOf(clot) === null;
     const branch = workerBranch(title, this.d.random);
-    store.createWorker({ id, clot, title, brief: a.brief, model: a.model, effort: a.effort, branch, base: null, worktree: home ? `/workspace/workers/${id}` : `/workspace/worktrees/${id}`, urgent: a.urgent });
+    store.createWorker({ id, clot, title, brief: a.brief, model: a.model, effort: a.effort, branch, base: null, worktree: home ? `/workspace/workers/${id}` : `/workspace/worktrees/${id}`, urgent: a.urgent, outsider: a.outsider === true });
     store.queueWorker(id);
     const label = modelLabel(a.model, a.effort);
     const short = shortId(id);
@@ -112,11 +112,12 @@ export class Workers {
     return `Queued worker ${short} on branch ${branch}: ${this.live.size} workers are running. It starts when a place is free.`;
   }
 
-  /** The main session's message_worker. */
-  async message(clot: string, id: string, text: string): Promise<string> {
+  /** The main session's message_worker. A message from an outsider's turn marks the worker as an outsider's for good. */
+  async message(clot: string, id: string, text: string, outsider = false): Promise<string> {
     const w = this.find(clot, id);
     if (typeof w === "string") return w;
     if (w.status !== "queued" && w.status !== "running" && w.status !== "idle") return `Refused: worker ${shortId(w.id)} is ${w.status}; start a new one instead.`;
+    if (outsider && !w.outsider) this.d.store.setWorker(w.id, { outsider: true });
     const handle = this.live.get(w.id)?.handle;
     if (handle?.push(`${FROM_MAIN}\n${text}`)) return `Delivered to worker ${shortId(w.id)}, into its running turn.`;
     this.d.store.addWorkerMessage(w.id, text);
@@ -148,13 +149,13 @@ export class Workers {
   }
 
   /** A pull request opened or closed on GitHub. Ignores one from a fork, and branches no worker has. */
-  async onPullRequest(a: { repo: string; branch: string; headRepo: string; number: number; url: string; action: "opened" | "closed" }): Promise<void> {
+  async onPullRequest(a: { repo: string; branch: string; headRepo: string; number: number; url: string; action: "opened" | "closed" | "synchronize" }): Promise<void> {
     const repo = a.repo.toLowerCase();
     if (a.headRepo.toLowerCase() !== repo) return;
     const w = this.workerOnBranch(repo, a.branch);
     if (!w) return;
     if (a.action === "opened") this.d.store.setWorker(w.id, { prNumber: a.number, prUrl: a.url, prRepo: repo });
-    else await this.close(w, `Worker ${shortId(w.id)} "${w.title}": its pull request was merged or closed, and its worktree removed.`);
+    else if (a.action === "closed") await this.close(w, `Worker ${shortId(w.id)} "${w.title}": its pull request was merged or closed, and its worktree removed.`);
   }
 
   /** The account's usage limit was reached, by a worker or a main session. resetsAt is in Unix seconds. */
@@ -441,9 +442,9 @@ export class Workers {
     const session = store.activeSession(w.clot);
     store.inTransaction(() => {
       store.setWorker(w.id, change);
-      if (session) store.enqueue({ id: rowId, clot: w.clot, channelId: session.channelId, text, receivedAt: this.d.now(), kind: "worker", workerId: w.id });
+      if (session) store.enqueue({ id: rowId, clot: w.clot, channelId: session.channelId, text, receivedAt: this.d.now(), kind: "worker", workerId: w.id, outsider: store.getWorker(w.id)!.outsider });
     });
-    void this.d.toMain(w.clot, { id: rowId, text, workerId: w.id }).catch((error) => console.error(`[${w.clot}]`, error));
+    this.d.kick(w.clot);
   }
 
   /** Stops the worker's live turn, if it has one, and waits for its end. */

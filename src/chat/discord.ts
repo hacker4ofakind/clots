@@ -90,6 +90,29 @@ export class DiscordChat implements ChatAdapter {
     return `<#${channelId}>`;
   }
 
+  async ensureTopChannel(name: string): Promise<string> {
+    const all = await this.guild.channels.fetch();
+    const found = all.find((c) => c?.type === ChannelType.GuildText && c.parentId === null && c.name === name);
+    if (found) return found.id;
+    const created = await this.guild.channels.create({ name, type: ChannelType.GuildText, position: 0 });
+    return created.id;
+  }
+
+  async postMessage(channelId: string, text: string): Promise<string> {
+    const channel = await this.textChannel(channelId);
+    return (await channel.send({ content: text, allowedMentions: { parse: [] } })).id;
+  }
+
+  async pin(channelId: string, messageId: string): Promise<void> {
+    const channel = await this.textChannel(channelId);
+    await (await channel.messages.fetch(messageId)).pin();
+  }
+
+  async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
+    const channel = await this.textChannel(channelId);
+    await channel.messages.edit(messageId, { content: text, allowedMentions: { parse: [] } });
+  }
+
   private async textChannel(id: string): Promise<TextChannel> {
     const channel = await this.guild.channels.fetch(id);
     if (!channel || channel.type !== ChannelType.GuildText) throw new Error(`Channel ${id} is not a text channel`);

@@ -73,4 +73,47 @@ export class FakeChat implements ChatAdapter {
   channelLink(channelId: string): string {
     return `<#${channelId}>`;
   }
+
+  /** Channels outside every category, at the top of the server. */
+  top: { id: string; name: string }[] = [];
+  /** Messages posted with postMessage, by ID, with their current text. */
+  messages = new Map<string, { channelId: string; text: string }>();
+  edits: { messageId: string; text: string }[] = [];
+  pinned: string[] = [];
+  /** Set to make the next edit fail with this error. */
+  editFails?: unknown;
+
+  async ensureTopChannel(name: string): Promise<string> {
+    const found = this.top.find((c) => c.name === name);
+    if (found) return found.id;
+    this.counter += 1;
+    const channel = { id: `top-${this.counter}`, name };
+    this.top.unshift(channel);
+    return channel.id;
+  }
+
+  async postMessage(channelId: string, text: string): Promise<string> {
+    if (!this.top.some((c) => c.id === channelId) && !this.channels.some((c) => c.id === channelId)) throw Object.assign(new Error("Unknown Channel"), { code: 10003 });
+    this.counter += 1;
+    const id = `msg-${this.counter}`;
+    this.messages.set(id, { channelId, text });
+    this.posts.push({ channelId, text });
+    return id;
+  }
+
+  async pin(_channelId: string, messageId: string): Promise<void> {
+    this.pinned.push(messageId);
+  }
+
+  async editMessage(_channelId: string, messageId: string, text: string): Promise<void> {
+    if (this.editFails !== undefined) {
+      const error = this.editFails;
+      this.editFails = undefined;
+      throw error;
+    }
+    const message = this.messages.get(messageId);
+    if (!message) throw Object.assign(new Error("Unknown Message"), { code: 10008 });
+    message.text = text;
+    this.edits.push({ messageId, text });
+  }
 }

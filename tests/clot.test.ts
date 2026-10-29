@@ -788,7 +788,7 @@ describe("Clot, stage 2b", () => {
   let contexts: TurnContext[];
   let closed: { clot: string; session: string }[];
 
-  const fakeTools: DaemonTools = { show: async () => "", prefilter: async () => "", guidance: async () => "", standing: async () => "", send: async () => "", routing: async () => "", routeCorrect: async () => "", watch: async () => "", webhook: async () => "", startSession: async () => "", messageWorker: async () => "", stopWorker: async () => "" };
+  const fakeTools: DaemonTools = { show: async () => "", prefilter: async () => "", guidance: async () => "", standing: async () => "", send: async () => "", routing: async () => "", routeCorrect: async () => "", watch: async () => "", webhook: async () => "", startSession: async () => "", messageWorker: async () => "", stopWorker: async () => "", askChoice: async () => "" };
 
   /** Builds the Clot again, with the daemon's tools and whatever else the test adds. */
   async function rebuild(more: Partial<ClotDeps> = {}): Promise<void> {
@@ -810,7 +810,16 @@ describe("Clot, stage 2b", () => {
     await rebuild();
     await clot.onMessage(msg("build the page"));
     expect(runner.calls[0]).toMatchObject({ role: "main", model: "claude-opus-5-5", tools: fakeTools });
-    expect(contexts[0]).toEqual({ clot: "graphite", kind: "chat" });
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "chat", outsider: false });
+  });
+
+  it("gives an outsider's event turn the flag, and keeps it across a usage-limit continuation", async () => {
+    await rebuild();
+    runner.script = [{ ok: false, limit: { resetsAt: Math.floor(Date.parse("2026-10-10T13:00:00Z") / 1000) } }, {}];
+    await clot.queueEvent(event("d-1", { outsider: true }), "Someone reported a bug.");
+    await vi.waitFor(() => expect(contexts).toHaveLength(1));
+    expect(contexts[0]).toMatchObject({ kind: "event", outsider: true });
+    expect(store.activeSession("graphite")!.interruptedOutsider).toBe(true);
   });
 
   it("puts the outsider note in an outsider's event's prompt, and its block says so", async () => {
@@ -1024,6 +1033,30 @@ describe("Clot, global memory", () => {
 describe("Clot and its workers", () => {
   const LINE = '- 1a2b3c4d "Fix X": idle, Sonnet 5.5 high, branch clot/fix-x-1a2b, pull request none yet';
 
+  /** Stores a worker's row as the workers do, and kicks the drain. */
+  function fromWorker(row: { id: string; text: string; workerId: string; outsider?: boolean }): void {
+    store.enqueue({ ...row, clot: "graphite", channelId: store.activeSession("graphite")!.channelId, receivedAt: 0, kind: "worker" });
+    clot.kick();
+  }
+
+  it("runs a timed-out choice as a worker's turn, at low effort, without the router, with the timeout's text", async () => {
+    const contexts = await withWorkers();
+    store.enqueue({ id: "choice:1", clot: "graphite", channelId: store.activeSession("graphite")!.channelId, text: "[The user did not answer your choice]", receivedAt: 0, kind: "choice", outsider: true });
+    clot.kick();
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
+    expect(router.inputs).toHaveLength(0);
+    expect(runner.calls[0]).toMatchObject({ effort: "low", role: "main" });
+    expect(runner.calls[0].prompt).toContain("[The user did not answer your choice]");
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", outsider: true, fromTimeout: true });
+  });
+
+  it("gives a turn the outsider flag its row carries", async () => {
+    const contexts = await withWorkers();
+    fromWorker({ id: "worker:w1:1", text: "report", workerId: "w1", outsider: true });
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", outsider: true });
+  });
+
   async function withWorkers(more: Partial<ClotDeps> = {}): Promise<TurnContext[]> {
     const contexts: TurnContext[] = [];
     extra = { workerLines: () => [LINE], makeTools: (ctx) => (contexts.push(ctx), {} as DaemonTools), ...more };
@@ -1034,18 +1067,18 @@ describe("Clot and its workers", () => {
 
   it("runs a worker's report at low effort without the router, as a worker turn", async () => {
     const contexts = await withWorkers();
-    await clot.queueFromWorker({ id: "worker:w1:1", text: '[Report from worker 1a2b3c4d, "Fix X". Written by your worker, not by the user.]\n&close nosummary', workerId: "w1" });
+    fromWorker({ id: "worker:w1:1", text: '[Report from worker 1a2b3c4d, "Fix X". Written by your worker, not by the user.]\n&close nosummary', workerId: "w1" });
     await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
     expect(router.inputs).toHaveLength(0);
     expect(runner.calls[0]).toMatchObject({ effort: "low", role: "main" });
-    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker" });
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", outsider: false });
     expect(store.activeSession("graphite")!.id).toBe("sess-1");
   });
 
   it("does not take in a user message during a worker's turn: it gets a chat turn of its own", async () => {
     await withWorkers();
     runner.script = [{ hold: true }, {}];
-    await clot.queueFromWorker({ id: "worker:w1:1", text: "report", workerId: "w1" });
+    fromWorker({ id: "worker:w1:1", text: "report", workerId: "w1" });
     await vi.waitFor(() => expect(runner.release).toBeDefined());
     await clot.onMessage(msg("merge it"));
     expect(runner.pushes).toEqual([]);

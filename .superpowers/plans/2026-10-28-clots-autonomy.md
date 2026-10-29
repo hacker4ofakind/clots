@@ -281,7 +281,7 @@ These override anything above that they contradict.
 
 **Done when:** `npm run typecheck` and `npm test` pass.
 
-- [ ] Task 1 complete
+- [x] Task 1 complete
 
 ### Task 2: The ask component, with the rule and email kinds
 
@@ -308,7 +308,7 @@ These override anything above that they contradict.
 
 **Done when:** `npm run typecheck` and `npm test` pass, and `src/proposals.ts` and `src/send-review.ts` are gone.
 
-- [ ] Task 2 complete
+- [x] Task 2 complete
 
 ### Task 3: Global memories and calendar removals applied at once
 
@@ -333,7 +333,7 @@ These override anything above that they contradict.
 
 **Done when:** `npm run typecheck` and `npm test` pass.
 
-- [ ] Task 3 complete
+- [x] Task 3 complete
 
 ### Task 4: `merge_pull_request`
 
@@ -356,7 +356,7 @@ These override anything above that they contradict.
 
 **Done when:** `npm run typecheck` and `npm test` pass.
 
-- [ ] Task 4 complete
+- [x] Task 4 complete
 
 ### Task 5: Choices
 
@@ -377,7 +377,7 @@ These override anything above that they contradict.
 
 **Done when:** `npm run typecheck` and `npm test` pass.
 
-- [ ] Task 5 complete
+- [x] Task 5 complete
 
 ### Task 6: `clots-waiting`
 
@@ -400,7 +400,7 @@ These override anything above that they contradict.
 
 **Done when:** `npm run typecheck` and `npm test` pass, and `npm run daemon` starts with no errors and creates `clots-waiting` (watch for each Clot's `ready`).
 
-- [ ] Task 6 complete
+- [x] Task 6 complete
 
 ## Manual Verification Checklist
 
@@ -513,4 +513,21 @@ These override anything above that they contradict.
 
 ## Implementation Notes
 
-_Filled in by the executor before finishing: deviations from this plan and why, final names and interfaces if they changed, surprises, and anything the next stage's planner should know. Keep it short._
+Built as planned in one pass; 985 tests (was 941). Names and shapes that differ, or that the plan left open:
+
+- **`gate(ctx, tool, run?, ask?)`**: a high tool with no direct way passes no `run`, a low one no `ask`. `TOOL_AXES` is keyed by `RatedTool` (`Exclude<keyof DaemonTools, "emailAccounts">`); high: `standing`, `emailSend`, `mergePullRequest`.
+- **`ToolDeps.asks`** is a set of openers, `{ rule, email?, merge?, choice? }`, each `(clot, args, outsider) => Promise<string>`, so tools tests use fakes. The daemon builds them from `askRule`, `askEmail`, `askMerge`, `askChoice` in `src/asks/*.ts`.
+- **`TurnContext`** has `outsider` and `fromTimeout?` (a `choice` row). Inbox, sessions (`interrupted_outsider`) and workers carry the flag; `rule_edits` gained an `edit` column so `RuleWriter.wasUndone` can match a re-add.
+- **`toMain` is gone**: `Workers` enqueues the report row itself (stamped with the worker's flag) and calls `kick(clot)`; `Clot.queueFromWorker` is removed, `Clot.kick()` added.
+- **`AskKind`** gained `texts` (filed/already/full/notAsked), an optional `lead` (the merge prompt's "From an outsider's report." line above the mention), and `onDeadline`; `AskIo` gained `dropChannel()` (an email's channel goes at once on yes, as before). `closeAsk(id, clot, note, { inbox?, onlyOpen? })`. Summaries are made one safe line (`oneLine`) when an ask opens.
+- **Fifth kind `memory`** (`asks/memory.ts`, channel `<clot>-memory`) for a tainted home turn. A file changed again while its question is open re-opens the question with the new text, even from an untainted turn.
+- **Calendar**: one `calendar_changes` table (no `calendar_removals`); `src/calendar-undo.ts` (`CalendarUndo`) answers `&calendar undo`. "3 a day" is a rolling 24 hours. `ScriptEvent.recurring?` falls back to `repeats` for scripts deployed before this (`setup/calendar.gs` now sends it; the user must redeploy the script for the field, but nothing breaks without it). Every add/change/removal post carries its undo hint.
+- **Outsiders**: a calendar reminder is an outsider's when its organiser is not among the email accounts' addresses or a calendar account name that is an address; no organiser counts as the user's. Stripe, webhook and watch events now get the event prompt's outsider note too.
+- **Merge**: the prompt has an `Into <base>: <n> files changed, +a −d.` line between the title line and the checks; more than 100 runs adds `(100+ check runs; these are the first 100.)`. `withdrawMerges` in `asks/merge.ts` holds the webhook matching. `github-api.ts` exports `githubRequest`, `getPullRequest`, `getDefaultBranch`, `checkSummary`, `mergePullRequest` (`unclear: true` on 5xx/no answer); `githubCommentSender` uses it.
+- **Channel names**: `mergeChannelName` (`-ask`) and `choiceChannelName`; `askChannelName` and `calChannelName` are gone. Store: `steeringAskChannels`/`clearSteeringAsks`; migration in `src/asks-migration.ts`. `makeRoom` (`src/chat/room.ts`) runs before every ask channel and rollover channel.
+- **`clots-waiting`**: `Waiting` keeps `waiting.channel`, `waiting.message` and `waiting.text` in `state`; `isUnknown(error)` in `chat/adapter.ts` reads Discord's 10003/10008.
+- **Choice answers** post a short line in the live channel (`You picked 2 for "…": …`); free-text answers and timeouts post none (the Clot's own turn says what it did).
+
+Startup check (`npm run daemon`, 2026-10-29): both Clots reached `ready` and `[events] ready`; `clots-waiting` was created and its message posted, but pinning failed with Discord's `50013 Missing Permissions`. The bot needs the Pin Messages permission (or Manage Messages) on the server; pinning is best-effort, so the list works unpinned until then.
+
+For the next stage: the `proposals`, `send_reviews` and `memory_questions` tables are still in the schema, empty after the migration.

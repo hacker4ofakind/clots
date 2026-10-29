@@ -1,5 +1,6 @@
 import type { ClotPort } from "./pipeline.js";
 import type { Store } from "./store.js";
+import { handedOverKey } from "./tools.js";
 
 export interface HandOverDeps {
   store: Store;
@@ -12,7 +13,7 @@ export interface HandOverDeps {
  * Moves an event the user says belongs elsewhere to the right Clot, where it joins the queue
  * as an event of its own with the message triage wrote. Triage does not run again.
  */
-export async function handOver(d: HandOverDeps, from: string, eventId: string, to: string): Promise<string> {
+export async function handOver(d: HandOverDeps, from: string, eventId: string, to: string, byRequest = true): Promise<string> {
   const event = d.store.getEvent(eventId);
   if (!event) return `Refused: there is no event with the ID ${eventId}. Use the id line of the event's block.`;
   if (event.clot !== from) return "Refused: that event was not routed to you.";
@@ -22,7 +23,9 @@ export async function handOver(d: HandOverDeps, from: string, eventId: string, t
   d.store.setEventClot(event.id, to);
   // Still waiting in this Clot's queue, it would be looked into here as well. One already running is left to its turn.
   d.store.withdrawPendingEvent(from, event.id);
-  await d.say(from, `Moved to ${to} at your request: ${event.title}`);
-  await port.queueEvent(event, `Moved here from ${from} at the user's request: ${event.triageMessage ?? event.title}`);
+  // Outside a turn the user's message started, an event is handed over once.
+  if (!byRequest) d.store.setState(handedOverKey(event.id), from);
+  await d.say(from, byRequest ? `Moved to ${to} at your request: ${event.title}` : `Moved to ${to}, handed over by ${from}: ${event.title}`);
+  await port.queueEvent(event, byRequest ? `Moved here from ${from} at the user's request: ${event.triageMessage ?? event.title}` : `Moved here from ${from}, handed over by ${from}: ${event.triageMessage ?? event.title}`);
   return `Handed to ${to}. If this shows a pattern (every mail to one address, a word in every title), propose a routing rule with rulebook_routing.`;
 }

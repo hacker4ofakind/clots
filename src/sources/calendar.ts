@@ -182,7 +182,8 @@ export function linksIn(text: string): string[] {
 }
 
 /** A reminder as the common event. Its ID names the occurrence and the lead time, so it is made once. */
-export function reminderEvent(account: CalendarAccount, o: Occurrence, lead: number, receivedAt: number, timeZone: string): ClotEvent {
+export function reminderEvent(account: CalendarAccount, o: Occurrence, lead: number, receivedAt: number, timeZone: string, ownAddresses: string[] = []): ClotEvent {
+  const own = ownAddresses.map((address) => address.toLowerCase());
   const links = linksIn(`${o.location}\n${o.description}`);
   const lines = [
     `When: ${describeSpan(o.start, o.end, o.allDay, timeZone)}`,
@@ -207,7 +208,8 @@ export function reminderEvent(account: CalendarAccount, o: Occurrence, lead: num
     ref: o.uid,
     subject: `event:${o.uid}`,
     automated: false,
-    outsider: false,
+    // An invitation's text is its organiser's. An event with no organiser is one the user made.
+    outsider: o.organizer !== "" && !own.includes(o.organizer.toLowerCase()),
     receivedAt,
   };
 }
@@ -221,6 +223,8 @@ export interface CalendarFeedDeps {
   deliver: (event: ClotEvent) => void;
   now: () => number;
   fetchFn?: typeof fetch;
+  /** The user's own addresses: an event organised from any other is an outsider's. */
+  ownAddresses?: string[];
 }
 
 /** One calendar's feed: polled for reminders, and read for `calendar_list`. */
@@ -236,7 +240,7 @@ export class CalendarFeed {
     const longest = Math.max(...this.d.account.leadMinutes);
     const coming = feed.expand(new Date(now), new Date(now + longest * 60_000 + 1));
     for (const { occurrence, lead } of dueReminders(coming, this.d.account.leadMinutes, new Date(now))) {
-      const event = reminderEvent(this.d.account, occurrence, lead, now, this.d.timeZone);
+      const event = reminderEvent(this.d.account, occurrence, lead, now, this.d.timeZone, this.d.ownAddresses);
       if (this.d.store.insertEvent(event)) this.d.deliver(event);
     }
   }

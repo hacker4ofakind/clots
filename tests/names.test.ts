@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { askChannelName, calChannelName, memoryChannelName, ruleChannelName, sessionChannelName, splitMessage } from "../src/chat/names.js";
+import { choiceChannelName, memoryChannelName, mergeChannelName, ruleChannelName, sessionChannelName, splitMessage } from "../src/chat/names.js";
 
-it("names the channel of a calendar removal", () => {
-  expect(calChannelName("graphite", [])).toBe("graphite-cal");
-  expect(calChannelName("graphite", ["graphite-cal"])).toBe("graphite-cal-2");
+it("names the channel of a choice", () => {
+  expect(choiceChannelName("graphite", [])).toBe("graphite-choice");
+  expect(choiceChannelName("graphite", ["graphite-choice"])).toBe("graphite-choice-2");
 });
 
 describe("sessionChannelName", () => {
@@ -28,11 +28,11 @@ describe("sessionChannelName", () => {
   });
 });
 
-describe("askChannelName", () => {
+describe("mergeChannelName", () => {
   it("uses project-ask, then numbers while others are open", () => {
-    expect(askChannelName("Graphite", [])).toBe("graphite-ask");
-    expect(askChannelName("graphite", ["graphite-1010", "graphite-ask"])).toBe("graphite-ask-2");
-    expect(askChannelName("graphite", ["graphite-ask", "graphite-ask-2"])).toBe("graphite-ask-3");
+    expect(mergeChannelName("Graphite", [])).toBe("graphite-ask");
+    expect(mergeChannelName("graphite", ["graphite-1010", "graphite-ask"])).toBe("graphite-ask-2");
+    expect(mergeChannelName("graphite", ["graphite-ask", "graphite-ask-2"])).toBe("graphite-ask-3");
   });
 });
 

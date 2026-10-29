@@ -171,6 +171,8 @@ export interface Config {
   maxProposals: number;
   /** How many worker turns run at once across the daemon. */
   maxWorkers: number;
+  /** How long a choice waits for the user before the Clot goes with its pick. */
+  choiceTimeoutMinutes: number;
   /** The tunnel's address, without a trailing slash; "" when not set. */
   publicUrl: string;
   /** Emails a Clot asks to send, sent on the user's yes in a review channel. `maxMs`: how long a request waits for the answer. */
@@ -193,6 +195,8 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
   if (!Number.isInteger(maxProposals) || maxProposals < 1) throw new Error("CLOTS_MAX_PROPOSALS must be a whole number of at least 1");
   const maxWorkers = Number(env.CLOTS_MAX_WORKERS || "3");
   if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 20) throw new Error("CLOTS_MAX_WORKERS must be a whole number from 1 to 20");
+  const choiceTimeoutMinutes = Number(env.CLOTS_CHOICE_TIMEOUT_MINUTES || "10");
+  if (!Number.isInteger(choiceTimeoutMinutes) || choiceTimeoutMinutes < 1 || choiceTimeoutMinutes > 1440) throw new Error("CLOTS_CHOICE_TIMEOUT_MINUTES must be a whole number from 1 to 1440");
 
   const clotNames = new Set([...file.clots.map((c) => c.name), ...(file.home ? [HOME_CLOT] : [])]);
   const base = (source: string, a: { account: string; clot?: string; shared?: true }): AccountBase => {
@@ -253,6 +257,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     rolloverPercent: Number(env.CLOTS_ROLLOVER_PERCENT ?? "65"),
     home: file.home,
     maxProposals,
+    choiceTimeoutMinutes,
     maxWorkers,
     publicUrl,
     sendReview: { enabled: file.sendReview.enabled, maxMs: file.sendReview.days * 86_400_000 },

@@ -67,13 +67,16 @@ export interface PullRequestChange {
   headRepo: string;
   number: number;
   url: string;
-  action: "opened" | "closed";
+  /** "synchronize": new commits were pushed to it. */
+  action: "opened" | "closed" | "synchronize";
+  /** The head commit after the change. */
+  headSha: string;
 }
 
 function pullRequestChange(eventName: string, payload: unknown): PullRequestChange | undefined {
   if (eventName !== "pull_request" || typeof payload !== "object" || payload === null) return undefined;
   const p = payload as Record<string, any>;
-  const action = p.action === "opened" || p.action === "reopened" ? "opened" : p.action === "closed" ? "closed" : undefined;
+  const action = p.action === "opened" || p.action === "reopened" ? "opened" : p.action === "closed" ? "closed" : p.action === "synchronize" ? "synchronize" : undefined;
   const pr = p.pull_request;
   if (action === undefined || typeof pr !== "object" || pr === null || typeof p.repository?.full_name !== "string") return undefined;
   return {
@@ -83,6 +86,7 @@ function pullRequestChange(eventName: string, payload: unknown): PullRequestChan
     number: Number(pr.number ?? p.number),
     url: String(pr.html_url ?? ""),
     action,
+    headSha: String(pr.head?.sha ?? ""),
   };
 }
 

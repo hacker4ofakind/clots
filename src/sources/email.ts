@@ -23,7 +23,12 @@ export interface Mail {
   headers: Record<string, string>;
 }
 
-const KIND_HEADERS = ["list-id", "auto-submitted", "precedence"];
+const KIND_HEADERS = ["list-id", "auto-submitted", "precedence", "authentication-results"];
+
+/** Whether the receiving server checked the sender's domain and it passed DMARC: only then is a From address believed. */
+export function dmarcPassed(mail: Mail): boolean {
+  return /\bdmarc=pass\b/i.test(mail.headers["authentication-results"] ?? "");
+}
 
 function addresses(value: AddressObject | AddressObject[] | undefined): { address: string; name: string }[] {
   const objects = value === undefined ? [] : Array.isArray(value) ? value : [value];
@@ -174,7 +179,8 @@ export function emailEvent(o: { account: EmailAccount; mailbox: string; uid: num
     ref: mail.messageId ?? "",
     subject: threadSubject(mail, where),
     automated: isAutomatedMail(mail),
-    outsider: sender === undefined || !own.includes(sender),
+    // A From address can be forged: it counts as the user's own only when DMARC passed.
+    outsider: sender === undefined || !own.includes(sender) || !dmarcPassed(mail),
     receivedAt,
   };
 }

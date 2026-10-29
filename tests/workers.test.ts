@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunner, TurnHandle, TurnRequest, TurnResult, WorkerTurnRequest } from "../src/agent/runner.js";
-import { Store } from "../src/store.js";
+import { Store, type InboxInsert } from "../src/store.js";
 import { makeTools, type ToolDeps } from "../src/tools.js";
 import type { TurnActivity } from "../src/types.js";
 import { Workers, type WorkersDeps } from "../src/workers.js";
@@ -63,7 +63,8 @@ let runner: FakeRunner;
 let clock: number;
 let timers: Timer[];
 let said: { clot: string; text: string }[];
-let toMain: { clot: string; id: string; text: string; workerId: string }[];
+let toMain: { clot: string; id: string; text: string; workerId: string; outsider: boolean }[];
+let enqueued: InboxInsert[];
 let paused: { clot: string; resetsAt: number }[];
 let activities: TurnActivity[];
 let removed: string[];
@@ -127,7 +128,12 @@ function build(overrides: Partial<WorkersDeps> = {}): Workers {
       timers.push(timer);
       return () => void (timer.cancelled = true);
     },
-    toMain: async (clot, row) => void toMain.push({ clot, ...row }),
+    // The rows the workers stored for the main session, as the kicked drain would take them.
+    kick: (clot) => {
+      for (const row of enqueued.filter((r) => r.clot === clot && !toMain.some((t) => t.id === r.id))) {
+        toMain.push({ clot, id: row.id, text: row.text, workerId: row.workerId!, outsider: row.outsider === true });
+      }
+    },
     pause: async (clot, resetsAt) => void paused.push({ clot, resetsAt }),
     say: async (clot, text) => void said.push({ clot, text }),
     postActivity: async (_clot, activity) => void activities.push(activity),
@@ -141,6 +147,9 @@ const lines = (clot = "graphite") => said.filter((s) => s.clot === clot).map((s)
 
 beforeEach(async () => {
   store = new Store(":memory:");
+  enqueued = [];
+  const enqueue = store.enqueue.bind(store);
+  store.enqueue = (row) => (enqueued.push(row), enqueue(row));
   for (const name of ["graphite", "shop", "home"]) {
     store.upsertClot(name, `cat-${name}`);
     store.createSession({ id: `s-${name}`, clot: name, channelId: `ch-${name}`, seed: null });
@@ -375,6 +384,9 @@ describe("Workers", () => {
 
     await workers.onPullRequest({ ...pr, headRepo: "fork/r", action: "closed" });
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("idle");
+    // New commits never close it.
+    await workers.onPullRequest({ ...pr, headRepo: "o/r", action: "synchronize" });
+    expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("idle");
 
     await workers.onPullRequest({ ...pr, headRepo: "o/r", action: "closed" });
     await workers.onPullRequest({ ...pr, headRepo: "o/r", action: "closed" });
@@ -590,8 +602,8 @@ describe("Workers checking GitHub", () => {
 describe("the main session's worker tools", () => {
   const toolDeps = (): ToolDeps => ({
     rulebook: { file: () => ({ prefilters: [], triage: [], standing: [], routing: [], watches: [], webhooks: [] }) as never, standingFor: () => [] },
-    writer: { apply: () => ({ ok: true }) as never },
-    proposals: { open: async () => "" },
+    writer: { apply: () => ({ ok: true }) as never, wasUndone: () => false },
+    asks: { rule: async () => "" },
     store,
     senders: {},
     say: async () => undefined,
@@ -603,13 +615,38 @@ describe("the main session's worker tools", () => {
     store.insertEvent({ id: "e1", source: "github", account: "github", kind: "issue_opened", place: "o/r", actor: "a", title: "t", body: "", url: "", ref: "1", subject: "issue:1", automated: false, outsider: false, receivedAt: 0 });
     store.recordTriage("e1", "x", true);
     const spy = vi.spyOn(workers, "start");
-    await makeTools(toolDeps(), { clot: "graphite", kind: "event", event: store.getEvent("e1")! }).startSession({ title: "Fix X", brief: "b", model: "sonnet", effort: "high" });
-    await makeTools(toolDeps(), { clot: "graphite", kind: "chat" }).startSession({ title: "Fix Y", brief: "b", model: "sonnet", effort: "high" });
+    await makeTools(toolDeps(), { clot: "graphite", kind: "event", event: store.getEvent("e1")!, outsider: false }).startSession({ title: "Fix X", brief: "b", model: "sonnet", effort: "high" });
+    await makeTools(toolDeps(), { clot: "graphite", kind: "chat", outsider: false }).startSession({ title: "Fix Y", brief: "b", model: "sonnet", effort: "high" });
     expect(spy.mock.calls.map((c) => c[1].urgent)).toEqual([true, false]);
   });
 
-  it("refuses calendar_write in a worker's turn", async () => {
-    const tools = makeTools({ ...toolDeps(), calendar: { accounts: [], timeZone: "UTC", now: () => 0, list: async () => [], call: async () => ({ ok: true }) as never } }, { clot: "graphite", kind: "worker" });
-    expect(await tools.calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17" })).toContain("Refused");
+  it("marks a worker an outsider's turn started, and its report's turn puts a rule edit to the user", async () => {
+    const opened: string[] = [];
+    const deps: ToolDeps = { ...toolDeps(), asks: { rule: async (_clot, _scope, edit) => (opened.push(edit.op), "FILED") } };
+    await makeTools(deps, { clot: "graphite", kind: "event", outsider: true }).startSession({ title: "Fix X", brief: "b", model: "sonnet", effort: "high" });
+    const id = "00000001-0000-0000-0000-000000000000";
+    expect(store.getWorker(id)!.outsider).toBe(true);
+    const t = runner.turns.at(-1)!;
+    t.req.onText("Changed\n- a.ts");
+    finishTurn(t);
+    await settle();
+    expect(toMain).toHaveLength(1);
+    expect(toMain[0].outsider).toBe(true);
+    const reply = await makeTools(deps, { clot: "graphite", kind: "worker", outsider: toMain[0].outsider }).prefilter({ action: "add", file: "own", rule: { actor: "x" } });
+    expect(reply).toContain("outsider");
+    expect(opened).toEqual(["add_prefilter"]);
+  });
+
+  it("marks a worker an outsider's turn messages, for good", async () => {
+    await makeTools(toolDeps(), { clot: "graphite", kind: "chat", outsider: false }).startSession({ title: "Fix X", brief: "b", model: "sonnet", effort: "high" });
+    const id = "00000001-0000-0000-0000-000000000000";
+    expect(store.getWorker(id)!.outsider).toBe(false);
+    await makeTools(toolDeps(), { clot: "graphite", kind: "event", outsider: true }).messageWorker({ id: id.slice(0, 8), text: "also this" });
+    expect(store.getWorker(id)!.outsider).toBe(true);
+  });
+
+  it("lets calendar_write run in a worker's turn", async () => {
+    const tools = makeTools({ ...toolDeps(), calendar: { accounts: [{ account: "me", shared: true, icalUrl: "u", script: { url: "s", secret: "x" }, leadMinutes: [], pollMinutes: 5 }], timeZone: "UTC", now: () => 0, list: async () => [], call: async () => ({ ok: true, event: { uid: "u1", title: "x", start: "2026-10-16T00:00:00.000Z", end: "2026-10-17T00:00:00.000Z", allDay: true, location: "", description: "", guests: 0, repeats: false } }) as never } }, { clot: "graphite", kind: "worker", outsider: false });
+    expect(await tools.calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Added");
   });
 });

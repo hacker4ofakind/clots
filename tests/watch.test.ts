@@ -70,6 +70,8 @@ describe("watchEvent", () => {
       ref: "p1",
       subject: "notion-feedback",
       automated: true,
+      // What a watched tool returns can be anyone's text.
+      outsider: true,
     });
     expect(watchEvent({ ...recipe, title: undefined }, entry, "item_changed", 1000, 3).title).toBe("Changed in notion-feedback: p1");
   });

@@ -143,12 +143,21 @@ describe("emailEvent", () => {
     expect(event.body).toContain("Attachments (not read): receipt.pdf (application/pdf, 117 KB)");
   });
 
+  it("believes an own From address only when DMARC passed", async () => {
+    const m = await mail();
+    const from = { address: "me@gmail.com", name: "Me" };
+    const event = (results?: string) => emailEvent({ account: { ...account, address: "me@gmail.com" }, mailbox: "Clots", uid: 4, uidValidity: "9", mail: { ...m, from, headers: results === undefined ? {} : { "authentication-results": results } }, tooLarge: false }, 0);
+    expect(event().outsider).toBe(true);
+    expect(event("mx.google.com; dmarc=fail (p=NONE) header.from=gmail.com").outsider).toBe(true);
+    expect(event("mx.google.com; dmarc=pass (p=NONE) header.from=gmail.com").outsider).toBe(false);
+  });
+
   it("marks mail from an address that is not one of the user's as an outsider's", async () => {
     const m = await mail();
     expect(emailEvent({ account, mailbox: "Clots", uid: 4, uidValidity: "9", mail: m, tooLarge: false }, 0).outsider).toBe(true);
-    const own = { ...m, from: { address: "Me@Gmail.com", name: "Me" } };
+    const own = { ...m, from: { address: "Me@Gmail.com", name: "Me" }, headers: { ...m.headers, "authentication-results": "mx.google.com; dkim=pass; spf=pass; dmarc=pass (p=NONE) header.from=gmail.com" } };
     expect(emailEvent({ account: { ...account, address: "me@gmail.com" }, mailbox: "Clots", uid: 4, uidValidity: "9", mail: own, tooLarge: false }, 0).outsider).toBe(false);
-    expect(emailEvent({ account, mailbox: "Clots", uid: 4, uidValidity: "9", mail: m, tooLarge: false, ownAddresses: ["jane@example.com"] }, 0).outsider).toBe(false);
+    expect(emailEvent({ account, mailbox: "Clots", uid: 4, uidValidity: "9", mail: own, tooLarge: false, ownAddresses: ["me@gmail.com"] }, 0).outsider).toBe(false);
   });
 
   it("says when only the headers were read, and names a message with no Message-ID by its place in the mailbox", async () => {

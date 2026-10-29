@@ -80,5 +80,7 @@ function describe(event) {
     description: event.getDescription(),
     guests: event.getGuestList().length,
     repeats: event.isRecurringEvent(),
+    // Read by the daemon before a change: a recurring event is never removed, since its undo could not restore the series.
+    recurring: event.isRecurringEvent(),
   };
 }

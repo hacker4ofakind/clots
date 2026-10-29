@@ -132,7 +132,8 @@ describe("recorded Stripe deliveries", () => {
         expect(event, file).toBeUndefined();
         continue;
       }
-      expect(event, file).toMatchObject({ source: "stripe", kind, automated: true });
+      // A customer writes what a Stripe event carries.
+      expect(event, file).toMatchObject({ source: "stripe", kind, automated: true, outsider: true });
       expect(event!.title.length, file).toBeGreaterThan(10);
       expect(event!.subject, file).toMatch(/^[a-z_.]+:.+/);
     }

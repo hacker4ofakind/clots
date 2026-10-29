@@ -1,9 +1,9 @@
+import { isHigh, TOOL_AXES, type RatedTool } from "./axes.js";
 import type { CalendarAccount, EmailAccount } from "./config.js";
-import type { CalendarRemoval } from "./proposals.js";
+import type { SendRequest } from "./asks/email.js";
 import { recordDraft } from "./drafts.js";
-import type { SendRequest } from "./send-review.js";
 import { describeSpan, parseWhen, type Occurrence } from "./sources/calendar.js";
-import { describeScriptEvent, type ScriptRequest, type ScriptResult } from "./sources/calendar-script.js";
+import { describeScriptEvent, isRecurring, type ScriptEvent, type ScriptRequest, type ScriptResult } from "./sources/calendar-script.js";
 import type { Sender } from "./events/github-comment.js";
 import { emailMetaKey, newMail, newMessageId, ownMessageKey, replyMail, type EmailMeta, type OutgoingMail } from "./sources/email.js";
 import type { ClotEvent } from "./events/types.js";
@@ -13,7 +13,7 @@ import type { ToolInfo, ToolResult } from "./mcp/hub.js";
 import { parseWatch, parseWebhook, problemText, type Prefilter, type RoutingRule, type RuleFile, type StandingRule, type WatchRecipe, type WebhookRecipe } from "./rulebook.js";
 import { tryRecipe } from "./watch.js";
 import { checkSend, matchStanding, MAX_CHANGED_WORDS, mentionsNotify } from "./standing.js";
-import type { Store } from "./store.js";
+import type { CalendarChangeRow, Store } from "./store.js";
 import type { Effort, WorkerModel } from "./types.js";
 import type { Workers } from "./workers.js";
 
@@ -29,7 +29,30 @@ export interface TurnContext {
   kind: TurnKind;
   /** The event an investigation was started for. */
   event?: ClotEvent;
+  /** The turn's row carries an outsider's text, or comes from a turn that did. Read from the row, never worked out here. */
+  outsider: boolean;
+  /** The turn carries out a choice the user did not answer in time. */
+  fromTimeout?: boolean;
 }
+
+/**
+ * Runs a tool, or opens its ask when the tool is high on any axis. Every tool goes through this one
+ * check: the rating is the tool's, in `TOOL_AXES`. A high tool that has no direct way passes no run,
+ * and a low one that has no ask passes none.
+ */
+export function gate(_ctx: TurnContext, tool: RatedTool, run: (() => Promise<string>) | undefined, ask?: () => Promise<string>): Promise<string> {
+  const step = isHigh(TOOL_AXES[tool]) ? ask : run;
+  if (step === undefined) throw new Error(`${tool} has no way for its rating`);
+  return step();
+}
+
+/** What a rulebook edit from an outsider's turn is told. */
+export const OUTSIDER_ASKED = "Put to the user, because this turn came from an outsider's text: ";
+
+/** What a Clot is told when it adds again a rule the user undid, outside a turn the user's message started. */
+export const UNDONE_REFUSAL = "Not applied: the user undid this rule. Ask them in your reply if you think it is needed.";
+
+const isAdd = (edit: RuleEdit) => edit.op.startsWith("add_") || edit.op.startsWith("set_");
 
 /** A worker's tools. Each returns the text the worker is given as the tool's result. */
 export interface WorkerTools {
@@ -64,21 +87,31 @@ export interface DaemonTools {
   startSession(a: { title: string; brief: string; model: WorkerModel; effort: Effort }): Promise<string>;
   messageWorker(a: { id: string; text: string }): Promise<string>;
   stopWorker(a: { id: string }): Promise<string>;
+  /** Only where GitHub can be asked. */
+  mergePullRequest?(a: { number: number; repo?: string }): Promise<string>;
+  askChoice(a: { question: string; options: [string, string]; pick: 1 | 2 }): Promise<string>;
 }
 
 export interface ToolDeps {
   rulebook: { file(name: string): RuleFile; standingFor(clot: string): StandingRule[] };
-  writer: { apply(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult };
-  proposals: { open(clot: string, scope: RuleScope, edit: RuleEdit): Promise<string>; openRemoval?(clot: string, removal: CalendarRemoval): Promise<string> };
+  writer: { apply(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult; wasUndone(clot: string, scope: RuleScope, edit: RuleEdit): boolean };
+  /** Opens the asks the tools put to the user. Each returns what the tool tells the Clot. */
+  asks: {
+    rule(clot: string, scope: RuleScope, edit: RuleEdit, outsider: boolean): Promise<string>;
+    /** Only when email is set up and send review is on. */
+    email?(clot: string, req: SendRequest, outsider: boolean): Promise<string>;
+    merge?(clot: string, a: { number: number; repo?: string }, outsider: boolean): Promise<string>;
+    choice?(clot: string, a: { question: string; options: [string, string]; pick: 1 | 2 }, outsider: boolean): Promise<string>;
+  };
   store: Store;
   /** One way of sending for each value of a standing rule's `via`. */
   senders: Partial<Record<StandingRule["via"], Sender>>;
   /** Posts in a Clot's live channel. Never throws. */
   say: (clot: string, text: string) => Promise<void>;
-  /** Moves an event to another Clot. */
-  handOver: (from: string, eventId: string, to: string) => Promise<string>;
-  /** The email accounts, a way to put a draft in one's Drafts folder, and the send reviews when they are on. Absent when no email is set up. */
-  email?: { accounts: EmailAccount[]; save(account: EmailAccount, mail: OutgoingMail): Promise<{ mailbox: string }>; review?: { open(clot: string, req: SendRequest): Promise<string> } };
+  /** Moves an event to another Clot. byRequest: the user asked for it, in a turn their message started. */
+  handOver: (from: string, eventId: string, to: string, byRequest: boolean) => Promise<string>;
+  /** The email accounts and a way to put a draft in one's Drafts folder. Absent when no email is set up. */
+  email?: { accounts: EmailAccount[]; save(account: EmailAccount, mail: OutgoingMail): Promise<{ mailbox: string }> };
   /** The calendars, read through their feeds. Absent when no calendar is set up. */
   calendar?: {
     accounts: CalendarAccount[];
@@ -97,17 +130,6 @@ export interface ToolDeps {
 /** The longest text of its own a Clot may hand to a send. A template is at most 2,000 characters. */
 const MAX_SEND_TEXT = 4000;
 
-/**
- * Whether an edit must be put to the user instead of being applied. Applied at once is only a
- * pre-filter or a triage line in the Clot's own file, in a turn the user's message started.
- * The Clot has no say in this.
- */
-export function mustPropose(ctx: TurnContext, file: RuleScope, edit: RuleEdit): boolean {
-  if (file === "global") return true;
-  if (edit.op !== "add_prefilter" && edit.op !== "remove_prefilter" && edit.op !== "add_guidance" && edit.op !== "remove_guidance") return true;
-  return ctx.kind !== "chat";
-}
-
 /** The rules in force for a Clot and its open proposals, as text for the Clot and for `&rules`. */
 export function showRules(d: Pick<ToolDeps, "rulebook" | "store">, clot: string): string {
   const files = [
@@ -123,34 +145,41 @@ export function showRules(d: Pick<ToolDeps, "rulebook" | "store">, clot: string)
     section("Triage guidance:", files.flatMap(({ name, file }) => file.triage.map((line) => `- [${name}] ${line}`))),
     section("Standing rules:", files.flatMap(({ name, file }) => file.standing.filter((rule) => inForce.has(rule)).map((rule) => `- [${name}] ${describeStanding(rule)}`))),
     section("Routing rules (events from shared accounts):", d.rulebook.file("global").routing.map((rule) => `- [global] ${describeRouting(rule)}`)),
-    section("Open proposals, waiting for the user:", d.store.openProposals(clot).map((proposal) => `- ${proposal.summary.split("\n")[0]}`)),
+    section("Rule changes put to the user, waiting for the answer:", d.store.openAsks(clot).filter((ask) => ask.kind === "rule").map((ask) => `- ${ask.summary.split("\n")[0]}`)),
   ].join("\n\n");
 }
 
 export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
-  const submit = async (file: RuleScope, edit: RuleEdit): Promise<string> => {
-    if (mustPropose(ctx, file, edit)) return d.proposals.open(ctx.clot, file, edit);
-    const done = d.writer.apply(ctx.clot, file, edit);
-    if (!done.ok) return `Not applied: ${done.reason}.`;
-    const caveat = done.unlogged ? `\n${UNLOGGED_NOTE}` : "";
-    await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}${caveat}`);
-    return `Applied, and in force now. The user has been shown it: ${done.summary}${caveat}`;
+  // A rule the user undid is never added again unasked. In an outsider's turn every edit is asked,
+  // so a stranger's text cannot silence the alerts the user relies on.
+  const submit = async (tool: RatedTool, file: RuleScope, edit: RuleEdit): Promise<string> => {
+    if ((ctx.kind !== "chat" || ctx.outsider) && isAdd(edit) && d.writer.wasUndone(ctx.clot, file, edit)) return UNDONE_REFUSAL;
+    const ask = () => d.asks.rule(ctx.clot, file, edit, ctx.outsider);
+    if (ctx.outsider) return `${OUTSIDER_ASKED}${await ask()}`;
+    return gate(ctx, tool, async () => {
+      const done = d.writer.apply(ctx.clot, file, edit);
+      if (!done.ok) return `Not applied: ${done.reason}.`;
+      const caveat = done.unlogged ? `\n${UNLOGGED_NOTE}` : "";
+      await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`&rules undo\` takes it back.${caveat}`);
+      return `Applied, and in force now. The user has been shown it: ${done.summary}${caveat}`;
+    }, ask);
   };
 
   return {
     show: async () => showRules(d, ctx.clot),
 
-    prefilter: ({ action, file, rule }) => submit(file, { op: action === "add" ? "add_prefilter" : "remove_prefilter", rule }),
+    prefilter: ({ action, file, rule }) => submit("prefilter", file, { op: action === "add" ? "add_prefilter" : "remove_prefilter", rule }),
 
-    guidance: ({ action, file, line }) => submit(file, { op: action === "add" ? "add_guidance" : "remove_guidance", line }),
+    guidance: ({ action, file, line }) => submit("guidance", file, { op: action === "add" ? "add_guidance" : "remove_guidance", line }),
 
     standing: async ({ action, file, name, trigger, via, template }) => {
-      if (action === "remove") return submit(file, { op: "remove_standing", name });
-      if (trigger === undefined || template === undefined) return "Not proposed: a standing rule needs a trigger and a template.";
-      return submit(file, { op: "set_standing", rule: { name, trigger, via: via ?? "github_comment", template } });
+      if (action === "remove") return submit("standing", file, { op: "remove_standing", name });
+      if (trigger === undefined || template === undefined) return "Not asked: a standing rule needs a trigger and a template.";
+      return submit("standing", file, { op: "set_standing", rule: { name, trigger, via: via ?? "github_comment", template } });
     },
 
-    send: async ({ rule, text }) => {
+    // A standing rule's own scope, not a permission: it is used in the turn of the event its trigger matched.
+    send: ({ rule, text }) => gate(ctx, "send", async () => {
       const event = ctx.event;
       if (ctx.kind !== "event" || event === undefined) return "Refused: a standing rule can be used only while looking into the event that triggered it.";
       const parts = event.kind === "batch" ? d.store.eventsMergedInto(event.id) : [];
@@ -178,18 +207,20 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       d.store.setSendUrl(event.id, rule, sent.url);
       await d.say(ctx.clot, `Sent under standing rule \`${rule}\`: ${checked.text}${sent.url ? ` <${sent.url}>` : ""}`);
       return `Sent${sent.url ? `: ${sent.url}` : "."}`;
-    },
+    }),
 
-    // Routing decides between Clots, so its rules are in the file they share, and every change is put to the user.
-    routing: ({ action, rule }) => submit("global", { op: action === "add" ? "add_routing" : "remove_routing", rule }),
+    // Routing decides between Clots, so its rules are in the file they share.
+    routing: ({ action, rule }) => submit("routing", "global", { op: action === "add" ? "add_routing" : "remove_routing", rule }),
 
-    routeCorrect: async ({ event, clot }) => {
-      if (ctx.kind !== "chat") return "Refused: an event can be handed to another Clot only in a turn the user's message started, after the user has said where it belongs.";
-      return d.handOver(ctx.clot, event, clot);
-    },
+    // Outside a turn the user's message started, an event is handed over once: two Clots cannot pass it back and forth.
+    routeCorrect: async ({ event, clot }) =>
+      gate(ctx, "routeCorrect", async () => {
+        if (ctx.kind !== "chat" && d.store.getState(handedOverKey(event)) !== undefined) return "Refused: this event has already been handed over once. Say in your reply where you think it belongs.";
+        return d.handOver(ctx.clot, event, clot, ctx.kind === "chat");
+      }),
 
-    ...(d.email === undefined ? {} : { emailDraft: (a: EmailArgs) => emailDraft(d, ctx, a), emailAccounts: describeEmailAccounts(usable(d.email.accounts, ctx.clot)) }),
-    ...(d.email?.review === undefined ? {} : { emailSend: (a: EmailArgs) => emailSend(d, ctx, a) }),
+    ...(d.email === undefined ? {} : { emailDraft: (a: EmailArgs) => gate(ctx, "emailDraft", () => emailDraft(d, ctx, a)), emailAccounts: describeEmailAccounts(usable(d.email.accounts, ctx.clot)) }),
+    ...(d.email === undefined || d.asks.email === undefined ? {} : { emailSend: (a: EmailArgs) => gate(ctx, "emailSend", undefined, () => emailSend(d, ctx, a)) }),
     ...(d.calendar === undefined ? {} : { calendarList: (a: { from?: string; to?: string }) => calendarList(d, a) }),
     // These only read, so they work under the lock too. Trying a recipe refuses a tool that may change things.
     ...(d.mcp === undefined ? {} : { mcpList: () => d.mcp!.describe() }),
@@ -198,42 +229,56 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       : { watchTry: (recipe: WatchRecipe) => tryRecipe({ listTools: d.mcp!.listTools!, callTool: d.mcp!.callTool! }, recipe) }),
 
     webhook: async ({ action, file, recipe, name }) => {
-      if (action === "remove") return name === undefined ? "Not proposed: give the recipe's name." : submit(file, { op: "remove_webhook", name });
-      if (recipe === undefined) return "Not proposed: give the recipe.";
+      if (action === "remove") return name === undefined ? "Not done: give the recipe's name." : submit("webhook", file, { op: "remove_webhook", name });
+      if (recipe === undefined) return "Not done: give the recipe.";
       try {
-        return await submit(file, { op: "set_webhook", recipe: parseWebhook(recipe) });
+        return await submit("webhook", file, { op: "set_webhook", recipe: parseWebhook(recipe) });
       } catch (error) {
-        return `Not proposed: ${problemText(error)}.`;
+        return `Not done: ${problemText(error)}.`;
       }
     },
 
     watch: async ({ action, file, recipe, name }) => {
-      if (action === "remove") return name === undefined ? "Not proposed: give the recipe's name." : submit(file, { op: "remove_watch", name });
-      if (recipe === undefined) return "Not proposed: give the recipe.";
+      if (action === "remove") return name === undefined ? "Not done: give the recipe's name." : submit("watch", file, { op: "remove_watch", name });
+      if (recipe === undefined) return "Not done: give the recipe.";
       try {
-        return await submit(file, { op: "set_watch", recipe: parseWatch(recipe) });
+        return await submit("watch", file, { op: "set_watch", recipe: parseWatch(recipe) });
       } catch (error) {
-        return `Not proposed: ${problemText(error)}.`;
+        return `Not done: ${problemText(error)}.`;
       }
     },
 
     // Opening a pull request needs no yes, so a worker can be started in any kind of turn.
-    // One started while looking into an urgent event goes ahead of the queue.
-    startSession: async (a) => {
-      if (!d.workers) return "Refused: workers are not available.";
-      const urgent = ctx.kind === "event" && ctx.event !== undefined && d.store.getEvent(ctx.event.id)?.urgent === true;
-      return d.workers.start(ctx.clot, { ...a, urgent });
-    },
-    messageWorker: async ({ id, text }) => (d.workers ? d.workers.message(ctx.clot, id, text) : "Refused: workers are not available."),
-    stopWorker: async ({ id }) => (d.workers ? d.workers.stop(ctx.clot, id) : "Refused: workers are not available."),
+    // One started while looking into an urgent event goes ahead of the queue. A worker an
+    // outsider's turn started, or told something, carries that into its reports.
+    startSession: async (a) =>
+      gate(ctx, "startSession", async () => {
+        if (!d.workers) return "Refused: workers are not available.";
+        const urgent = ctx.kind === "event" && ctx.event !== undefined && d.store.getEvent(ctx.event.id)?.urgent === true;
+        return d.workers.start(ctx.clot, { ...a, urgent, outsider: ctx.outsider });
+      }),
+    messageWorker: async ({ id, text }) => gate(ctx, "messageWorker", async () => (d.workers ? d.workers.message(ctx.clot, id, text, ctx.outsider) : "Refused: workers are not available.")),
+    stopWorker: async ({ id }) => gate(ctx, "stopWorker", async () => (d.workers ? d.workers.stop(ctx.clot, id) : "Refused: workers are not available.")),
+    // Merging is hard to undo and reaches everyone: it is always put to the user.
+    ...(d.asks.merge === undefined ? {} : { mergePullRequest: (a: { number: number; repo?: string }) => gate(ctx, "mergePullRequest", undefined, () => d.asks.merge!(ctx.clot, a, ctx.outsider)) }),
+    // Choosing between two ways commits no one to anything: the axes hold at each later step instead.
+    askChoice: (a) =>
+      gate(ctx, "askChoice", async () => {
+        if (ctx.fromTimeout) return "Refused: this turn carries out a choice the user did not answer. Go on with your pick; do not put another choice.";
+        if (d.asks.choice === undefined) return "Refused: choices are not available.";
+        return d.asks.choice(ctx.clot, a, ctx.outsider);
+      }),
     ...(d.calendar?.call === undefined
       ? {}
       : {
-          calendarWrite: (a: Parameters<NonNullable<DaemonTools["calendarWrite"]>>[0]) => calendarWrite(d, ctx, a),
-          ...(d.proposals.openRemoval === undefined ? {} : { calendarRemove: (a: { account?: string; uid: string }) => calendarRemove(d, ctx, a) }),
+          calendarWrite: (a: Parameters<NonNullable<DaemonTools["calendarWrite"]>>[0]) => gate(ctx, "calendarWrite", () => calendarWrite(d, ctx, a)),
+          calendarRemove: (a: { account?: string; uid: string }) => gate(ctx, "calendarRemove", () => calendarRemove(d, ctx, a)),
         }),
   };
 }
+
+/** The state key that records an event was handed over by a Clot. */
+export const handedOverKey = (eventId: string) => `handed-over:${eventId}`;
 
 /** The calendar a write is for: the one named, or the only one with a script. */
 function writableAccount(d: ToolDeps, name: string | undefined): CalendarAccount | string {
@@ -245,8 +290,6 @@ function writableAccount(d: ToolDeps, name: string | undefined): CalendarAccount
 
 async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Parameters<NonNullable<DaemonTools["calendarWrite"]>>[0]>): Promise<string> {
   const calendar = d.calendar!;
-  // An event's or a worker's text is not the user's request.
-  if (ctx.kind !== "chat") return "Refused: the calendar is changed only in a turn the user's message started. Describe the change in your reply.";
   const account = writableAccount(d, a.account);
   if (typeof account === "string") return account;
   const zone = calendar.timeZone;
@@ -260,39 +303,69 @@ async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Param
   const when = times();
   if (when === "bad") return "Refused: give both start and end, as dates or times, with the end after the start.";
 
+  const now = calendar.now();
+  const log = (op: CalendarChangeRow["op"], uid: string, before: ScriptEvent | null) => d.store.addCalendarChange({ clot: ctx.clot, account: account.account, op, uid, before: before === null ? null : JSON.stringify(before), after: null, outsider: ctx.outsider, at: now });
+
   if (a.action === "create") {
     if (!a.title || when === undefined) return "Refused: a new event needs a title, a start and an end.";
+    // An outsider's text may add a few events, and no more: it cannot fill the user's calendar.
+    if (ctx.outsider && d.store.outsiderCreatesSince(ctx.clot, now - DAY_MS) >= OUTSIDER_CREATES) return `Refused: this turn came from an outsider's text, and ${OUTSIDER_CREATES} events were already added from such turns today. Mention this one in your reply instead.`;
     const made = await calendar.call!(account.account, { action: "create", title: a.title, ...when, allDay: a.allDay === true, ...(a.description ? { description: a.description } : {}), ...(a.location ? { location: a.location } : {}) });
     if (!made.ok) return `Not added: ${made.reason}.`;
-    await d.say(ctx.clot, `Calendar (${account.account}): added ${describeScriptEvent(made.event, zone)}.`);
+    d.store.setCalendarChangeAfter(log("create", made.event.uid, null), made.event.uid, JSON.stringify(made.event));
+    await d.say(ctx.clot, `Calendar (${account.account}): added ${describeScriptEvent(made.event, zone)}. \`&calendar undo\` removes it.`);
     return `Added: ${describeScriptEvent(made.event, zone)}`;
   }
 
   if (!a.uid) return "Refused: give the id of the event to change, from calendar_list.";
   // The script sets an event all-day, or not, together with its dates.
   if (a.allDay !== undefined && when === undefined) return "Refused: to make an event all-day, or not, give its start and end as well.";
+  if (ctx.outsider && !d.store.clotCreated(account.account, a.uid)) return "Refused: this turn came from an outsider's text, so only events a Clot added can be changed. Mention the change in your reply instead.";
   const before = await calendar.call!(account.account, { action: "check", uid: a.uid });
   if (!before.ok) return `Not changed: ${before.reason}.`;
   if (before.event.guests > 0) return "Refused: the event has guests, and changing it would notify them. Ask the user to change it.";
+  if (isRecurring(before.event) && ctx.kind !== "chat") return "Refused: the event repeats, and a series is changed only in a turn the user's message started. Mention the change in your reply instead.";
+  // Logged before the change, so a change whose answer is lost can still be undone.
+  const change = log("update", a.uid, before.event);
   const changed = await calendar.call!(account.account, { action: "update", uid: a.uid, ...(a.title ? { title: a.title } : {}), ...(when ?? {}), ...(a.allDay !== undefined ? { allDay: a.allDay } : {}), ...(a.description !== undefined ? { description: a.description } : {}), ...(a.location !== undefined ? { location: a.location } : {}) });
-  if (!changed.ok) return `Not changed: ${changed.reason}.`;
+  if (!changed.ok) {
+    if (changed.reached) d.store.deleteCalendarChange(change);
+    return `Not changed: ${changed.reason}.`;
+  }
+  d.store.setCalendarChangeAfter(change, a.uid, JSON.stringify(changed.event));
   // A repeating event is changed as a series: every occurrence takes the change.
   const series = before.event.repeats ? " (every occurrence of this repeating event)" : "";
-  await d.say(ctx.clot, `Calendar (${account.account}): changed ${describeScriptEvent(before.event, zone)}\nto ${describeScriptEvent(changed.event, zone)}${series}.`);
+  await d.say(ctx.clot, `Calendar (${account.account}): changed ${describeScriptEvent(before.event, zone)}\nto ${describeScriptEvent(changed.event, zone)}${series}. \`&calendar undo\` puts it back.`);
   return `Changed: ${describeScriptEvent(changed.event, zone)}${series}`;
 }
 
 /**
- * Puts the removal of an event to the user. Allowed only in a turn the user's message started:
- * the turn in which the user can have said yes in chat, as the system prompt requires before
- * this is called. The user's second yes is given to the daemon.
+ * Removes an event at once: undoing it is free, since the daemon keeps a copy that `&calendar undo`
+ * creates again. An event with guests, or one of a series, is never removed.
  */
 async function calendarRemove(d: ToolDeps, ctx: TurnContext, a: { account?: string; uid: string }): Promise<string> {
-  if (ctx.kind !== "chat") return "Refused: removing an event needs a turn the user's message started. Ask the user in chat first, and call this only after their yes.";
+  const calendar = d.calendar!;
   const account = writableAccount(d, a.account);
   if (typeof account === "string") return account;
-  return d.proposals.openRemoval!(ctx.clot, { account: account.account, uid: a.uid });
+  if (ctx.outsider && !d.store.clotCreated(account.account, a.uid)) return "Refused: this turn came from an outsider's text, so only events a Clot added can be removed. Mention it in your reply instead.";
+  const found = await calendar.call!(account.account, { action: "check", uid: a.uid });
+  if (!found.ok) return `Not removed: ${found.reason}.`;
+  if (found.event.guests > 0) return "Refused: the event has guests, and removing it would notify them. Ask the user to remove it.";
+  if (isRecurring(found.event)) return "Refused: the event repeats, and an undo could not bring the series back. Ask the user to remove it.";
+  // The copy is kept before the event goes: a removal whose answer is lost still leaves an undo.
+  const change = d.store.addCalendarChange({ clot: ctx.clot, account: account.account, op: "remove", uid: a.uid, before: JSON.stringify(found.event), after: null, outsider: ctx.outsider, at: calendar.now() });
+  const done = await calendar.call!(account.account, { action: "remove", uid: a.uid });
+  if (!done.ok) {
+    if (done.reached) d.store.deleteCalendarChange(change);
+    return `Not removed: ${done.reason}.`;
+  }
+  const what = describeScriptEvent(found.event, calendar.timeZone);
+  await d.say(ctx.clot, `Calendar (${account.account}): removed ${what}. \`&calendar undo\` puts it back.`);
+  return `Removed: ${what}`;
 }
+
+/** How many events a Clot may add in a day from turns an outsider's text started. */
+const OUTSIDER_CREATES = 3;
 
 const DAY_MS = 86_400_000;
 
@@ -360,23 +433,22 @@ function buildMail(d: ToolDeps, ctx: TurnContext, a: EmailArgs): { account: Emai
 
 /**
  * Puts an email to the user, who sends it, drops it, has it saved as a draft, or gives feedback.
- * Nothing leaves without the user's yes, so it works in every kind of turn; a turn the user's
- * message did not start may only answer the email it is looking into.
+ * Nothing leaves without the user's yes, so it works in every kind of turn; a turn an outsider's
+ * text started may only answer the email it is looking into.
  */
 async function emailSend(d: ToolDeps, ctx: TurnContext, a: EmailArgs): Promise<string> {
-  if (ctx.kind !== "chat") {
+  if (ctx.outsider) {
     const event = ctx.event;
     const looking = event === undefined ? [] : [event.id, ...(event.kind === "batch" ? d.store.eventsMergedInto(event.id).map((part) => part.id) : [])];
-    if (a.event === undefined || !looking.includes(a.event)) return "Refused: while looking into an event, you can only ask to answer that email. Give its id. A new message can be asked for in a turn the user started.";
+    if (a.event === undefined || !looking.includes(a.event)) return "Refused: this turn came from an outsider's text, so you can only ask to answer the email you are looking into. Give its id.";
   }
   const built = buildMail(d, ctx, a);
   if (typeof built === "string") return built;
-  return d.email!.review!.open(ctx.clot, { account: built.account.account, event: a.event, mail: built.mail });
+  return d.asks.email!(ctx.clot, { account: built.account.account, event: a.event, mail: built.mail }, ctx.outsider);
 }
 
 async function emailDraft(d: ToolDeps, ctx: TurnContext, a: EmailArgs): Promise<string> {
   const email = d.email!;
-  if (ctx.kind !== "chat") return "Refused: drafts are saved in a turn the user's message started. Write the draft in your reply; the user's go-ahead lets you save it.";
   const built = buildMail(d, ctx, a);
   if (typeof built === "string") return built;
   const { account, mail } = built;

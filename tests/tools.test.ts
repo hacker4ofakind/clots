@@ -4,11 +4,12 @@ import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SendResult } from "../src/events/github-comment.js";
 import type { ClotEvent } from "../src/events/types.js";
+import { CalendarUndo } from "../src/calendar-undo.js";
 import { RuleWriter } from "../src/rule-writer.js";
 import { parseRuleFile, Rulebook } from "../src/rulebook.js";
 import type { RuleEdit, RuleScope } from "../src/rulebook-edit.js";
 import { Store } from "../src/store.js";
-import { describeEmailAccounts, makeTools, mustPropose, showRules, type DaemonTools, type TurnContext, type TurnKind } from "../src/tools.js";
+import { describeEmailAccounts, makeTools, showRules, UNDONE_REFUSAL, type DaemonTools, type TurnContext, type TurnKind } from "../src/tools.js";
 
 const Z = "​";
 
@@ -19,20 +20,22 @@ let opened: { clot: string; scope: RuleScope; edit: RuleEdit }[];
 let said: string[];
 let sent: { event: string; text: string }[];
 let sendAnswer: SendResult;
-let handed: { from: string; eventId: string; to: string }[];
+let handed: { from: string; eventId: string; to: string; byRequest: boolean }[];
 
 function issue(overrides: Partial<ClotEvent> = {}): ClotEvent {
   return { id: "d-1", source: "github", kind: "issue_opened", account: "github", place: "octo/widgets", actor: "alice", title: "Issue #7 opened: Login fails", body: "", url: "https://github.com/octo/widgets/issues/7", ref: "7", subject: "issue:7", automated: false, outsider: false, receivedAt: 0, ...overrides };
 }
 
-function tools(kind: TurnKind, event?: ClotEvent): DaemonTools {
-  const ctx: TurnContext = { clot: "graphite", kind, event };
+let writer: RuleWriter;
+
+function tools(kind: TurnKind, event?: ClotEvent, outsider = event?.outsider === true): DaemonTools {
+  const ctx: TurnContext = { clot: "graphite", kind, event, outsider };
   return makeTools(
     {
       rulebook,
-      writer: new RuleWriter({ rulebook, store, commit: () => undefined }),
-      proposals: {
-        open: async (clot, scope, edit) => {
+      writer,
+      asks: {
+        rule: async (clot, scope, edit) => {
           opened.push({ clot, scope, edit });
           return "FILED";
         },
@@ -48,8 +51,8 @@ function tools(kind: TurnKind, event?: ClotEvent): DaemonTools {
         },
       },
       say: async (_clot, text) => void said.push(text),
-      handOver: async (from, eventId, to) => {
-        handed.push({ from, eventId, to });
+      handOver: async (from, eventId, to, byRequest) => {
+        handed.push({ from, eventId, to, byRequest });
         return "HANDED";
       },
     },
@@ -73,6 +76,7 @@ beforeEach(() => {
   rulebook.ensure();
   rulebook.load();
   store = new Store(":memory:");
+  writer = new RuleWriter({ rulebook, store, commit: () => undefined });
   opened = [];
   said = [];
   sent = [];
@@ -80,37 +84,12 @@ beforeEach(() => {
   handed = [];
 });
 
-describe("mustPropose", () => {
-  const ctx = (kind: TurnKind): TurnContext => ({ clot: "graphite", kind });
-  const prefilter: RuleEdit = { op: "add_prefilter", rule: { actor: "x" } };
-  const line: RuleEdit = { op: "remove_guidance", line: "x" };
-  const setStanding: RuleEdit = { op: "set_standing", rule: { name: "a", trigger: { kind: "issue_opened" }, via: "github_comment", template: "x" } };
-  const removeStanding: RuleEdit = { op: "remove_standing", name: "a" };
-
-  it("applies at once only a pre-filter or a triage line, in the Clot's own file, in a turn the user's message started", () => {
-    expect(mustPropose(ctx("chat"), "own", prefilter)).toBe(false);
-    expect(mustPropose(ctx("chat"), "own", line)).toBe(false);
-  });
-
-  it("proposes everything else", () => {
-    for (const edit of [prefilter, line]) {
-      expect(mustPropose(ctx("worker"), "own", edit)).toBe(true);
-      expect(mustPropose(ctx("event"), "own", edit)).toBe(true);
-      expect(mustPropose(ctx("chat"), "global", edit)).toBe(true);
-    }
-    for (const edit of [setStanding, removeStanding]) {
-      expect(mustPropose(ctx("chat"), "own", edit)).toBe(true);
-      expect(mustPropose(ctx("chat"), "global", edit)).toBe(true);
-    }
-  });
-});
-
 describe("the rulebook tools", () => {
-  it("apply an edit at once in a working turn, and the daemon tells the user", async () => {
+  it("apply an edit at once in a working turn, and the daemon tells the user with the undo", async () => {
     const reply = await tools("chat").prefilter({ action: "add", file: "own", rule: { actor: "dependabot[bot]" } });
     expect(reply).toContain("Applied");
     expect(own().prefilters).toEqual([{ actor: "dependabot[bot]" }]);
-    expect(said).toEqual(["Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`"]);
+    expect(said).toEqual(["Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`\n`&rules undo` takes it back."]);
     expect(opened).toEqual([]);
 
     await tools("chat").guidance({ action: "add", file: "own", line: "Billing is urgent." });
@@ -118,22 +97,39 @@ describe("the rulebook tools", () => {
     expect(own()).toMatchObject({ prefilters: [], triage: ["Billing is urgent."] });
   });
 
-  it("file a proposal instead in an event's or a worker's turn", async () => {
-    expect(await tools("event", issue()).prefilter({ action: "add", file: "own", rule: { actor: "a" } })).toBe("FILED");
-    expect(await tools("worker").guidance({ action: "add", file: "own", line: "b" })).toBe("FILED");
+  it("apply at once in an event's turn whose event is not an outsider's, in a worker's turn, and in the global file", async () => {
+    expect(await tools("event", issue()).prefilter({ action: "add", file: "own", rule: { actor: "a" } })).toContain("Applied");
+    expect(await tools("worker").guidance({ action: "add", file: "own", line: "b" })).toContain("Applied");
+    expect(await tools("chat").guidance({ action: "add", file: "global", line: "x" })).toContain("Applied");
+    expect(own()).toMatchObject({ prefilters: [{ actor: "a" }], triage: ["b"] });
+    expect(opened).toEqual([]);
+  });
 
-    expect(opened.map((p) => p.edit.op)).toEqual(["add_prefilter", "add_guidance"]);
-    expect(own()).toMatchObject({ prefilters: [], triage: [] });
+  it("put every edit to the user in a turn an outsider's text started", async () => {
+    const t = tools("event", issue({ outsider: true }));
+    const reply = await t.prefilter({ action: "add", file: "own", rule: { kind: "ci_failed" } });
+    expect(reply).toBe("Put to the user, because this turn came from an outsider's text: FILED");
+    await t.routing({ action: "add", rule: { source: "email", clot: "graphite" } });
+    await t.watch({ action: "set", file: "own", recipe: { name: "feed", server: "notion", tool: "search", arguments: {}, items: "results", id: "id", ignore: [], every: 5, report: "added" } as never });
+    expect(opened.map((p) => p.edit.op)).toEqual(["add_prefilter", "add_routing", "set_watch"]);
+    expect(own().prefilters).toEqual([]);
     expect(said).toEqual([]);
   });
 
-  it("always file a proposal for the global file and for a standing rule", async () => {
+  it("do not add again, outside the user's own turn, a rule the user undid", async () => {
+    await tools("chat").prefilter({ action: "add", file: "own", rule: { actor: "a" } });
+    expect(writer.undo("graphite").ok).toBe(true);
+    expect(await tools("worker").prefilter({ action: "add", file: "own", rule: { actor: "a" } })).toBe(UNDONE_REFUSAL);
+    expect(await tools("event", issue({ outsider: true })).prefilter({ action: "add", file: "own", rule: { actor: "a" } })).toBe(UNDONE_REFUSAL);
+    expect(own().prefilters).toEqual([]);
+    expect(await tools("chat").prefilter({ action: "add", file: "own", rule: { actor: "a" } })).toContain("Applied");
+  });
+
+  it("always put a standing rule to the user", async () => {
     const t = tools("chat");
-    await t.guidance({ action: "add", file: "global", line: "x" });
     await t.standing({ action: "set", file: "own", name: "ack-issue", trigger: { kind: "issue_opened" }, template: "Thanks, @{actor}." });
     await t.standing({ action: "remove", file: "own", name: "ack-issue" });
     expect(opened).toEqual([
-      { clot: "graphite", scope: "global", edit: { op: "add_guidance", line: "x" } },
       { clot: "graphite", scope: "own", edit: { op: "set_standing", rule: { name: "ack-issue", trigger: { kind: "issue_opened" }, via: "github_comment", template: "Thanks, @{actor}." } } },
       { clot: "graphite", scope: "own", edit: { op: "remove_standing", name: "ack-issue" } },
     ]);
@@ -145,10 +141,11 @@ describe("the rulebook tools", () => {
     expect(said).toEqual([]);
   });
 
-  it("show the rules in force and the open proposals", async () => {
+  it("show the rules in force and the open rule asks", async () => {
     fs.writeFileSync(path.join(dir, "global.yaml"), "prefilters:\n  - actor: dependabot[bot]\ntriage:\n  - Billing is urgent.\n");
     standing(ACK);
-    store.createProposal({ clot: "graphite", channelId: "ch-9", channelName: "graphite-rule", scope: "own", edit: "{}", summary: "Drop events where kind is `comment`\nmore" });
+    store.createAsk({ kind: "rule", clot: "graphite", channelId: "ch-9", channelName: "graphite-rule", payload: {}, summary: "Drop events where kind is `comment`\nmore", openedAt: 0, deadline: null, dedupe: "x", outsider: false });
+    store.createAsk({ kind: "email", clot: "graphite", channelId: "ch-10", channelName: "graphite-mail", payload: {}, summary: "An email", openedAt: 0, deadline: null, dedupe: "y", outsider: false });
     const shown = await tools("chat").show();
     expect(shown).toBe(showRules({ rulebook, store }, "graphite"));
     expect(shown).toContain("Rules in force for graphite");
@@ -157,6 +154,7 @@ describe("the rulebook tools", () => {
     expect(shown).toContain("- [graphite] `ack-issue`: when kind is `issue_opened`, send via github_comment:");
     expect(shown).toContain("- Drop events where kind is `comment`");
     expect(shown).not.toContain("more");
+    expect(shown).not.toContain("An email");
     expect(showRules({ rulebook, store }, "other")).toContain("Standing rules:\n- none");
   });
 });
@@ -227,17 +225,23 @@ describe("send_from_template", () => {
 });
 
 describe("routing tools", () => {
-  it("always propose a routing rule, in the global file", async () => {
+  it("apply a routing rule at once, in the global file", async () => {
     const rule = { source: "email", place: "me+shop@gmail.com", clot: "graphite" };
-    expect(await tools("chat").routing({ action: "add", rule })).toBe("FILED");
-    expect(opened).toEqual([{ clot: "graphite", scope: "global", edit: { op: "add_routing", rule } }]);
+    expect(await tools("chat").routing({ action: "add", rule })).toContain("Applied");
+    expect(rulebook.routing()).toEqual([rule]);
+    expect(opened).toEqual([]);
   });
 
-  it("hand an event over only in a turn the user's message started", async () => {
+  it("hand an event over in any turn, and outside the user's own turn only once", async () => {
     expect(await tools("chat").routeCorrect({ event: "d-1", clot: "shop" })).toBe("HANDED");
-    expect(handed).toEqual([{ from: "graphite", eventId: "d-1", to: "shop" }]);
-    for (const kind of ["event", "worker"] as const) expect(await tools(kind, issue()).routeCorrect({ event: "d-1", clot: "shop" })).toContain("Refused");
-    expect(handed).toHaveLength(1);
+    expect(await tools("event", issue()).routeCorrect({ event: "d-2", clot: "shop" })).toBe("HANDED");
+    expect(handed).toEqual([
+      { from: "graphite", eventId: "d-1", to: "shop", byRequest: true },
+      { from: "graphite", eventId: "d-2", to: "shop", byRequest: false },
+    ]);
+    store.setState("handed-over:d-2", "graphite");
+    expect(await tools("worker").routeCorrect({ event: "d-2", clot: "home" })).toContain("already been handed over once");
+    expect(handed).toHaveLength(2);
   });
 });
 
@@ -250,7 +254,7 @@ describe("email_draft", () => {
       {
         rulebook,
         writer: new RuleWriter({ rulebook, store, commit: () => undefined }),
-        proposals: { open: async () => "FILED" },
+        asks: { rule: async () => "FILED" },
         store,
         senders: {},
         say: async (_clot, text) => void said.push(text),
@@ -263,7 +267,7 @@ describe("email_draft", () => {
           },
         },
       },
-      { clot: "graphite", kind },
+      { clot: "graphite", kind, outsider: false },
     );
     return t.emailDraft!;
   };
@@ -287,8 +291,12 @@ describe("email_draft", () => {
     expect(saved[0]).toMatchObject({ from: "me@gmail.com", to: ["lukas@tady.ch"], subject: "Rebooking" });
   });
 
-  it("refuses under the lock, for an event that is not an email of this Clot, and without what a new message needs", async () => {
-    expect(await emailTools("event")({ event: "email:gmail:<m2@x.com>", text: "x" })).toContain("Refused");
+  it("saves in any kind of turn", async () => {
+    expect(await emailTools("event")({ event: "email:gmail:<m2@x.com>", text: "x" })).toContain("Saved");
+    expect(await emailTools("worker")({ event: "email:gmail:<m2@x.com>", text: "x" })).toContain("Saved");
+  });
+
+  it("refuses for an event that is not an email of this Clot, and without what a new message needs", async () => {
     expect(await emailTools("chat")({ event: "d-1", text: "x" })).toContain("Refused");
     expect(await emailTools("chat")({ account: "gmail", text: "x" })).toContain("Refused");
     expect(await emailTools("chat")({ account: "nope", to: ["a@b.c"], subject: "s", text: "x" })).toContain("Refused");
@@ -300,7 +308,7 @@ describe("email_draft", () => {
     expect(describeEmailAccounts([account, tady])).toBe("The email accounts you may write from are the user's own: gmail (me@gmail.com), tady (me@tady.ch; mail to support@tady.ch also arrives there).");
     expect(describeEmailAccounts([{ ...tady, tellAddress: false }])).toBe("The email accounts you may write from are the user's own: tady (its address is not shown to you).");
     expect(describeEmailAccounts([])).toContain("no email account");
-    expect(makeTools({ rulebook, writer: new RuleWriter({ rulebook, store, commit: () => undefined }), proposals: { open: async () => "" }, store, senders: {}, say: async () => undefined, handOver: async () => "", email: { accounts: [account, { ...tady, clot: "other", shared: false }], save: async () => ({ mailbox: "" }) } }, { clot: "graphite", kind: "chat" }).emailAccounts).toContain("gmail (me@gmail.com).");
+    expect(makeTools({ rulebook, writer: new RuleWriter({ rulebook, store, commit: () => undefined }), asks: { rule: async () => "" }, store, senders: {}, say: async () => undefined, handOver: async () => "", email: { accounts: [account, { ...tady, clot: "other", shared: false }], save: async () => ({ mailbox: "" }) } }, { clot: "graphite", kind: "chat", outsider: false }).emailAccounts).toContain("gmail (me@gmail.com).");
   });
 
   describe("email_send", () => {
@@ -311,7 +319,7 @@ describe("email_draft", () => {
         {
           rulebook,
           writer: new RuleWriter({ rulebook, store, commit: () => undefined }),
-          proposals: { open: async () => "FILED" },
+          asks: { rule: async () => "FILED", ...(review ? { email: async (clot: string, req: any) => (reviews.push({ clot, req }), "FILED FOR REVIEW") } : {}) },
           store,
           senders: {},
           say: async (_clot, text) => void said.push(text),
@@ -319,10 +327,9 @@ describe("email_draft", () => {
           email: {
             accounts: [account],
             save: async () => ({ mailbox: "Drafts" }),
-            ...(review ? { review: { open: async (clot: string, req: any) => (reviews.push({ clot, req }), "FILED FOR REVIEW") } } : {}),
           },
         },
-        { clot: "graphite", kind, event },
+        { clot: "graphite", kind, event, outsider: event?.outsider === true },
       );
       return t.emailSend;
     };
@@ -336,12 +343,15 @@ describe("email_draft", () => {
       expect(said).toEqual([]);
     });
 
-    it("lets an investigation answer only the email it is looking into", async () => {
-      expect(await sendTools("event", mailEvent())!({ event: "email:gmail:<m2@x.com>", text: "Thanks." })).toBe("FILED FOR REVIEW");
-      expect(await sendTools("event", mailEvent())!({ account: "gmail", to: ["a@b.c"], subject: "s", text: "x" })).toContain("only ask to answer that email");
-      expect(await sendTools("worker")!({ account: "gmail", to: ["a@b.c"], subject: "s", text: "x" })).toContain("Refused");
-      expect(await sendTools("event", { ...issue(), id: "d-1" } as ClotEvent)!({ event: "email:gmail:<m2@x.com>", text: "x" })).toContain("Refused");
+    it("lets an outsider's turn answer only the email it is looking into, and any other turn ask freely", async () => {
+      const outsiders = { ...mailEvent(), outsider: true };
+      expect(await sendTools("event", outsiders)!({ event: "email:gmail:<m2@x.com>", text: "Thanks." })).toBe("FILED FOR REVIEW");
+      reviews = [];
+      expect(await sendTools("event", outsiders)!({ account: "gmail", to: ["a@b.c"], subject: "s", text: "x" })).toContain("only ask to answer the email you are looking into");
+      expect(await sendTools("event", { ...issue(), id: "d-1", outsider: true } as ClotEvent)!({ event: "email:gmail:<m2@x.com>", text: "x" })).toContain("Refused");
       expect(reviews).toEqual([]);
+      expect(await sendTools("worker")!({ account: "gmail", to: ["a@b.c"], subject: "s", text: "x" })).toBe("FILED FOR REVIEW");
+      expect(await sendTools("event", mailEvent())!({ account: "gmail", to: ["a@b.c"], subject: "s", text: "x" })).toBe("FILED FOR REVIEW");
     });
 
     it("refuses what a draft refuses, and is not offered when send review is off", async () => {
@@ -357,20 +367,13 @@ describe("calendar_list", () => {
   const occurrence = { uid: "demo@google.com", title: "Demo with ACME", start: new Date("2026-10-16T12:00:00Z"), end: new Date("2026-10-16T13:00:00Z"), allDay: false, location: "Room 2", description: "Show the export.", organizer: "me@gmail.com", guests: ["ann@acme.com"], repeats: false };
   let asked: { account: string; from: string; to: string }[];
   let calls: { account: string; req: any }[] = [];
-  let removals: { clot: string; removal: any }[] = [];
   const scriptAnswers: Record<string, any> = {};
-  const allCalendarTools = (kind: TurnKind) =>
+  const allCalendarTools = (kind: TurnKind, outsider = false) =>
     makeTools(
       {
         rulebook,
         writer: new RuleWriter({ rulebook, store, commit: () => undefined }),
-        proposals: {
-          open: async () => "FILED",
-          openRemoval: async (clot, removal) => {
-            removals.push({ clot, removal });
-            return "ASKED";
-          },
-        },
+        asks: { rule: async () => "FILED" },
         store,
         senders: {},
         say: async (_clot, text) => void said.push(text),
@@ -389,14 +392,14 @@ describe("calendar_list", () => {
           },
         },
       },
-      { clot: "graphite", kind },
+      { clot: "graphite", kind, outsider },
     );
   const calendarTools = (kind: TurnKind) => allCalendarTools(kind).calendarList!;
+  const undo = () => new CalendarUndo({ store, timeZone: "Europe/Zurich", call: async (account, req) => (calls.push({ account, req }), scriptAnswers[req.action] ?? { ok: false, reason: "no answer set", reached: true }) }).undo("graphite");
 
   beforeEach(() => {
     asked = [];
     calls = [];
-    removals = [];
     for (const key of Object.keys(scriptAnswers)) delete scriptAnswers[key];
   });
 
@@ -424,9 +427,10 @@ describe("calendar_list", () => {
     expect(said.at(-1)).toContain("every occurrence");
   });
 
-  it("refuses to write in a turn the user's message did not start", async () => {
-    for (const kind of ["event", "worker"] as const) expect(await allCalendarTools(kind).calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Refused");
-    expect(calls).toEqual([]);
+  it("adds an event in a chat, an event's and a worker's turn", async () => {
+    scriptAnswers.create = { ok: true, event: scriptEvent };
+    for (const kind of ["chat", "event", "worker"] as const) expect(await allCalendarTools(kind).calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Added");
+    expect(calls).toHaveLength(3);
   });
 
   it("refuses to make an event all-day, or not, without its new start and end", async () => {
@@ -435,11 +439,103 @@ describe("calendar_list", () => {
     expect(calls).toEqual([]);
   });
 
-  it("puts a removal to the user only in a turn the user's message started", async () => {
-    expect(await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" })).toBe("ASKED");
-    expect(removals).toEqual([{ clot: "graphite", removal: { account: "me", uid: "demo@google.com" } }]);
-    expect(await allCalendarTools("event").calendarRemove!({ uid: "demo@google.com" })).toContain("Refused");
-    expect(removals).toHaveLength(1);
+  it("removes an event without guests at once, keeps a copy first, and posts the line with its undo", async () => {
+    scriptAnswers.check = { ok: true, event: scriptEvent };
+    scriptAnswers.remove = { ok: true, event: scriptEvent };
+    expect(await allCalendarTools("event").calendarRemove!({ uid: "demo@google.com" })).toContain("Removed");
+    expect(calls.map((c) => c.req.action)).toEqual(["check", "remove"]);
+    expect(store.latestCalendarChange("graphite")).toMatchObject({ op: "remove", uid: "demo@google.com", before: JSON.stringify(scriptEvent) });
+    expect(said.at(-1)).toBe('Calendar (me): removed "Demo with ACME", Fri 16 Oct 2026, 14:00–15:00 (Europe/Zurich) [id: demo@google.com]. `&calendar undo` puts it back.');
+  });
+
+  it("keeps the copy of a removal whose answer was lost, and drops it for a definite refusal", async () => {
+    scriptAnswers.check = { ok: true, event: scriptEvent };
+    scriptAnswers.remove = { ok: false, reason: "the calendar script could not be reached", reached: false };
+    expect(await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" })).toContain("Not removed");
+    expect(store.latestCalendarChange("graphite")).toMatchObject({ op: "remove" });
+    store.deleteCalendarChange(store.latestCalendarChange("graphite")!.id);
+    scriptAnswers.remove = { ok: false, reason: "there is no such event", reached: true };
+    await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" });
+    expect(store.latestCalendarChange("graphite")).toBeUndefined();
+  });
+
+  it("refuses to remove one with guests, and a repeating one in every turn", async () => {
+    scriptAnswers.check = { ok: true, event: { ...scriptEvent, guests: 1 } };
+    expect(await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" })).toContain("guests");
+    scriptAnswers.check = { ok: true, event: { ...scriptEvent, repeats: true, recurring: true } };
+    expect(await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" })).toContain("repeats");
+    expect(calls.map((c) => c.req.action)).toEqual(["check", "check"]);
+  });
+
+  it("changes a series only in a turn the user's message started", async () => {
+    scriptAnswers.check = { ok: true, event: { ...scriptEvent, repeats: true } };
+    scriptAnswers.update = { ok: true, event: { ...scriptEvent, title: "x", repeats: true } };
+    expect(await allCalendarTools("event").calendarWrite!({ action: "update", uid: "demo@google.com", title: "x" })).toContain("Refused: the event repeats");
+    expect(await allCalendarTools("chat").calendarWrite!({ action: "update", uid: "demo@google.com", title: "x" })).toContain("Changed");
+  });
+
+  describe("in a turn an outsider's text started", () => {
+    it("adds at most three events a day", async () => {
+      scriptAnswers.create = { ok: true, event: scriptEvent };
+      const add = () => allCalendarTools("event", true).calendarWrite!({ action: "create", title: "Call", start: "2026-10-16T10:00", end: "2026-10-16T11:00" });
+      for (let i = 0; i < 3; i += 1) expect(await add()).toContain("Added");
+      expect(await add()).toContain("3 events were already added");
+      expect(await allCalendarTools("chat").calendarWrite!({ action: "create", title: "Mine", start: "2026-10-16T10:00", end: "2026-10-16T11:00" })).toContain("Added");
+    });
+
+    it("changes or removes only an event a Clot added", async () => {
+      scriptAnswers.check = { ok: true, event: scriptEvent };
+      scriptAnswers.update = { ok: true, event: { ...scriptEvent, title: "Moved" } };
+      expect(await allCalendarTools("event", true).calendarWrite!({ action: "update", uid: "demo@google.com", title: "Moved" })).toContain("only events a Clot added");
+      expect(await allCalendarTools("event", true).calendarRemove!({ uid: "demo@google.com" })).toContain("only events a Clot added");
+      expect(calls).toEqual([]);
+      scriptAnswers.create = { ok: true, event: scriptEvent };
+      await allCalendarTools("chat").calendarWrite!({ action: "create", title: "Demo with ACME", start: "2026-10-16T14:00", end: "2026-10-16T15:00" });
+      expect(await allCalendarTools("event", true).calendarWrite!({ action: "update", uid: "demo@google.com", title: "Moved" })).toContain("Changed");
+    });
+  });
+
+  describe("&calendar undo", () => {
+    it("puts a removed event back from the copy, as a new copy, then steps further back, then has nothing left", async () => {
+      scriptAnswers.create = { ok: true, event: scriptEvent };
+      await allCalendarTools("chat").calendarWrite!({ action: "create", title: "Demo with ACME", start: "2026-10-16T14:00", end: "2026-10-16T15:00" });
+      scriptAnswers.check = { ok: true, event: scriptEvent };
+      scriptAnswers.remove = { ok: true, event: scriptEvent };
+      await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" });
+      calls = [];
+
+      scriptAnswers.create = { ok: true, event: { ...scriptEvent, uid: "new@google.com" } };
+      expect(await undo()).toBe('Put back: "Demo with ACME", Fri 16 Oct 2026, 14:00–15:00 (Europe/Zurich) [id: new@google.com].\n(It is a new copy; links to the old event will not find it.)');
+      expect(calls[0].req).toEqual({ action: "create", title: "Demo with ACME", start: scriptEvent.start, end: scriptEvent.end, allDay: false, description: "", location: "" });
+
+      expect(await undo()).toContain("Removed:");
+      expect(calls[1].req).toEqual({ action: "remove", uid: "demo@google.com" });
+      expect(await undo()).toBe("Nothing to put back.");
+    });
+
+    it("writes back what an update replaced", async () => {
+      scriptAnswers.check = { ok: true, event: scriptEvent };
+      scriptAnswers.update = { ok: true, event: { ...scriptEvent, title: "Moved", start: "2026-10-17T12:00:00.000Z", end: "2026-10-17T13:00:00.000Z" } };
+      await allCalendarTools("chat").calendarWrite!({ action: "update", uid: "demo@google.com", title: "Moved", start: "2026-10-17T14:00", end: "2026-10-17T15:00" });
+      calls = [];
+      scriptAnswers.update = { ok: true, event: scriptEvent };
+      expect(await undo()).toContain("Put back:");
+      expect(calls[0].req).toEqual({ action: "update", uid: "demo@google.com", title: "Demo with ACME", start: scriptEvent.start, end: scriptEvent.end, allDay: false, description: "", location: "" });
+    });
+
+    it("keeps the change when the script cannot be reached, and reverses it once when undone twice at the same time", async () => {
+      scriptAnswers.create = { ok: true, event: scriptEvent };
+      await allCalendarTools("chat").calendarWrite!({ action: "create", title: "Demo", start: "2026-10-16T14:00", end: "2026-10-16T15:00" });
+      scriptAnswers.remove = { ok: false, reason: "the calendar script could not be reached", reached: false };
+      expect(await undo()).toContain("Not undone just now");
+      expect(store.latestCalendarChange("graphite")).toBeDefined();
+      scriptAnswers.remove = { ok: true, event: scriptEvent };
+      calls = [];
+      const undoer = new CalendarUndo({ store, timeZone: "UTC", call: async (account, req) => (calls.push({ account, req }), scriptAnswers[req.action]) });
+      const [a, b] = await Promise.all([undoer.undo("graphite"), undoer.undo("graphite")]);
+      expect([a, b].filter((text) => text.startsWith("Removed"))).toHaveLength(1);
+      expect(calls).toHaveLength(1);
+    });
   });
 
   it("lists the coming week by default, with each event's id, also under the lock", async () => {
@@ -461,8 +557,8 @@ describe("calendar_list", () => {
 describe("mcp_list", () => {
   it("gives the hub's description, in any kind of turn", async () => {
     const t = makeTools(
-      { rulebook, writer: new RuleWriter({ rulebook, store, commit: () => undefined }), proposals: { open: async () => "" }, store, senders: {}, say: async () => undefined, handOver: async () => "", mcp: { describe: async () => "notion: connected" } },
-      { clot: "graphite", kind: "event", event: issue() },
+      { rulebook, writer: new RuleWriter({ rulebook, store, commit: () => undefined }), asks: { rule: async () => "" }, store, senders: {}, say: async () => undefined, handOver: async () => "", mcp: { describe: async () => "notion: connected" } },
+      { clot: "graphite", kind: "event", event: issue(), outsider: false },
     );
     expect(await t.mcpList!()).toContain("notion: connected");
   });
@@ -471,31 +567,31 @@ describe("mcp_list", () => {
 describe("watch recipe tools", () => {
   const recipe = { name: "notion-feedback", server: "notion", tool: "search", arguments: {}, items: "results", id: "id", ignore: [], every: 5, report: "added" as const };
 
-  it("always propose a recipe, and try one with a read-only tool even under the lock", async () => {
+  it("apply a recipe in an event's turn, and try one with a read-only tool even under the lock", async () => {
     const t = makeTools(
       {
         rulebook,
         writer: new RuleWriter({ rulebook, store, commit: () => undefined }),
-        proposals: { open: async (clot, scope, edit) => (opened.push({ clot, scope, edit }), "FILED") },
+        asks: { rule: async (clot, scope, edit) => (opened.push({ clot, scope, edit }), "FILED") },
         store,
         senders: {},
         say: async () => undefined,
         handOver: async () => "",
         mcp: { describe: async () => "", listTools: async () => [{ name: "search", description: "", readOnly: true }], callTool: async () => ({ text: '{"results":[{"id":"p1"}]}', isError: false }) },
       },
-      { clot: "graphite", kind: "event", event: issue() },
+      { clot: "graphite", kind: "event", event: issue(), outsider: false },
     );
-    expect(await t.watch({ action: "set", file: "own", recipe })).toBe("FILED");
-    expect(opened[0]).toMatchObject({ scope: "own", edit: { op: "set_watch", recipe } });
+    expect(await t.watch({ action: "set", file: "own", recipe })).toContain("Applied");
+    expect(own().watches).toMatchObject([{ name: "notion-feedback" }]);
     expect(await t.watchTry!(recipe)).toContain("1 item");
   });
 });
 
 describe("rulebook_webhook", () => {
-  it("always proposes, and refuses a recipe that does not fit", async () => {
+  it("applies a recipe at once, and refuses one that does not fit", async () => {
     const recipe = { name: "tracker", verify: { scheme: "token", header: "X-Token", secret: "RECIPE_TRACKER" }, kinds: [{ kind: "ping", when: {} }], event: { title: "{t}" } } as never;
-    expect(await tools("chat").webhook({ action: "set", file: "global", recipe })).toBe("FILED");
-    expect(opened.at(-1)).toMatchObject({ scope: "global", edit: { op: "set_webhook" } });
-    expect(await tools("chat").webhook({ action: "set", file: "own", recipe: { name: "x" } as never })).toContain("Not proposed");
+    expect(await tools("chat").webhook({ action: "set", file: "global", recipe })).toContain("Applied");
+    expect(opened).toEqual([]);
+    expect(await tools("chat").webhook({ action: "set", file: "own", recipe: { name: "x" } as never })).toContain("Not done");
   });
 });

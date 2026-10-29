@@ -22,17 +22,18 @@ export const RULE_REPLIES = ["Reply with one of:", "- `yes`, `sure`, `do that` o
 
 export const RULE_RETRY = `I couldn't match that reply.\n\n${RULE_REPLIES}`;
 
-export const MEMORY_REPLIES = [
-  "Reply with one of:",
-  "- `yes`, `sure`, `do that` or `yeah` to give it to every Clot",
-  "- `no`, `dont` or `not at all` to decline it; the home Clot's copy is put back",
-].join("\n");
+const FIRST = ["1", "one", "first"];
+const SECOND = ["2", "two", "second"];
+const PICK = ["your pick", "go ahead"];
 
-export const MEMORY_RETRY = `I couldn't match that reply.\n\n${MEMORY_REPLIES}`;
-
-export const CAL_REPLIES = ["Reply with one of:", "- `yes`, `sure`, `do that` or `yeah` to remove it from your calendar", "- `no`, `dont` or `not at all` to keep it"].join("\n");
-
-export const CAL_RETRY = `I couldn't match that reply.\n\n${CAL_REPLIES}`;
+/** A reply to a choice: option 1, option 2, the Clot's pick, or nothing when it is none of these. Exact matches only. */
+export function matchChoice(text: string): 1 | 2 | "pick" | undefined {
+  const reply = normalizeReply(text);
+  if (FIRST.includes(reply)) return 1;
+  if (SECOND.includes(reply)) return 2;
+  if (PICK.includes(reply)) return "pick";
+  return undefined;
+}
 
 /** A reply about an email a Clot asks to send: send it, drop it, save it as a draft, or nothing when it is none of these, which makes it feedback. */
 export function matchSendReply(text: string): "yes" | "no" | "draft" | undefined {

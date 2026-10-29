@@ -122,6 +122,13 @@ describe("reminders", () => {
     expect(describeWhen(holiday, ZONE, at("2026-10-17T08:00:00Z"))).toBe("tomorrow (all day)");
   });
 
+  it("are an outsider's when someone else organised the event", () => {
+    const when = at("2026-10-15T12:30:00Z").getTime();
+    expect(reminderEvent(account, demo, 1440, when, ZONE, ["Me@gmail.com"]).outsider).toBe(false);
+    expect(reminderEvent(account, demo, 1440, when, ZONE, ["other@gmail.com"]).outsider).toBe(true);
+    expect(reminderEvent(account, { ...demo, organizer: "" }, 1440, when, ZONE, []).outsider).toBe(false);
+  });
+
   it("become one event per occurrence and lead time, with the details in the body", () => {
     const event = reminderEvent(account, demo, 1440, at("2026-10-15T12:30:00Z").getTime(), ZONE);
     expect(event).toMatchObject({

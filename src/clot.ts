@@ -2,6 +2,7 @@ import type { AgentRunner, TurnHandle, TurnResult } from "./agent/runner.js";
 import { buildPrompt, CONTINUE_TEXT, MIDTURN_PREFIX, recapPrompt } from "./agent/prompts.js";
 import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
 import { sessionChannelName } from "./chat/names.js";
+import { makeRoom } from "./chat/room.js";
 import { COMMAND_USAGE, parseCommand, type Command } from "./commands.js";
 import { formatEvent, linkTo } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
@@ -24,8 +25,8 @@ export interface ClotDeps {
   now: () => Date;
   newId: () => string;
   schedule: (ms: number, fn: () => void) => void;
-  /** Called when no turn is running any more: after each turn, and once at startup. */
-  onTurnEnd?: (clot: string) => Promise<void>;
+  /** Called when no turn is running any more: after each turn, with whether its row was an outsider's, and once at startup. */
+  onTurnEnd?: (clot: string, turn: { outsider: boolean }) => Promise<void>;
   /** Makes the daemon's tools for one turn. */
   makeTools?: (ctx: TurnContext) => DaemonTools;
   /** The standing rules that apply to an event, with their text filled in. */
@@ -38,6 +39,8 @@ export interface ClotDeps {
   beforeTurn?: (clot: string) => Promise<void>;
   /** Answers `&memory` and `&memory undo`. */
   memory?: { list(): string; undo(): Promise<string> };
+  /** Answers `&calendar undo`. Absent when no calendar can be changed. */
+  calendar?: { undo(clot: string): Promise<string> };
   /** One line per listed worker, for every prompt and the recap. */
   workerLines?: (clot: string) => string[];
   /** Called when a turn of this Clot hits the usage limit. resetsAt is in Unix seconds. */
@@ -47,11 +50,11 @@ export interface ClotDeps {
 }
 
 /** A command the daemon answers at once, without a turn and without the session. */
-type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" | "memory" }>;
+type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" | "memory" | "calendar" }>;
 
 /** Returns the command when it is one answered at once; an `&effort` that carries a message is not. */
 function instantCommand(command: Command): InstantCommand | undefined {
-  return command.kind === "invalid" || command.kind === "rules" || command.kind === "memory" || (command.kind === "effort" && command.rest === "") ? command : undefined;
+  return command.kind === "invalid" || command.kind === "rules" || command.kind === "memory" || command.kind === "calendar" || (command.kind === "effort" && command.rest === "") ? command : undefined;
 }
 
 const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: string; closed: string }> = {
@@ -166,14 +169,19 @@ export class Clot {
     const { store, chat, name } = this.d;
     const session = store.activeSession(name)!;
     // Named by the Clot as well, so an event handed to another Clot is queued there too.
-    store.enqueue({ id: `event:${name}:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event", eventId: event.id });
+    store.enqueue({ id: `event:${name}:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event", eventId: event.id, outsider: event.outsider });
     store.setEventStatus(event.id, "queued");
     await chat.post(session.channelId, `${notice}${linkTo(event.url)}`).catch(() => undefined);
     if (kick) void this.drain().catch((error) => console.error(`[${name}]`, error));
   }
 
-  private async turnEnded(): Promise<void> {
-    await this.d.onTurnEnd?.(this.d.name).catch((error) => console.error(`[${this.d.name}] after-turn hook failed:`, error));
+  /** Starts draining, so a row the daemon stored for this Clot runs. Does nothing while a drain is active: it picks the row up. */
+  kick(): void {
+    void this.drain().catch((error) => console.error(`[${this.d.name}]`, error));
+  }
+
+  private async turnEnded(outsider = false): Promise<void> {
+    await this.d.onTurnEnd?.(this.d.name, { outsider }).catch((error) => console.error(`[${this.d.name}] after-turn hook failed:`, error));
   }
 
   /** Works through pending messages one at a time. Only one drain runs; a call made while one is active does nothing. */
@@ -207,6 +215,9 @@ export class Clot {
     } else if (command.kind === "memory") {
       const memory = this.d.memory;
       await chat.post(channelId, memory === undefined ? "Global memory is not available." : command.undo ? await memory.undo() : memory.list());
+    } else if (command.kind === "calendar") {
+      const calendar = this.d.calendar;
+      await chat.post(channelId, calendar === undefined ? "No calendar can be changed from this daemon." : await calendar.undo(name));
     } else {
       await chat.post(channelId, `I don't know \`&${command.name}\` used that way. ${COMMAND_USAGE}`);
     }
@@ -249,7 +260,7 @@ export class Clot {
     await this.d.beforeTurn?.(name).catch((error) => console.error(`[${name}] syncing global memories failed:`, error));
     let result: TurnResult;
     try {
-      result = isEvent ? await this.runEventTurn(row, session) : row.kind === "worker" ? await this.runWorkerTurn(row, session) : await this.runTurn(row, session, command);
+      result = isEvent ? await this.runEventTurn(row, session) : row.kind === "worker" || row.kind === "choice" ? await this.runWorkerTurn(row, session) : await this.runTurn(row, session, command);
     } finally {
       this.live = undefined;
       stopTyping();
@@ -258,7 +269,7 @@ export class Clot {
     if (result.activity && result.activity.files.length + result.activity.commands.length > 0) {
       await chat.postActivity(session.channelId, result.activity).catch(() => undefined);
     }
-    await this.turnEnded();
+    await this.turnEnded(row.outsider);
     // The notes this turn was given have been read, unless it failed. One that arrived meanwhile waits for the next turn.
     if (result.ok && this.liveNotes > 0) store.clearNotes(name, this.liveNotes);
     this.liveNotes = 0;
@@ -275,13 +286,15 @@ export class Clot {
           ? "Looking into that event ended with an error. Ask me about it to try again."
           : row.kind === "worker"
             ? "Reading a worker's report ended with an error. Ask me about the worker to try again."
+            : row.kind === "choice"
+              ? "Going on with my pick ended with an error. Answer the choice here to try again."
             : "That turn ended with an error. Send your message again to retry.",
       );
       return true;
     }
 
     if (result.limit) {
-      store.setInterrupted(session.id, true, row.kind, row.eventId);
+      store.setInterrupted(session.id, true, row.kind, row.eventId, row.outsider);
       // The limit is the account's: the workers wait for the same reset.
       this.d.onLimit?.(result.limit.resetsAt);
       return (await this.pause(session.channelId, result.limit.resetsAt)) === "resumed";
@@ -317,7 +330,7 @@ export class Clot {
     const { store, name } = this.d;
     const session = store.activeSession(name)!;
     if (!session.interrupted || store.nextPending(name)) return;
-    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime(), kind: session.interruptedKind, eventId: session.interruptedEvent });
+    store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime(), kind: session.interruptedKind, eventId: session.interruptedEvent, outsider: session.interruptedOutsider });
   }
 
   /**
@@ -340,7 +353,7 @@ export class Clot {
         seedReason: session.seedReason,
         interrupted: session.interrupted,
         event: true,
-        outsider: event?.outsider === true,
+        outsider: row.outsider,
         notes: this.takeNotes(),
         standing: standing.map((match) => ({ name: match.rule.name, text: match.filled })),
         workers: this.workerLines(),
@@ -348,7 +361,7 @@ export class Clot {
       effort: decision.effort,
       role: "main",
       model: OPUS,
-      tools: this.d.makeTools?.({ clot: name, kind: "event", event }),
+      tools: this.d.makeTools?.({ clot: name, kind: "event", event, outsider: row.outsider }),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -356,7 +369,8 @@ export class Clot {
 
   /**
    * Runs a worker's report, question or failure as a turn of its own, at low effort, without the
-   * router. It carries none of the user's authority: a report can quote outside text.
+   * router. It carries none of the user's authority: a report can quote outside text. A choice the
+   * user did not answer in time runs the same way.
    */
   private runWorkerTurn(row: InboxRow, session: SessionRow): Promise<TurnResult> {
     const { store, name } = this.d;
@@ -368,7 +382,7 @@ export class Clot {
       effort: "low",
       role: "main",
       model: OPUS,
-      tools: this.d.makeTools?.({ clot: name, kind: "worker" }),
+      tools: this.d.makeTools?.({ clot: name, kind: "worker", outsider: row.outsider, ...(row.kind === "choice" ? { fromTimeout: true } : {}) }),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -385,14 +399,6 @@ export class Clot {
     const paused = this.d.store.getClot(this.d.name)!.pausedUntil;
     if (paused !== null && paused >= resetsAt) return;
     await this.pause(session.channelId, resetsAt);
-  }
-
-  /** Queues a worker's report, question or failure for a turn of its own, and starts draining. */
-  async queueFromWorker(row: { id: string; text: string; workerId: string }): Promise<void> {
-    const { store, name } = this.d;
-    const session = store.activeSession(name)!;
-    store.enqueue({ id: row.id, clot: name, channelId: session.channelId, text: row.text, receivedAt: this.d.now().getTime(), kind: "worker", workerId: row.workerId });
-    void this.drain().catch((error) => console.error(`[${name}]`, error));
   }
 
   /** The daemon's notes for the turn that is about to start, remembered so that they are cleared when it has read them. */
@@ -438,7 +444,7 @@ export class Clot {
       effort,
       role: "main",
       model: OPUS,
-      tools: this.d.makeTools?.({ clot: name, kind: "chat" }),
+      tools: this.d.makeTools?.({ clot: name, kind: "chat", outsider: row.outsider }),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -502,9 +508,7 @@ export class Clot {
     // and the recap is kept, even if a call below fails or the daemon stops.
     store.createSession({ id: this.d.newId(), clot: name, channelId, seed: recap, seedReason: reason });
     if (!summary) store.clearTail(name);
-    // A proposal lasts as long as its session. The new session is told which were withdrawn,
-    // unless it starts with nothing carried over.
-    await this.d.onSessionClosed?.(name).catch((error) => console.error(`[${name}] closing the session's proposals failed:`, error));
+    await this.d.onSessionClosed?.(name).catch((error) => console.error(`[${name}] the after-rollover hook failed:`, error));
     if (!summary) store.clearNotes(name);
 
     const intro = recap === null ? "New session, started from scratch at your request. Nothing was carried over." : `${words.intro}\n\n${recap}`;
@@ -516,6 +520,8 @@ export class Clot {
   }
 
   private async newChannel(categoryId: string): Promise<string> {
+    // Best-effort: a full category makes the create below fail, which leaves the old session in place.
+    await makeRoom(this.d.chat, this.d.store, this.d.name, categoryId).catch((error) => console.error(`[${this.d.name}] making room in the category failed:`, error));
     const names = await this.d.chat.listChannelNames(categoryId);
     return this.d.chat.createChannel(categoryId, sessionChannelName(this.d.name, this.d.now(), this.d.timeZone, names));
   }

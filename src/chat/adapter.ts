@@ -25,4 +25,21 @@ export interface ChatAdapter {
   channelExists(channelId: string): Promise<boolean>;
   mention(userId: string): string;
   channelLink(channelId: string): string;
+  /** Finds a text channel by name outside every category, or creates one at the top of the server. Returns its ID. */
+  ensureTopChannel(name: string): Promise<string>;
+  /** Posts one message, pinging no one, and returns its ID. */
+  postMessage(channelId: string, text: string): Promise<string>;
+  pin(channelId: string, messageId: string): Promise<void>;
+  /** Replaces a message's text, pinging no one. Throws when the message is gone; see `isUnknown`. */
+  editMessage(channelId: string, messageId: string, text: string): Promise<void>;
+}
+
+/** Discord's codes for a channel or a message that does not exist. */
+const UNKNOWN_CHANNEL = 10003;
+const UNKNOWN_MESSAGE = 10008;
+
+/** Whether an error says the channel or the message is gone, as opposed to Discord being unreachable. */
+export function isUnknown(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === UNKNOWN_CHANNEL || code === UNKNOWN_MESSAGE;
 }

@@ -54,7 +54,8 @@ export function readRecipe(recipe: WebhookRecipe, payload: unknown, req: { heade
     ref,
     subject: fill(recipe.event.subject) || `${recipe.name}:${ref || delivery}`,
     automated: recipe.automatedWhen !== undefined && matches(payload, recipe.automatedWhen),
-    outsider: false,
+    // Whoever can reach the service writes what its deliveries carry.
+    outsider: true,
     receivedAt,
   };
 }
