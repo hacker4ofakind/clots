@@ -3,7 +3,8 @@
 Date: 2026-10-10
 Status: approved in brainstorming. Stages 1, 2a, 2b and 2c (but for Sentry, Vercel
 and PostHog), global memory, and the main session and workers (section 4) are
-implemented. Autonomy (sections 3 and 7) is the next part, before 2d.
+implemented, and so is autonomy (sections 3 and 7: the four axes, asks, choices,
+merges and `clots-waiting`). Stage 2d is next.
 
 ## 1. What Clots is
 

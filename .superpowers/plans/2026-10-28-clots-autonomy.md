@@ -532,6 +532,19 @@ Built as planned in one pass; 985 tests at first (was 941). Names and shapes tha
 
 Startup check (`npm run daemon`, 2026-10-29): both Clots reached `ready` and `[events] ready`; `clots-waiting` was created and its message posted, but pinning failed with Discord's `50013 Missing Permissions`. The bot needs the Pin Messages permission (or Manage Messages) on the server. Since that run, every start (and each change, until it works) checks the pin and makes it.
 
-After the live checks: the worker prompt says to update the PR description with `gh pr edit --body-file` when the approach changes, and the project Clots' memory note no longer says global memories were approved. 988 tests.
+**Live checks (Manual Verification Checklist):**
+- **Passed:** MV-4, MV-5, MV-6, MV-8, MV-11, MV-12, MV-14. MV-7's merge prompt showed correctly.
+- **Failed, then fixed:** MV-1 (the message was never pinned, because the first pin failed before the bot had the permission; the pin is now checked at every start). MV-3 (the Clot could not find an event it had just added, because the iCal feed lags; `calendar_list` now shows the Clots' changes from `calendar_changes`, and the prompt says to use the id from the daemon's post).
+- **Fixed alongside, from MV-6 and MV-12:** the worker prompt says to update the PR description with `gh pr edit --body-file` when the approach changes. The project Clots' memory note no longer says global memories were approved. The home Clot's wrong MV-12 reply came from its long-running session's old context.
+- **Blocked by the harness:** MV-9, MV-13, and MV-7's actual merge.
+- **Skipped (they need outside senders):** MV-2, MV-10, MV-15.
+
+**Review rounds (CodeRabbit on PR #11 and on the branch):**
+- An unreadable PR after an unclear merge answer stays "not known".
+- A tainted memory question that ends any way but a yes puts the home copy back. That covers a no, a withdrawal (marked in the same transaction, through `closeAsk`'s `also` and a synchronous `withdrawn` hook), a stop part-way, and a question that could not be asked. An interrupted ask whose text is already in force is reported as approved.
+- `&calendar undo` creates a removed event again only when the script answers `missing` (`ScriptResult.missing`, sent by `setup/calendar.gs`). Otherwise it keeps the copy.
+- Skipped: dropping the undo row when an update or removal answers `reached: false`. That answer comes from any thrown fetch, timeouts included, so the change may have happened.
+
+995 tests.
 
 For the next stage: the `proposals`, `send_reviews` and `memory_questions` tables are still in the schema, empty after the migration.
