@@ -27,6 +27,7 @@ it("merges the config file and the environment", () => {
     home: false,
     maxProposals: 3,
     maxWorkers: 3,
+    choiceTimeoutMinutes: 10,
     publicUrl: "",
     sendReview: { enabled: true, maxMs: 3 * 86_400_000 },
     sources: { stripe: [], email: [], calendar: [], linear: [], notion: [] },
@@ -169,4 +170,10 @@ it("reads the worker limit, from 1 to 20, and names CLOTS_MAX_WORKERS when it is
   expect(loadConfig(json, { ...env, CLOTS_MAX_WORKERS: "1" }).maxWorkers).toBe(1);
   expect(loadConfig(json, { ...env, CLOTS_MAX_WORKERS: "20" }).maxWorkers).toBe(20);
   for (const bad of ["0", "21", "2.5", "many"]) expect(() => loadConfig(json, { ...env, CLOTS_MAX_WORKERS: bad })).toThrow("CLOTS_MAX_WORKERS");
+});
+
+it("reads the choice timeout, from 1 to 1440 minutes, and names CLOTS_CHOICE_TIMEOUT_MINUTES when it is wrong", () => {
+  expect(loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: "1" }).choiceTimeoutMinutes).toBe(1);
+  expect(loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: "1440" }).choiceTimeoutMinutes).toBe(1440);
+  for (const bad of ["0", "1441", "2.5", "soon"]) expect(() => loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: bad })).toThrow("CLOTS_CHOICE_TIMEOUT_MINUTES");
 });

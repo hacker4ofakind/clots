@@ -52,6 +52,16 @@ describe("recorded GitHub deliveries", () => {
     expect(withAssociation("MEMBER")).toBe(false);
   });
 
+  it("marks a pull request as an outsider's by its author's standing, as an issue", () => {
+    const recording = JSON.parse(fs.readFileSync(`${DIR}/pull_request.opened.json`, "utf8"));
+    const withAssociation = (association: string) => {
+      const payload = { ...recording.payload, pull_request: { ...recording.payload.pull_request, author_association: association } };
+      return normalizeGithub(recording.event, recording.delivery, payload, 0)!.outsider;
+    };
+    expect(withAssociation("NONE")).toBe(true);
+    expect(withAssociation("COLLABORATOR")).toBe(false);
+  });
+
   it("finds a review's ID in its link, and does not take a person for a bot", () => {
     const recording = JSON.parse(fs.readFileSync(`${DIR}/pull_request_review.submitted.json`, "utf8"));
     const event = normalizeGithub(recording.event, recording.delivery, recording.payload, 0)!;

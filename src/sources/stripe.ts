@@ -129,7 +129,8 @@ export function normalizeStripe(account: StripeAccount, payload: unknown, receiv
     ref: id,
     subject: customer ? `customer:${customer}` : `${objectType}:${id}`,
     automated: true,
-    outsider: false,
+    // A customer writes the description, name and address it carries.
+    outsider: true,
     receivedAt,
   };
 }

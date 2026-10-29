@@ -1,3 +1,4 @@
+import { githubRequest, isRepo } from "../github-api.js";
 import type { ClotEvent } from "./types.js";
 
 /**
@@ -26,20 +27,16 @@ export function githubCommentSender(token: string, fetchFn: typeof fetch = fetch
     async send(event, text) {
       const number = threadNumber(event.subject);
       if (number === undefined) return { ok: false, refused: true, reason: "the event is not about an issue or a pull request" };
-      let response: Response;
+      if (!isRepo(event.place)) return { ok: false, refused: true, reason: "the event's repository name is not one GitHub allows" };
+      let answer: { status: number; body: any };
       try {
         // GitHub takes comments on a pull request at the issues address too.
-        response = await fetchFn(`https://api.github.com/repos/${event.place}/issues/${number}/comments`, {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "user-agent": "clots", "content-type": "application/json" },
-          body: JSON.stringify({ body: text }),
-        });
+        answer = await githubRequest(token, `/repos/${event.place}/issues/${number}/comments`, { method: "POST", body: { body: text } }, fetchFn);
       } catch (error) {
-        return { ok: false, refused: false, reason: `GitHub could not be reached (${error instanceof Error ? error.message : String(error)})` };
+        return { ok: false, refused: false, reason: error instanceof Error ? error.message : String(error) };
       }
-      if (!response.ok) return { ok: false, refused: response.status >= 400 && response.status < 500, reason: `GitHub answered ${response.status}` };
-      const posted: any = await response.json().catch(() => ({}));
-      return { ok: true, url: typeof posted?.html_url === "string" ? posted.html_url : event.url };
+      if (answer.status < 200 || answer.status >= 300) return { ok: false, refused: answer.status >= 400 && answer.status < 500, reason: `GitHub answered ${answer.status}` };
+      return { ok: true, url: typeof answer.body?.html_url === "string" ? answer.body.html_url : event.url };
     },
   };
 }

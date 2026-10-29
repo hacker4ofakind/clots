@@ -16,6 +16,19 @@ it("records categories, channels, posts and read-only state", async () => {
   expect(chat.readOnly.has(channel)).toBe(true);
 });
 
+it("keeps a top channel, and records posted, pinned and edited messages", async () => {
+  const chat = new FakeChat();
+  const channel = await chat.ensureTopChannel("clots-waiting");
+  expect(await chat.ensureTopChannel("clots-waiting")).toBe(channel);
+  const message = await chat.postMessage(channel, "one");
+  await chat.pin(channel, message);
+  await chat.editMessage(channel, message, "two");
+  expect(chat.messages.get(message)!.text).toBe("two");
+  expect(chat.pinned).toEqual([message]);
+  await expect(chat.editMessage(channel, "gone", "x")).rejects.toMatchObject({ code: 10008 });
+  await expect(chat.postMessage("gone", "x")).rejects.toMatchObject({ code: 10003 });
+});
+
 it("tracks which channels show typing", () => {
   const chat = new FakeChat();
   const stop = chat.startTyping("c");

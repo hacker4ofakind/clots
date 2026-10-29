@@ -11,7 +11,12 @@ export interface ScriptEvent {
   description: string;
   guests: number;
   repeats: boolean;
+  /** Part of a series. A script deployed before this field gives only `repeats`, which says the same. */
+  recurring?: boolean;
 }
+
+/** Whether an event is part of a series. */
+export const isRecurring = (event: ScriptEvent) => event.recurring ?? event.repeats;
 
 export type ScriptRequest =
   | { action: "create"; title: string; start: string; end: string; allDay?: boolean; description?: string; location?: string }
@@ -19,7 +24,10 @@ export type ScriptRequest =
   | { action: "update"; uid: string; title?: string; start?: string; end?: string; allDay?: boolean; description?: string; location?: string };
 
 /** What the script answered. `reached` is false when it could not be asked: the same request may work later. */
-export type ScriptResult = { ok: true; event: ScriptEvent } | { ok: false; reason: string; reached: boolean };
+export type ScriptResult = { ok: true; event: ScriptEvent } | { ok: false; reason: string; reached: boolean; missing?: true };
+
+/** Whether the script answered that the event is not there, and nothing else went wrong. A script deployed before `missing` says it only in words. */
+export const isMissing = (result: ScriptResult) => !result.ok && result.reached && (result.missing === true || result.reason.startsWith("there is no event with that ID"));
 
 /**
  * The daemon's side of setup/calendar.gs. Apps Script cannot read a request's headers, so the
@@ -43,7 +51,7 @@ export function calendarScript(o: { url: string; secret: string }, fetchFn: type
         return { ok: false, reason: "the calendar script answered with a web page instead of an answer; its deployment must run as the user and be open to anyone", reached: true };
       }
       if (answer?.ok === true && typeof answer.event?.uid === "string") return { ok: true, event: answer.event as ScriptEvent };
-      return { ok: false, reason: typeof answer?.reason === "string" ? answer.reason : "the calendar script gave no reason", reached: true };
+      return { ok: false, reason: typeof answer?.reason === "string" ? answer.reason : "the calendar script gave no reason", reached: true, ...(answer?.missing === true ? { missing: true as const } : {}) };
     },
   };
 }

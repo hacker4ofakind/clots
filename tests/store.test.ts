@@ -203,9 +203,9 @@ describe("Store", () => {
       const reopened = new Store(file);
       expect(reopened.getEvent("d-1")!.status).toBe("received");
       expect(reopened.getEvent("d-2")).toMatchObject({ status: "dropped", note: "fed into a turn" });
-      expect(reopened.leftoverAskChannels()).toEqual(["ask-1"]);
-      reopened.clearLeftoverAsks();
-      expect(reopened.leftoverAskChannels()).toEqual([]);
+      expect(reopened.steeringAskChannels()).toEqual(["ask-1"]);
+      reopened.clearSteeringAsks();
+      expect(reopened.steeringAskChannels()).toEqual([]);
       reopened.close();
     });
   });
@@ -230,19 +230,24 @@ describe("Store", () => {
 });
 
 describe("Store, stage 2b", () => {
-  const proposal = (clot: string, channelId: string) => ({ clot, channelId, channelName: `${clot}-rule`, scope: "own" as const, edit: '{"op":"add_guidance","line":"x"}', summary: 'Add triage guidance: "x"' });
+  const ask = (clot: string, channelId: string) => ({ kind: "rule", clot, channelId, channelName: `${clot}-rule`, payload: { x: 1 }, summary: "s", openedAt: 0, deadline: null, dedupe: channelId, outsider: false });
 
-  it("keeps proposals until they are closed, and closes each exactly once", () => {
+  it("keeps asks until they are closed, closes each exactly once, and never reuses an ID", () => {
     const store = new Store(":memory:");
-    const first = store.createProposal(proposal("graphite", "ch-1"));
-    store.createProposal(proposal("graphite", "ch-2"));
-    store.createProposal(proposal("other", "ch-3"));
-    expect(store.openProposals("graphite").map((p) => p.channelId)).toEqual(["ch-1", "ch-2"]);
-    expect(store.openProposals().map((p) => p.channelId)).toEqual(["ch-1", "ch-2", "ch-3"]);
-    expect(store.proposalByChannel("ch-1")).toMatchObject({ id: first, clot: "graphite", scope: "own", channelName: "graphite-rule" });
-    expect(store.deleteProposal(first)).toBe(true);
-    expect(store.deleteProposal(first)).toBe(false);
-    expect(store.proposalByChannel("ch-1")).toBeUndefined();
+    const first = store.createAsk(ask("graphite", "ch-1"));
+    store.createAsk(ask("graphite", "ch-2"));
+    store.createAsk(ask("other", "ch-3"));
+    expect(store.openAsks("graphite").map((a) => a.channelId)).toEqual(["ch-1", "ch-2"]);
+    expect(store.openAsks().map((a) => a.channelId)).toEqual(["ch-1", "ch-2", "ch-3"]);
+    expect(store.askByChannel("ch-1")).toMatchObject({ id: first, clot: "graphite", payload: { x: 1 }, state: "posting" });
+    expect(store.moveAsk(first, "open", "busy")).toBe(false);
+    expect(store.moveAsk(first, "posting", "open")).toBe(true);
+    expect(store.closeAsk(first, "graphite", null, { onlyOpen: true })).toBe(true);
+    expect(store.closeAsk(first, "graphite", null)).toBe(false);
+    expect(store.askByChannel("ch-1")).toBeUndefined();
+    const last = store.openAsks().at(-1)!.id;
+    store.closeAsk(last, "other", null);
+    expect(store.createAsk(ask("other", "ch-4"))).toBeGreaterThan(last);
   });
 
   it("keeps notes in order and clears them up to a point", () => {
@@ -338,18 +343,6 @@ describe("Store, global memory", () => {
     store.undoMemoryChange(store.lastMemoryChange()!);
     expect(store.approvedMemories().size).toBe(0);
     expect(store.lastMemoryChange()).toBeUndefined();
-  });
-
-  it("keeps questions until they are closed, and closes each exactly once", () => {
-    const store = new Store(":memory:");
-    store.createMemoryQuestion({ file: "global-clot-b.md", text: "b", channelId: "ch-2", channelName: "home-memory-2" });
-    store.createMemoryQuestion({ file: "global-clot-a.md", text: "a", channelId: "ch-1", channelName: "home-memory" });
-    expect(store.memoryQuestions().map((q) => q.file)).toEqual(["global-clot-a.md", "global-clot-b.md"]);
-    store.setMemoryQuestionText("global-clot-a.md", "a2");
-    expect(store.memoryQuestionByChannel("ch-1")).toEqual({ file: "global-clot-a.md", text: "a2", channelId: "ch-1", channelName: "home-memory" });
-    expect(store.deleteMemoryQuestion("global-clot-a.md")).toBe(true);
-    expect(store.deleteMemoryQuestion("global-clot-a.md")).toBe(false);
-    expect(store.memoryQuestionByChannel("ch-1")).toBeUndefined();
   });
 
   it("remembers which of the home Clot's copies are still to be put back", () => {

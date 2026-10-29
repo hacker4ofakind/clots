@@ -99,6 +99,7 @@ export function normalizeGithub(eventName: string, deliveryId: string, payload: 
       ref: String(p.pull_request.number),
       subject: `pr:${p.pull_request.number}`,
       automated: bot,
+      outsider: outsider(p.pull_request),
     };
   }
 

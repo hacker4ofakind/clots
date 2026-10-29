@@ -83,7 +83,8 @@ describe("readRecipe", () => {
       ref: "SEC-4",
       subject: "issue:SEC-4",
       automated: false,
-      outsider: false,
+      // Whoever can reach the service writes what it delivers.
+      outsider: true,
       receivedAt: NOW,
     } satisfies ClotEvent);
   });

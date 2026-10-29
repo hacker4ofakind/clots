@@ -41,7 +41,7 @@ const pick = (a: { source?: string; account?: string; kind?: string; place?: str
 /** Always in the turn's tool list, so the Clot does not have to search for them. */
 const always = { alwaysLoad: true };
 
-const EDIT_NOTE = "The daemon decides whether the change is applied at once or put to the user as a proposal, and the result says which.";
+const EDIT_NOTE = "The result says what became of it: applied, and posted with its undo; or put to the user, when this turn came from an outsider's text.";
 
 /** The name under which a worker's own tools are given to its turns. */
 export const WORKER_TOOL_SERVER = "clots_worker";
@@ -90,7 +90,32 @@ export function toolServer(tools: DaemonTools) {
         always,
       ),
       tool("stop_worker", "Stops one of your workers, by the id in your workers list. Its branch and pull request stay.", { id: z.string().min(1) }, (a) => reply(() => tools.stopWorker(a)), always),
-      tool("rulebook_show", "Shows the rules in force for you (pre-filters, triage guidance, standing rules) and your proposals that still wait for the user's answer.", {}, () => reply(() => tools.show()), always),
+      tool(
+        "ask_choice",
+        "Puts two meaningfully different ways of doing something to the user, with your own pick, in a separate channel. Do not wait for the answer: end your turn, or carry on with other work. The answer comes to you as a message from the user. With none in time, a turn of your own tells you to go with your pick. At most 3 wait at once.",
+        {
+          question: z.string().min(1).max(300).describe("One line: what is being decided."),
+          options: z.tuple([z.string().min(1).max(500), z.string().min(1).max(500)]).describe("The two ways, each a sentence."),
+          pick: z.union([z.literal(1), z.literal(2)]).describe("The option you would take."),
+        },
+        (a) => reply(() => tools.askChoice({ question: a.question, options: a.options, pick: a.pick })),
+        always,
+      ),
+      ...(tools.mergePullRequest === undefined
+        ? []
+        : [
+            tool(
+              "merge_pull_request",
+              "Asks the user to merge one of your workers' pull requests, on a clot/ branch, into the default branch. The daemon shows the user its title, link, checks and head commit in a separate channel, and squash-merges it on their yes, at that commit. The result says it was put to the user, or why not. Call it only for a pull request whose worker is idle with its report in, not again for every push.",
+              {
+                number: z.number().int().positive().describe("The pull request's number."),
+                repo: z.string().optional().describe("owner/name. Needed for the home Clot; a project Clot's own repository otherwise."),
+              },
+              (a) => reply(() => tools.mergePullRequest!({ number: a.number, repo: a.repo })),
+              always,
+            ),
+          ]),
+      tool("rulebook_show", "Shows the rules in force for you (pre-filters, triage guidance, standing rules) and the rule changes still put to the user.", {}, () => reply(() => tools.show()), always),
       tool(
         "rulebook_prefilter",
         `Adds or removes a pre-filter: events that match it are dropped before anything looks at them. Give at least one of source, account, kind, place, repo, actor and titleContains. To remove one, give the same fields it has. ${EDIT_NOTE}`,
@@ -107,7 +132,7 @@ export function toolServer(tools: DaemonTools) {
       ),
       tool(
         "rulebook_standing",
-        "Adds, replaces or removes a standing rule: one exact message you may send without asking, when an event matches its trigger. It is always put to the user as a proposal. With action \"set\", give the kind, the way of sending and the template; a rule of the same name is replaced. The template may use {actor}, {title}, {ref}, {place} and {url}, filled from the event. github_comment comments on the event's issue or pull request; email_reply answers an email (source email); linear_comment and notion_comment comment on the Linear issue or Notion page.",
+        "Adds, replaces or removes a standing rule: one exact message you may send without asking, when an event matches its trigger. It reaches other people, so it is always put to the user, in a separate channel; the result says so. With action \"set\", give the kind, the way of sending and the template; a rule of the same name is replaced. The template may use {actor}, {title}, {ref}, {place} and {url}, filled from the event. github_comment comments on the event's issue or pull request; email_reply answers an email (source email); linear_comment and notion_comment comment on the Linear issue or Notion page.",
         {
           action: z.enum(["set", "remove"]),
           file,
@@ -138,14 +163,14 @@ export function toolServer(tools: DaemonTools) {
       ),
       tool(
         "rulebook_routing",
-        "Adds or removes a routing rule: events from a shared account (one inbox, one calendar, one workspace for several projects) that match it go to the Clot it names. Give at least one field to match on, and the Clot. It is always put to the user as a proposal.",
+        `Adds or removes a routing rule: events from a shared account (one inbox, one calendar, one workspace for several projects) that match it go to the Clot it names. Give at least one field to match on, and the Clot. ${EDIT_NOTE}`,
         { action: z.enum(["add", "remove"]), ...match, clot: z.string().min(1).describe("The Clot the events go to, or home.") },
         (a) => reply(() => tools.routing({ action: a.action, rule: { ...pick(a), clot: a.clot } })),
         always,
       ),
       tool(
         "route_correct",
-        "Hands an event that was routed to you to the Clot it belongs to, when the user has said so. Give the event's id, from its block, and the Clot. Works only in a turn the user's message started.",
+        "Hands an event that was routed to you to the Clot it belongs to, when the user has said so or it plainly belongs there. Give the event's id, from its block, and the Clot. Outside a turn the user's message started, an event can be handed over only once.",
         { event: z.string().min(1).describe("The event's id."), clot: z.string().min(1).describe("The Clot it belongs to, or home.") },
         (a) => reply(() => tools.routeCorrect({ event: a.event, clot: a.clot })),
         always,
@@ -155,7 +180,7 @@ export function toolServer(tools: DaemonTools) {
         : [
             tool(
               "email_draft",
-              `Saves an email as a draft in the user's mailbox, for the user to read, change and send. Nothing is sent. To answer an email event, give its id and your text: the draft answers its sender, in its thread, from the address it came to. For a new message, give the account, the recipients and a subject. Works only in a turn the user's message started. ${tools.emailAccounts ?? ""}`.trim(),
+              `Saves an email as a draft in the user's mailbox, for the user to read, change and send. Nothing is sent. To answer an email event, give its id and your text: the draft answers its sender, in its thread, from the address it came to. For a new message, give the account, the recipients and a subject. Works in every kind of turn. ${tools.emailAccounts ?? ""}`.trim(),
               {
                 event: z.string().optional().describe("The id of the email you are answering."),
                 account: z.string().optional().describe("For a new message: the email account to write from."),
@@ -172,7 +197,7 @@ export function toolServer(tools: DaemonTools) {
         : [
             tool(
               "email_send",
-              `Asks to send an email. The daemon shows it to the user in a separate channel and sends it only on their yes; they may also drop it, have it saved as a draft, or give feedback, which reaches you as a message from them: revise the email and call this again. Takes the same fields as email_draft. Works in every kind of turn; while looking into an event, only to answer that email. ${tools.emailAccounts ?? ""}`.trim(),
+              `Asks to send an email. The daemon shows it to the user in a separate channel and sends it only on their yes; they may also drop it, have it saved as a draft, or give feedback, which reaches you as a message from them: revise the email and call this again. Takes the same fields as email_draft. The result says it was put to the user. Works in every kind of turn; in one an outsider's text started, only to answer the email being looked into. ${tools.emailAccounts ?? ""}`.trim(),
               {
                 event: z.string().optional().describe("The id of the email you are answering."),
                 account: z.string().optional().describe("For a new message: the email account to write from."),
@@ -203,7 +228,7 @@ export function toolServer(tools: DaemonTools) {
         : [
             tool(
               "calendar_write",
-              "Adds an event to the user's calendar, or changes one (its title, time, description or location). Events with guests cannot be changed, and no guest can be added, so nothing notifies another person. A change to a repeating event applies to every occurrence. Works only in a turn the user's message started. The daemon tells the user each change.",
+              "Adds an event to the user's calendar, or changes one (its title, time, description or location). Events with guests cannot be changed, and no guest can be added, so nothing notifies another person. A change to a repeating event applies to every occurrence, and is made only in a turn the user's message started. In a turn an outsider's text started, you may only add events (at most 3 a day) and change ones a Clot added. Applied at once: the daemon posts each change, and `&calendar undo` reverses it.",
               {
                 action: z.enum(["create", "update"]),
                 account: z.string().optional().describe("Which calendar, when there are several."),
@@ -224,7 +249,7 @@ export function toolServer(tools: DaemonTools) {
         : [
             tool(
               "calendar_remove",
-              "Asks the user, in a separate channel, to confirm removing an event from their calendar; the daemon removes it on their yes. Call it only after the user has said yes in chat to removing this event. Works only in a turn the user's message started.",
+              "Removes an event from the user's calendar. Events with guests and repeating events cannot be removed. In a turn an outsider's text started, only an event a Clot added. Applied at once: the daemon keeps a copy, posts the removal, and `&calendar undo` puts it back.",
               { account: z.string().optional().describe("Which calendar, when there are several."), uid: z.string().min(1).describe("The event's id, from calendar_list.") },
               (a) => reply(() => tools.calendarRemove!({ account: a.account, uid: a.uid })),
               always,
@@ -257,7 +282,7 @@ export function toolServer(tools: DaemonTools) {
             : [tool("watch_try", "Runs a draft watch recipe once and shows how many items it finds and the first five, as the recipe reads them. Records nothing. Works in every kind of turn, for read-only tools.", recipe, (a) => reply(() => tools.watchTry!(asRecipe(a))), always)]),
           tool(
             "rulebook_watch",
-            "Adds, replaces or removes a watch recipe: the daemon calls one read-only tool of one of its MCP servers on a timer and reports each new item as an event. Try it first with watch_try. It is always put to the user as a proposal. In your own file its events come to you; in the global file they are routed.",
+            `Adds, replaces or removes a watch recipe: the daemon calls one read-only tool of one of its MCP servers on a timer and reports each new item as an event. Try it first with watch_try. In your own file its events come to you; in the global file they are routed. ${EDIT_NOTE}`,
             { action: z.enum(["set", "remove"]), file, ...recipe, server: recipe.server.optional(), tool: recipe.tool.optional(), items: recipe.items.optional(), id: recipe.id.optional() },
             (a) => reply(() => tools.watch(a.action === "remove" ? { action: "remove", file: a.file, name: a.name } : { action: "set", file: a.file, recipe: asRecipe(a) })),
             always,
@@ -266,7 +291,7 @@ export function toolServer(tools: DaemonTools) {
       })(),
       tool(
         "rulebook_webhook",
-        "Adds, replaces or removes a webhook recipe: how to verify and read the webhooks of a service with no built-in support, so its deliveries become events. Draft it from a sample payload or the service's documentation the user gives you. It is always put to the user as a proposal; the user then puts the secret in .env and sets up the webhook in the service. In your own file its events come to you; in the global file they are routed.",
+        `Adds, replaces or removes a webhook recipe: how to verify and read the webhooks of a service with no built-in support, so its deliveries become events. Draft it from a sample payload or the service's documentation the user gives you. Once it is in force, the user puts the secret in .env and sets up the webhook in the service. In your own file its events come to you; in the global file they are routed. ${EDIT_NOTE}`,
         {
           action: z.enum(["set", "remove"]),
           file,

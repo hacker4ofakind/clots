@@ -419,15 +419,22 @@ describe("acceptGithub", () => {
       number: 3,
       repository: { full_name: "O/R" },
       sender: { login: "someone" },
-      pull_request: { number: 3, title: "Fix", body: "", html_url: "https://github.com/o/r/pull/3", head: { ref: "clot/x-1a2b", repo: { full_name: "O/R" } } },
+      pull_request: { number: 3, title: "Fix", body: "", html_url: "https://github.com/o/r/pull/3", head: { ref: "clot/x-1a2b", sha: "a".repeat(40), repo: { full_name: "O/R" } } },
     });
     expect(acceptGithub(delivery(body(pr("closed")), { eventName: "pull_request", deliveryId: "d-9" }), withPr())).toEqual({ status: 200, text: "pull request closed" });
     expect(store.getEvent("d-9")).toBeUndefined();
-    expect(changes).toEqual([{ repo: "o/r", branch: "clot/x-1a2b", headRepo: "o/r", number: 3, url: "https://github.com/o/r/pull/3", action: "closed" }]);
+    expect(changes).toEqual([{ repo: "o/r", branch: "clot/x-1a2b", headRepo: "o/r", number: 3, url: "https://github.com/o/r/pull/3", action: "closed", headSha: "a".repeat(40) }]);
 
     expect(acceptGithub(delivery(body(pr("opened")), { eventName: "pull_request", deliveryId: "d-10" }), withPr())).toMatchObject({ status: 202 });
     expect(store.getEvent("d-10")).toBeDefined();
     expect(changes[1]).toMatchObject({ action: "opened", branch: "clot/x-1a2b" });
+  });
+
+  it("tells of new commits on a pull request, with the new head, and stores no event for them", () => {
+    const changes: unknown[] = [];
+    const payload = { action: "synchronize", number: 3, repository: { full_name: "O/R" }, sender: { login: "someone" }, pull_request: { number: 3, html_url: "u", head: { ref: "clot/x-1a2b", sha: "b".repeat(40), repo: { full_name: "O/R" } } } };
+    expect(acceptGithub(delivery(body(payload), { eventName: "pull_request", deliveryId: "d-11" }), { ...deps(), onPullRequest: async (a: unknown) => void changes.push(a) })).toEqual({ status: 200, text: "ignored" });
+    expect(changes).toEqual([expect.objectContaining({ action: "synchronize", headSha: "b".repeat(40), number: 3 })]);
   });
 
   it("acknowledges a repeated delivery without handing it on", () => {

@@ -44,7 +44,7 @@ function handle(req) {
   }
 
   var event = calendar.getEventById(req.uid);
-  if (!event) return { ok: false, reason: "there is no event with that ID in this calendar" };
+  if (!event) return { ok: false, reason: "there is no event with that ID in this calendar", missing: true };
   if (req.action === "check") return { ok: true, event: describe(event) };
   if (event.getGuestList().length > 0) return { ok: false, reason: "the event has guests, and changing it would notify them" };
 
@@ -80,5 +80,7 @@ function describe(event) {
     description: event.getDescription(),
     guests: event.getGuestList().length,
     repeats: event.isRecurringEvent(),
+    // Read by the daemon before a change: a recurring event is never removed, since its undo could not restore the series.
+    recurring: event.isRecurringEvent(),
   };
 }

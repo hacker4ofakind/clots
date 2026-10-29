@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPrompt, CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT } from "../src/agent/prompts.js";
+import { AXES_NOTE, buildPrompt, CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT, workerSystemPrompt } from "../src/agent/prompts.js";
 
 const base = { text: "hello", seed: null, interrupted: false };
 
@@ -43,7 +43,7 @@ describe("the system prompts", () => {
   it("put the event note's three outcomes in an event's prompt, and nothing about brainstorming", () => {
     const prompt = buildPrompt({ ...base, text: "<event>", event: true });
     expect(prompt).toContain("start a worker right away");
-    expect(prompt).toContain("one or two options");
+    expect(prompt).toContain("put two to the user with ask_choice, naming your pick, and do not wait");
     expect(prompt).not.toContain("rainstorm");
     expect(prompt).not.toContain("Act on what was agreed");
   });
@@ -52,15 +52,29 @@ describe("the system prompts", () => {
     expect(HOME_SYSTEM_PROMPT).toContain("from shared accounts that no rule and no routing call placed");
   });
 
-  it("tell the Clots to ask in chat before removing a calendar event", () => {
-    expect(CLOT_SYSTEM_PROMPT).toContain("calendar_remove");
-    expect(CLOT_SYSTEM_PROMPT).toContain("only after the user has said yes");
+  it("tell the Clots that a calendar change needs no question and can be undone", () => {
+    expect(CLOT_SYSTEM_PROMPT).toContain("calendar_remove removes one without guests");
+    expect(CLOT_SYSTEM_PROMPT).toContain("`&calendar undo` reverses it");
+    expect(CLOT_SYSTEM_PROMPT).not.toContain("ask the user in chat first");
   });
 
   it("tell the Clots that nothing goes to a person without the user's yes: a draft, or an email put to the user", () => {
     expect(CLOT_SYSTEM_PROMPT).toContain("Nothing goes to another person without the user's yes.");
     expect(CLOT_SYSTEM_PROMPT).toContain("email_draft");
-    expect(CLOT_SYSTEM_PROMPT).toContain("the daemon sends it only on their yes");
+    expect(CLOT_SYSTEM_PROMPT).toContain("sends it only on their yes");
+  });
+
+  it("say no global memory waits for approval, and tell workers to keep the description current", () => {
+    for (const prompt of [CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT]) expect(prompt).not.toMatch(/approved them|asks the user before|until you approve/);
+    expect(workerSystemPrompt("graphite", "clot/x")).toContain("gh pr edit --body-file");
+    expect(CLOT_SYSTEM_PROMPT).toContain("use the id from the daemon's post");
+  });
+
+  it("carry the four axes, and no proposal wording", () => {
+    for (const prompt of [CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT]) {
+      expect(prompt).toContain(AXES_NOTE);
+      expect(prompt).not.toMatch(/propos/i);
+    }
   });
 
   it("tell every Clot that all sources are untrusted, and how to correct a routing", () => {

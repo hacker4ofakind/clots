@@ -38,7 +38,7 @@ export interface RuleWriterDeps {
  */
 export class RuleWriter {
   /** Undo records of edits that were made but could not be saved to the log, oldest first. */
-  private unlogged: Omit<RuleEditRow, "id">[] = [];
+  private unlogged: (Omit<RuleEditRow, "id"> & { edit: string })[] = [];
 
   constructor(private d: RuleWriterDeps) {}
 
@@ -66,6 +66,11 @@ export class RuleWriter {
   /** Makes an edit: checked, written, put in force, committed, and logged with the edit that undoes it. */
   apply(clot: string, scope: RuleScope, edit: RuleEdit): WriteResult {
     return this.write(clot, scope === "global" ? "global" : clot, edit, true);
+  }
+
+  /** Whether the user undid this edit, made through this Clot: such a rule is never added again unasked. */
+  wasUndone(clot: string, scope: RuleScope, edit: RuleEdit): boolean {
+    return this.d.store.wasUndone(clot, scope === "global" ? "global" : clot, JSON.stringify(edit));
   }
 
   /** Reverts the most recent edit made from chat through this Clot that has not been undone. */
@@ -122,7 +127,7 @@ export class RuleWriter {
     }
     if (!log) return { ok: true, file: target, summary: result.summary };
     // Kept here until it is in the log, behind any that are still waiting, so the order of edits holds.
-    this.unlogged.push({ clot, file: target, inverse: JSON.stringify(result.inverse), summary: result.summary });
+    this.unlogged.push({ clot, file: target, inverse: JSON.stringify(result.inverse), summary: result.summary, edit: JSON.stringify(edit) });
     return this.saveLog() ? { ok: true, file: target, summary: result.summary } : { ok: true, file: target, summary: result.summary, unlogged: true };
   }
 }

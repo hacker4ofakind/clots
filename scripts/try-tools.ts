@@ -34,6 +34,7 @@ const tools: DaemonTools = {
   startSession: async () => "unused",
   messageWorker: async () => "unused",
   stopWorker: async () => "unused",
+  askChoice: async () => "unused",
 };
 
 const runner = new SdkRunner({ clot, env: { CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN! } });

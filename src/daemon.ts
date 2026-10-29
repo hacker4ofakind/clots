@@ -20,9 +20,17 @@ import { readEnvFile } from "./env-file.js";
 import { recipeHandler } from "./webhook-recipe.js";
 import { StoredOAuth } from "./mcp/oauth.js";
 import { CalendarFeed } from "./sources/calendar.js";
-import { calendarScript, describeScriptEvent } from "./sources/calendar-script.js";
+import { calendarScript } from "./sources/calendar-script.js";
 import { draftFates, imapflowClient, MailboxListener, saveDraft, saveSent } from "./sources/imap.js";
-import { closeAllReviews, SendReviews } from "./send-review.js";
+import { Asks } from "./asks.js";
+import { askEmail, emailKind, type SendRequest } from "./asks/email.js";
+import { askChoice, choiceKind } from "./asks/choice.js";
+import { askMerge, mergeKind, withdrawMerges } from "./asks/merge.js";
+import { memoryKind } from "./asks/memory.js";
+import { askRule, ruleKind } from "./asks/rule.js";
+import { migrateAsks } from "./asks-migration.js";
+import { CalendarUndo } from "./calendar-undo.js";
+import { Waiting } from "./waiting.js";
 import { DraftTracker } from "./drafts.js";
 import { linearCommentSender, linearEnricher, linearHandler, linearMember } from "./sources/linear.js";
 import { notionBot, notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
@@ -33,7 +41,6 @@ import { handOver } from "./hand-over.js";
 import { Supervisor } from "./listeners.js";
 import { githubHandler, startIntake, type Handler, type PullRequestChange } from "./intake.js";
 import { Pipeline } from "./pipeline.js";
-import { Proposals } from "./proposals.js";
 import { SdkRouter } from "./router.js";
 import { RuleWriter } from "./rule-writer.js";
 import { Rulebook } from "./rulebook.js";
@@ -141,7 +148,7 @@ const workers = new Workers({
     const timer = setTimeout(fn, ms);
     return () => clearTimeout(timer);
   },
-  toMain: async (clot, row) => clots.get(clot)?.queueFromWorker(row),
+  kick: (clot) => clots.get(clot)?.kick(),
   pause: async (clot, resetsAt) => clots.get(clot)?.pauseFor(resetsAt),
   say,
   postActivity: async (clot, activity) => {
@@ -154,77 +161,94 @@ onPullRequest = (a) => workers.onPullRequest(a);
 workers.recover();
 
 const writer = new RuleWriter({ rulebook, store });
-const proposals = new Proposals({ store, chat, writer, userId: config.userId, max: config.maxProposals, say });
+
+/** Sends as the user: standing-rule replies and approved emails, each with a copy in Sent where the server does not file one. */
+const sendMail = mailer({ store, transport: smtpTransport, saveSent, log: (text, error) => console.warn(text, error) });
+
+// The kinds of ask. Email is asked only with email set up and send review on.
+const ruleAsk = ruleKind({ writer, store });
+const emailAsk =
+  config.sources.email.length === 0 || !config.sendReview.enabled
+    ? undefined
+    : emailKind({ store, accounts: config.sources.email, maxMs: config.sendReview.maxMs, now: () => Date.now(), send: sendMail, saveDraft, say });
+let memory: GlobalMemory;
+const memoryAsk = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload), inForce: (payload) => memory.inForce(payload) });
+const mergeAsk = mergeKind({ token: config.githubToken });
+const choiceAsk = choiceKind({ timeoutMinutes: config.choiceTimeoutMinutes });
+const after = (ms: number, fn: () => void) => {
+  const timer = setTimeout(fn, ms);
+  return () => clearTimeout(timer);
+};
+/** The pinned list of everything waiting for the user, at the top of the server. */
+const waiting = new Waiting({ store, chat, after });
+const asks = new Asks({
+  store,
+  chat,
+  userId: config.userId,
+  now: () => Date.now(),
+  kick: (clot) => clots.get(clot)?.kick(),
+  say,
+  after,
+  kinds: [ruleAsk, memoryAsk, mergeAsk, choiceAsk, ...(emailAsk ? [emailAsk] : [])],
+  // Nothing posted in clots-waiting is an answer, or reaches a Clot.
+  ignore: (channelId) => waiting.isChannel(channelId),
+});
+asks.onChange(() => waiting.refresh());
+onPullRequest = async (a) => {
+  await workers.onPullRequest(a);
+  await withdrawMerges(asks, a);
+};
+
 const toolDeps: ToolDeps = {
   rulebook,
   writer,
-  proposals,
+  asks: {
+    rule: (clot, scope, edit, outsider) => askRule(asks, ruleAsk, { writer, store, max: config.maxProposals }, clot, scope, edit, outsider),
+    ...(emailAsk ? { email: (clot: string, req: SendRequest, outsider: boolean) => askEmail(asks, emailAsk, config.maxProposals, clot, req, outsider) } : {}),
+    merge: (clot, a, outsider) =>
+      askMerge(asks, mergeAsk, { token: config.githubToken, repoOf: (name) => repoOf.get(name) ?? null, workerRepos: (name) => [...new Set(store.workersOf(name).flatMap((w) => (w.prRepo === null ? [] : [w.prRepo])))] }, clot, a, outsider),
+    choice: (clot, a, outsider) => askChoice(asks, choiceAsk, { now: () => Date.now(), timeoutMinutes: config.choiceTimeoutMinutes }, clot, a, outsider),
+  },
   store,
   senders: { github_comment: githubCommentSender(config.githubToken) },
   say,
-  handOver: (from, eventId, to) => handOver({ store, clots, say }, from, eventId, to),
+  handOver: (from, eventId, to, byRequest) => handOver({ store, clots, say }, from, eventId, to, byRequest),
   workers,
 };
 
-const memory = new GlobalMemory({
+memory = new GlobalMemory({
   store,
-  chat,
   // A Clot's memory folder is named after the directory its turns start in: the home Clot has no clone.
   folders: new DockerMemoryFolders((name) => (name === HOME_CLOT ? "/workspace" : "/workspace/repo")),
   home: HOME_CLOT,
   clots: names,
-  userId: config.userId,
-  max: config.maxProposals,
   say,
   isBusy: (name) => clots.get(name)?.isBusy() ?? false,
+  asks: {
+    open: (payload) => asks.open(memoryAsk, HOME_CLOT, payload, { summary: `Global memory \`${payload.file}\` from an outsider's turn`, dedupe: `${payload.file}:${payload.text}`, max: config.maxProposals }),
+    withdraw: (id, reason) => asks.withdraw(id, reason),
+  },
 });
-
-/** Sends as the user: standing-rule replies and approved emails, each with a copy in Sent where the server does not file one. */
-const sendMail = mailer({ store, transport: smtpTransport, saveSent, log: (text, error) => console.warn(text, error) });
-/** Emails the Clots ask to send, each sent on the user's yes in a review channel. Set up with the email sources, unless switched off. */
-const sendReviews =
-  config.sources.email.length === 0 || !config.sendReview.enabled
-    ? undefined
-    : new SendReviews({
-        store,
-        chat,
-        userId: config.userId,
-        accounts: config.sources.email,
-        max: config.maxProposals,
-        maxMs: config.sendReview.maxMs,
-        now: () => Date.now(),
-        send: sendMail,
-        saveDraft,
-        // The user's feedback reaches the Clot as if typed in its live channel: a turn now, or into the running one.
-        feedback: async (name, text) => {
-          const session = store.activeSession(name);
-          const clot = clots.get(name);
-          if (!session || !clot) return false;
-          // Not waited for: it may start a whole turn. Stored as the Clot's message before the first await, so it is not lost.
-          void clot.onMessage({ id: `send-feedback:${randomUUID()}`, channelId: session.channelId, authorId: config.userId, text, at: new Date() }).catch((error) => console.error(`[${name}]`, error));
-          return true;
-        },
-        say,
-      });
 
 await chat.start((m) => {
   void (async () => {
     // A reply in a temporary channel is an answer to the daemon's question there, not a message for the Clot.
-    if (await proposals.onReply(m)) return;
-    if (await sendReviews?.onReply(m)) return;
-    if (await memory.onReply(m)) return;
+    if (await asks.onReply(m)) return;
     const session = store.sessionByChannel(m.channelId);
     const clot = session && clots.get(session.clot);
     if (clot) await clot.onMessage(m);
   })().catch((error) => console.error("[chat]", error));
 });
 
-// A question about a global memory whose channel was removed while the daemon was down can no longer
-// be answered. Closed before the home Clot's startup check, which then asks it again.
-await memory.closeOrphans();
-// Questions an earlier version opened about events have no one to answer them any more.
-for (const channelId of store.leftoverAskChannels()) await chat.deleteChannel(channelId).catch(() => undefined);
-store.clearLeftoverAsks();
+// The rule proposals, send reviews and memory questions an earlier version kept are withdrawn, once.
+await migrateAsks({ store, chat });
+// Steering questions an earlier version opened about events have no one to answer them any more.
+for (const channelId of store.steeringAskChannels()) await chat.deleteChannel(channelId).catch(() => undefined);
+store.clearSteeringAsks();
+
+/** The calendars the Clots can change, each through its Apps Script, and the undo of their changes. */
+const scripts = new Map(config.sources.calendar.filter((account) => account.script !== undefined).map((account) => [account.account, calendarScript(account.script!)]));
+const calendarUndo = scripts.size === 0 ? undefined : new CalendarUndo({ store, call: (account, req) => scripts.get(account)!.call(req), timeZone: config.timeZone });
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check. */
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Set up with the email sources. */
 const drafts = config.sources.email.length === 0 ? undefined : new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
@@ -265,8 +289,8 @@ for (const c of definitions) {
     newId: randomUUID,
     schedule: (ms, fn) => void setTimeout(fn, ms),
     // After the home Clot's turns, and once at startup, its global memories are looked at.
-    onTurnEnd: async (name) => {
-      if (name === HOME_CLOT) await memory.afterHomeTurn();
+    onTurnEnd: async (name: string, turn: { outsider: boolean }) => {
+      if (name === HOME_CLOT) await memory.afterHomeTurn(turn);
     },
     beforeTurn: async (name) => {
       await drafts?.check(name);
@@ -275,6 +299,7 @@ for (const c of definitions) {
       if (repoOf.get(name)) await refreshMainCheckout(containerName(name), config.githubToken).catch((error) => console.warn(`[${name}] refreshing the clone failed; reading the code as it was:`, error));
     },
     memory: { list: () => memory.list(), undo: () => memory.undo() },
+    ...(calendarUndo ? { calendar: calendarUndo } : {}),
     makeTools: (ctx) => makeTools(toolDeps, ctx),
     standingFor: (name, event) => matchStanding(rulebook.standingFor(name), event, event.kind === "batch" ? store.eventsMergedInto(event.id) : []),
     rules: {
@@ -284,7 +309,6 @@ for (const c of definitions) {
         return done.ok ? `${done.summary} (\`${done.file}.yaml\`)` : done.reason;
       },
     },
-    onSessionClosed: (name) => proposals.closeForSession(name),
   });
   clots.set(c.name, clot);
   await clot.init();
@@ -294,15 +318,12 @@ for (const c of definitions) {
 // Every Clot is ready: the workers' queue starts, after a check of their worktrees and pull requests.
 await workers.startUp();
 
-// A proposal whose channel was removed while the daemon was down can no longer be answered.
-await proposals.closeOrphans();
-// Emails that waited too long for an answer, or whose channel is gone, are withdrawn: now, then every hour.
-// With send review off, or no email account left, nothing can answer the reviews still open: they are closed.
-if (!sendReviews) await closeAllReviews({ store, chat, say });
-else {
-  await sendReviews.closeStale(true);
-  setInterval(() => void sendReviews.closeStale().catch((error) => console.error("[email] closing stale send reviews failed:", error)), 60 * 60_000);
-}
+// What a stop caught half-way is closed, and asks that can no longer be answered are withdrawn: now,
+// then every hour. Deadlines are scheduled once the Clots can take what they hand over.
+await asks.sweep(true);
+asks.startTimers();
+await waiting.init().catch((error) => console.error("[waiting] clots-waiting could not be set up; it is tried again at the next change:", error));
+setInterval(() => void asks.sweep(false).catch((error) => console.error("[asks] the hourly sweep failed:", error)), 60 * 60_000);
 
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
@@ -335,14 +356,15 @@ for (const account of config.sources.email) {
   }
 }
 if (config.sources.email.length > 0) {
-  toolDeps.email = { accounts: config.sources.email, save: saveDraft, ...(sendReviews ? { review: sendReviews } : {}) };
+  toolDeps.email = { accounts: config.sources.email, save: saveDraft };
   toolDeps.senders.email_reply = emailReplySender({ accounts: config.sources.email, store, send: sendMail });
 }
 
 // Calendar: each feed polled for reminders, and read for calendar_list.
 const feeds = new Map<string, CalendarFeed>();
 for (const account of config.sources.calendar) {
-  const feed = new CalendarFeed({ account, timeZone: config.timeZone, store, deliver: (event) => deliver(event), now: () => Date.now() });
+  const ownAddresses = [...config.sources.email.flatMap((a) => [a.address, ...a.addresses]), ...config.sources.calendar.map((a) => a.account).filter((name) => name.includes("@"))];
+  const feed = new CalendarFeed({ account, timeZone: config.timeZone, store, deliver: (event) => deliver(event), now: () => Date.now(), ownAddresses });
   feeds.set(account.account, feed);
   supervisor.start({ name: `calendar ${account.account}`, everyMs: account.pollMinutes * 60_000, tell: tellAccount(account), run: () => feed.poll() });
 }
@@ -465,7 +487,6 @@ recipeHandlers = recipeHandler({
   },
 });
 
-const scripts = new Map(config.sources.calendar.filter((account) => account.script !== undefined).map((account) => [account.account, calendarScript(account.script!)]));
 if (feeds.size > 0) {
   toolDeps.calendar = {
     accounts: config.sources.calendar,
@@ -474,22 +495,6 @@ if (feeds.size > 0) {
     list: (account, from, to) => feeds.get(account)!.list(from, to),
     ...(scripts.size > 0 ? { call: (account: string, req: Parameters<ReturnType<typeof calendarScript>["call"]>[0]) => scripts.get(account)!.call(req) } : {}),
   };
-}
-if (scripts.size > 0) {
-  // A removal is put to the user as a proposal; these are what it shows and what it does on yes.
-  proposals.useCalendar({
-    preview: async ({ account, uid }) => {
-      const found = await scripts.get(account)!.call({ action: "check", uid });
-      if (!found.ok) return { ok: false, reason: found.reason };
-      if (found.event.guests > 0) return { ok: false, reason: "the event has guests, and removing it would notify them; ask the user to remove it" };
-      return { ok: true, summary: `Remove from the calendar (${account}): ${describeScriptEvent(found.event, config.timeZone)}` };
-    },
-    remove: async ({ account, uid }) => {
-      const done = await scripts.get(account)!.call({ action: "remove", uid });
-      if (done.ok) return { ok: true, summary: describeScriptEvent(done.event, config.timeZone) };
-      return done.reached ? { ok: false, reason: done.reason } : { ok: false, reason: done.reason, retry: true };
-    },
-  });
 }
 // End of sources.
 

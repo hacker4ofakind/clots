@@ -18,9 +18,14 @@ export function sessionChannelName(project: string, date: Date, timeZone: string
   return firstFree(`${slug(project)}-${day}${month}`, existing);
 }
 
-/** The temporary channel in which the user is asked about an event: `project-ask`, then `-2`, `-3` while others are open. */
-export function askChannelName(project: string, existing: string[]): string {
+/** The temporary channel in which the user is asked to merge a pull request: `project-ask`, then `-2`, `-3` while others are open. */
+export function mergeChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-ask`, existing);
+}
+
+/** The temporary channel in which the user is put a choice between two ways: `project-choice`, then `-2`, `-3` while others are open. */
+export function choiceChannelName(project: string, existing: string[]): string {
+  return firstFree(`${slug(project)}-choice`, existing);
 }
 
 /** The temporary channel in which the user is asked about a rule change: `project-rule`, then `-2`, `-3` while others are open. */
@@ -28,17 +33,12 @@ export function ruleChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-rule`, existing);
 }
 
-/** The temporary channel in which the user is asked to remove a calendar event: `project-cal`, then `-2`, `-3` while others are open. */
-export function calChannelName(project: string, existing: string[]): string {
-  return firstFree(`${slug(project)}-cal`, existing);
-}
-
 /** The temporary channel in which the user reviews an email a Clot asks to send: `project-mail`, then `-2`, `-3` while others are open. */
 export function mailChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-mail`, existing);
 }
 
-/** The temporary channel in which the user is asked about a global memory: `home-memory`, then `-2`, `-3` while others are open. */
+/** The temporary channel in which the user is asked about a global memory from an outsider's turn: `home-memory`, then `-2`, `-3` while others are open. */
 export function memoryChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-memory`, existing);
 }
