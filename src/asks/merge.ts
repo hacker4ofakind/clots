@@ -41,7 +41,9 @@ function checksLine(checks: CheckCounts | null): string {
  * main session. New commits on it, or its closing, withdraw the ask.
  */
 export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
-  const readMerged = async (p: MergePayload) => (await getPullRequest(d.token, p.repo, p.number, d.fetchFn).catch(() => undefined))?.merged === true;
+  /** Whether GitHub says it is merged; undefined when it cannot be read, so the outcome stays unknown. */
+  const readMerged = async (p: MergePayload): Promise<boolean | undefined> => (await getPullRequest(d.token, p.repo, p.number, d.fetchFn).catch(() => undefined))?.merged;
+  const unknown = (p: MergePayload): [string, string] => [`Whether ${name(p)} was merged is not known: GitHub did not answer clearly, and the pull request could not be read afterwards. Check it on GitHub before asking again.`, `Whether ${name(p)} was merged is not known; check it on GitHub.`];
   const merged = (p: MergePayload): [string, string] => [`The user approved merging ${name(p)}, and it was squash-merged. Its worker closes when GitHub reports the pull request closed.`, `Merged ${name(p)}.`];
   const unclear = (p: MergePayload): [string, string] => [`GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`, `GitHub did not answer clearly about merging ${name(p)}; it is not merged.`];
   const stopped = (p: MergePayload): [string, string] => [`The daemon stopped while merging ${name(p)}; it is not merged. Ask again if it should be.`, `The daemon stopped while merging ${name(p)}; it is not merged.`];
@@ -83,7 +85,8 @@ export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
         await io.close(...merged(p));
       } else if (done.unclear) {
         // A merge whose answer was lost may still have happened: GitHub is asked once.
-        await io.close(...((await readMerged(p)) ? merged(p) : unclear(p)));
+        const state = await readMerged(p);
+        await io.close(...(state === undefined ? unknown(p) : state ? merged(p) : unclear(p)));
       } else {
         await io.close(`GitHub refused the merge: ${done.message.replace(/\.$/, "")}.`, `GitHub refused to merge ${name(p)}: ${done.message}`);
       }
@@ -91,7 +94,8 @@ export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
 
     async interrupted(ask: AskRow<MergePayload>, io) {
       const p = ask.payload;
-      await io.close(...((await readMerged(p)) ? merged(p) : stopped(p)));
+      const state = await readMerged(p);
+      await io.close(...(state === undefined ? unknown(p) : state ? merged(p) : stopped(p)));
     },
   };
 }

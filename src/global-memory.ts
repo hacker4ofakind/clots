@@ -1,5 +1,5 @@
 import type { MemoryFolders } from "./agent/memory-folder.js";
-import type { MemoryPayload } from "./asks/memory.js";
+import { CHANGED_AGAIN, type MemoryPayload } from "./asks/memory.js";
 import { compareHome, type MemoryAction } from "./memory-compare.js";
 import { frontMatter, indexLine, withGlobalBlock } from "./memory-index.js";
 import type { AskRow, MemoryChangeRow, Store } from "./store.js";
@@ -110,6 +110,14 @@ export class GlobalMemory {
     });
   }
 
+  /** Puts the home Clot's copy of a file asked about back to the text in force, now or after its running turn. */
+  restore(p: MemoryPayload): Promise<void> {
+    // Recorded at once; the folder is written after the step running now, which may be the check that withdrew it.
+    this.d.store.addMemoryRestore(p.file);
+    void this.serial(() => this.restoreHomeNow());
+    return Promise.resolve();
+  }
+
   private openAsks(): AskRow<MemoryPayload>[] {
     return this.d.store.openAsks(this.d.home).filter((ask) => ask.kind === "memory") as AskRow<MemoryPayload>[];
   }
@@ -183,7 +191,7 @@ export class GlobalMemory {
     const open = asked.find((ask) => ask.payload.file === action.file);
     // Still waiting for the answer about this very text: a later, untainted turn does not apply it.
     if (open?.payload.text === action.text) return;
-    if (open) await this.d.asks.withdraw(open.id, "the home Clot changed it again");
+    if (open) await this.d.asks.withdraw(open.id, CHANGED_AGAIN);
     if (outsider || open) {
       // Written in an outsider's turn, or changed again while one was asked: the user is asked about the new text.
       await this.d.asks.open({ file: action.file, text: action.text, ...(action.approved === undefined ? {} : { approved: action.approved }) });

@@ -26,7 +26,14 @@ export const block = (text: string) => `\`\`\`md\n${text.replace(/```/g, "`​``
  * trust it from then on, so it is put to the user first: a yes applies it as any other change,
  * a no puts the home Clot's copy back. Anything else repeats the question.
  */
-export function memoryKind(d: { resolve(payload: MemoryPayload, answer: "yes" | "no"): Promise<{ note: string | null; line: string }> }): AskKind<MemoryPayload> {
+/** The reason given when the home Clot changed the file again: a new question about the new text follows, so the copy stays. */
+export const CHANGED_AGAIN = "the home Clot changed it again";
+
+export function memoryKind(d: {
+  resolve(payload: MemoryPayload, answer: "yes" | "no"): Promise<{ note: string | null; line: string }>;
+  /** Puts the home Clot's copy back to the text in force. */
+  restore(payload: MemoryPayload): Promise<void>;
+}): AskKind<MemoryPayload> {
   return {
     kind: "memory",
     channelName: memoryChannelName,
@@ -49,6 +56,20 @@ export function memoryKind(d: { resolve(payload: MemoryPayload, answer: "yes" | 
       if (!io.setBusy()) return;
       const { note, line } = await d.resolve(ask.payload, answer);
       await io.close(note, line);
+    },
+
+    // An outsider's text never goes in force without a yes: a question that ends any other way puts
+    // the home Clot's copy back, so a later check cannot take it for a change of the user's own.
+    async interrupted(ask, io) {
+      await d.restore(ask.payload);
+      await io.close(
+        `The daemon stopped while carrying out the user's answer about the global memory ${ask.payload.file}. It is not in force, and your copy was put back. Write it again only if the user asks.`,
+        `The daemon stopped while carrying out your answer, so global memory \`${ask.payload.file}\` is not in force and the home Clot's copy was put back.`,
+      );
+    },
+
+    async withdrawn(ask, reason) {
+      if (reason !== CHANGED_AGAIN) await d.restore(ask.payload);
     },
   };
 }

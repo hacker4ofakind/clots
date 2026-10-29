@@ -69,7 +69,7 @@ let n: number;
 
 function build(): void {
   const say = async (clot: string, text: string) => void said.push({ clot, text });
-  const kind = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer) });
+  const kind = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload) });
   asks = new Asks({ store, chat, userId: USER, now: () => 0, kick: () => undefined, say, after: () => () => undefined, kinds: [kind] });
   memory = new GlobalMemory({
     store,
@@ -214,6 +214,26 @@ describe("a global memory written in a turn an outsider's text started", () => {
     await asks.onReply(reply(channel, "after"));
     expect(chat.postsIn(channel).at(-1)).toContain("I couldn't match that reply.");
     expect(questions()).toHaveLength(1);
+  });
+
+  it("is not applied by a later check when a stop caught the answer half-way: the copy is put back", async () => {
+    await tainted(DEPLOY, deployV1);
+    store.moveAsk(questions()[0].id, "open", "busy");
+    await asks.sweep(true);
+    expect(questions()).toEqual([]);
+    await memory.afterHomeTurn({ outsider: false });
+    expect(store.approvedMemories().size).toBe(0);
+    expect(folders.file("home", DEPLOY)).toBeUndefined();
+    expect(notes("home").at(-1)).toContain("It is not in force, and your copy was put back.");
+  });
+
+  it("is not applied by a later check when its channel was removed: the copy is put back", async () => {
+    await tainted(DEPLOY, deployV1);
+    await chat.deleteChannel(questions()[0].channelId);
+    await asks.sweep(false);
+    await memory.afterHomeTurn({ outsider: false });
+    expect(store.approvedMemories().size).toBe(0);
+    expect(folders.file("home", DEPLOY)).toBeUndefined();
   });
 
   it("is still a deletion applied at once", async () => {

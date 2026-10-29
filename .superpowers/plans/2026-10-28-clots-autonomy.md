@@ -218,13 +218,13 @@ These override anything above that they contradict.
   - **What the prompt shows:** the base branch, the files changed and the lines added and removed (from the PR's `changed_files`, `additions`, `deletions`), and `From an outsider's report.` as its first line when the ask's payload is tainted.
   - **Check counts** combine `GET /repos/{repo}/commits/{sha}/check-runs?per_page=100` with `GET /repos/{repo}/commits/{sha}/status`. More than 100 runs shows `100+`.
   - **Timeouts:** every GitHub call has a 15-second timeout, made with `AbortSignal.timeout`. The lookups run before entering the `opening` chain.
-  - **An unclear merge result** (5xx, timeout, network error) is followed by one `GET` of the PR. If it shows `merged: true`, report `Merged`; otherwise close with the note `GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`
-  - **Interrupted:** the merge kind's `interrupted` reads the PR and reports `Merged`, or not merged.
+  - **An unclear merge result** (5xx, timeout, network error) is followed by one `GET` of the PR. If it shows `merged: true`, report `Merged`; if it shows not merged, close with the note `GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`; if the PR cannot be read either, say the outcome is not known and to check it on GitHub.
+  - **Interrupted:** the merge kind's `interrupted` reads the PR and reports `Merged`, not merged, or not known when it cannot be read.
   - **A `synchronize` whose head sha equals the ask's `headSha`** (a replayed delivery) does not withdraw.
   - **Other text in a merge ask** goes to the main session as feedback, through the shared close.
   - **The main prompt:** call `merge_pull_request` only for a PR whose worker is idle with its report in, and not again for every push while it works.
   - **Shared helper:** `github-api.ts` has one request helper that sets the token, accept and API-version headers, and never puts the token in an error. `githubCommentSender` moves onto it.
-- **The calendar removal snapshot** comes from the `check` call made before `remove`, and is stored before `remove` is called. A removal whose answer is lost still leaves an undo. `&calendar undo` runs one at a time per Clot, and marks the row as being restored before `create`, so two quick undos restore once.
+- **The calendar removal snapshot** comes from the `check` call made before `remove`, and is stored before `remove` is called. A removal (or change) whose answer is lost still leaves an undo, since the script may have acted. Before creating a removed event again, `&calendar undo` checks its old id: if it is still there, the row is dropped and nothing is created (`Nothing to put back: … is still in the calendar.`). `&calendar undo` runs one at a time per Clot, and marks the row as being restored before `create`, so two quick undos restore once.
 - **`clots-waiting` robustness:**
   - **Storing the message:** store the message id right after posting; the pin is best-effort. At every `init()`, and after each change until a check succeeds, `isPinned` (a fifth adapter method) is asked and the message pinned if it is not, so a pin that failed before the bot had Pin Messages is made later.
   - **When to post a new message:** only when Discord says the message or the channel is unknown (codes 10008 or 10003). Any other error is retried at 5, 30 and 120 seconds, and the stored "last text" is updated only after an edit succeeds.
@@ -235,6 +235,7 @@ These override anything above that they contradict.
   - `onTurnEnd(clot, { outsider })` passes the finished turn's flag to `GlobalMemory.afterHomeTurn`.
   - When it is true, a new or changed `global-clot-` file opens a `memory` ask (a fifth kind, channel `<clot>-memory`) showing the text. A yes applies it as an untainted change would; a no puts the home Clot's copy back, as a declined question did before.
   - A deletion still applies at once.
+  - The ask ending without a yes puts the home copy back: a no, a withdrawal (except when the home Clot changed the file again, which asks about the new text), and a stop part-way (the kind's `interrupted`). So a later untainted check cannot apply the outsider's text. `AskKind` has a `withdrawn(ask, reason)` hook for this.
   - Only this path keeps the old question's behaviour: port it into `asks/memory.ts` and drop the rest of the question flow.
 - **The calendar under the axes:**
   - **One `calendar_changes` log** replaces `calendar_removals`. Columns: `id`, `clot`, `account`, `op` (`create` | `update` | `remove`), `uid`, `before` (the event's JSON, or null for a create), `after` (the JSON, or null for a remove), `by_clot` (1), `outsider`, `at`, `restoring`.

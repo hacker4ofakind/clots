@@ -186,6 +186,14 @@ describe("merge_pull_request", () => {
     expect(said[0]).toContain("(the pull request was closed)");
   });
 
+  it("says the outcome is not known when the merge answer is unclear and the pull request cannot be read", async () => {
+    answers["PUT /repos/octo/widgets/pulls/7/merge"] = { status: 502, body: {} };
+    await ask();
+    answers["GET /repos/octo/widgets/pulls/7"] = { status: 500, body: {} };
+    await asks.onReply(reply(merges()[0].channelId, "yes"));
+    expect(said).toEqual(["Whether octo/widgets#7 was merged is not known; check it on GitHub."]);
+  });
+
   it("tells, after a stop in the middle, whether it was merged", async () => {
     await ask();
     store.moveAsk(merges()[0].id, "open", "busy");

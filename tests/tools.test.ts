@@ -504,13 +504,24 @@ describe("calendar_list", () => {
       await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" });
       calls = [];
 
+      scriptAnswers.check = { ok: false, reason: "there is no event with that ID", reached: true };
       scriptAnswers.create = { ok: true, event: { ...scriptEvent, uid: "new@google.com" } };
       expect(await undo()).toBe('Put back: "Demo with ACME", Fri 16 Oct 2026, 14:00–15:00 (Europe/Zurich) [id: new@google.com].\n(It is a new copy; links to the old event will not find it.)');
-      expect(calls[0].req).toEqual({ action: "create", title: "Demo with ACME", start: scriptEvent.start, end: scriptEvent.end, allDay: false, description: "", location: "" });
+      expect(calls[1].req).toEqual({ action: "create", title: "Demo with ACME", start: scriptEvent.start, end: scriptEvent.end, allDay: false, description: "", location: "" });
 
       expect(await undo()).toContain("Removed:");
-      expect(calls[1].req).toEqual({ action: "remove", uid: "demo@google.com" });
+      expect(calls[2].req).toEqual({ action: "remove", uid: "demo@google.com" });
       expect(await undo()).toBe("Nothing to put back.");
+    });
+
+    it("makes no second copy when a removal whose answer was lost did not happen", async () => {
+      scriptAnswers.check = { ok: true, event: scriptEvent };
+      scriptAnswers.remove = { ok: false, reason: "the calendar script could not be reached (timeout)", reached: false };
+      await allCalendarTools("chat").calendarRemove!({ uid: "demo@google.com" });
+      calls = [];
+      expect(await undo()).toContain("Nothing to put back: \"Demo with ACME\"");
+      expect(calls.map((c) => c.req.action)).toEqual(["check"]);
+      expect(store.latestCalendarChange("graphite")).toBeUndefined();
     });
 
     it("writes back what an update replaced", async () => {

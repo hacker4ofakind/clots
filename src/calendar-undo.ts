@@ -39,6 +39,16 @@ export class CalendarUndo {
       answer = (event) => `Put back: ${describe(event)}.`;
     } else {
       const b = before!;
+      // A removal whose answer was lost may not have happened: an event still there is not made twice.
+      const still = await this.d.call(change.account, { action: "check", uid: change.uid });
+      if (!still.ok && !still.reached) {
+        store.releaseCalendarChange(change.id);
+        return `Not undone just now: ${still.reason}. Nothing was changed; send the command again.`;
+      }
+      if (still.ok) {
+        store.deleteCalendarChange(change.id);
+        return `Nothing to put back: ${describe(still.event)} is still in the calendar.`;
+      }
       done = await this.d.call(change.account, { action: "create", title: b.title, start: b.start, end: b.end, allDay: b.allDay, description: b.description, location: b.location });
       answer = (event) => `Put back: ${describe(event)}.\n(It is a new copy; links to the old event will not find it.)`;
     }

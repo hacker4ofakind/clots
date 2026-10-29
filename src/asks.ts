@@ -47,6 +47,8 @@ export interface AskKind<P> {
   interrupted?(ask: AskRow<P>, io: AskIo<P>): Promise<void>;
   /** Hourly, at startup and before an answer is carried out: a reason withdraws it. */
   stale?(ask: AskRow<P>, now: number): string | undefined;
+  /** After it was withdrawn, with the reason. */
+  withdrawn?(ask: AskRow<P>, reason: string): Promise<void>;
   /** When its deadline passes. */
   onDeadline?(ask: AskRow<P>, io: AskIo<P>): Promise<void>;
 }
@@ -178,7 +180,9 @@ export class Asks {
   async withdraw(id: number, reason: string): Promise<boolean> {
     const ask = this.d.store.askById(id);
     if (!ask || ask.state !== "open") return false;
-    return this.finish(ask, `Withdrawn: ${ask.summary} (${reason}). Ask again if it still makes sense.`, `Withdrawn: ${ask.summary} (${reason})`, { onlyOpen: true });
+    if (!(await this.finish(ask, `Withdrawn: ${ask.summary} (${reason}). Ask again if it still makes sense.`, `Withdrawn: ${ask.summary} (${reason})`, { onlyOpen: true }))) return false;
+    await this.kinds.get(ask.kind)?.withdrawn?.(ask, reason);
+    return true;
   }
 
   /** Withdraws every open ask of a kind whose payload matches. */
