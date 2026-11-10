@@ -92,6 +92,10 @@ no way to tell one Clot's share of it.
 - **Whether a worker may start** is decided by the daemon from the turn that asked
   for it, as its urgent flag already is. The model cannot mark a worker as
   allowed.
+- **Known limit, accepted by the user:** an outsider's event that triage marks
+  urgent runs under the gate and may start a worker there, like anyone's. A
+  stranger who writes "production down" can spend usage the gate protects; that is
+  the price of hearing real emergencies from strangers at once.
 - **Order among what runs** stays arrival order. A message from the user that
   arrives after a waiting event runs first, since the event is waiting.
 - **When the gate lifts** the daemon wakes up at the expected time, and also
