@@ -121,11 +121,17 @@ utilization, each with its reset time:
 - **On demand.** The SDK's experimental usage call
   (`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`, with
   `skipBehaviors`) returns both windows. The meter makes it in a short-lived
-  process in the home Clot's container, or the first Clot's when there is no home
-  Clot, without sending a prompt. It does so during a lead-in window when its
-  five-hour reading is older than five minutes, and for `&spend`.
-- **Units.** Rate-limit events give a fraction and the usage call a percentage;
-  the meter keeps a percentage.
+  process in the account's container (section 6, "Where and how"), without
+  sending a prompt. It does so during a lead-in window when its five-hour reading
+  is older than five minutes, and for `&spend`. After a failed call it waits
+  longer before the next (5, 10, 20, up to 60 minutes), and a call that times out
+  has its process stopped inside the container.
+- **Units.** The meter keeps a percentage and a reset time in milliseconds,
+  whatever unit each source gives. An event or answer with no utilization or no
+  reset time leaves the reading as it was.
+- **Kept across restarts.** The readings are stored, so a restart during a held
+  lead-in does not release what waits. At startup the gate is decided from the
+  stored reading before any Clot drains its queue.
 - **No reading.** When the meter has no current five-hour reading (the call
   failed, the API changed, the account is not a subscription), gate 3 is off.
   Gates 1 and 2 never need a reading.
@@ -137,11 +143,16 @@ lifts, a Clot's gated events are taken together, at the place of the first of
 them in the queue:
 
 - **One event** runs as an ordinary investigation.
-- **Two or more** become one digest turn. Its prompt lists each event in its own
+- **Two or more** become digest turns of at most 10 events each, in arrival
+  order, one after the other. A digest's prompt lists each event in its own
   untrusted wrapper, as an investigation's prompt does, with its arrival time in
-  the user's time zone, its ID and its one-line triage message. The Clot is told
-  they waited because usage was tight, and to deal with each: nothing to do, a
-  reply, a choice, or work.
+  the user's time zone, its ID and its one-line triage message, and its body cut
+  to 1,500 characters. The Clot is told they waited because usage was tight, and
+  to deal with each: nothing to do, a reply, a choice, or work.
+- **Tools that name an event** (`send_from_template`, `email_send`) take the
+  event's ID in a digest turn and refuse an event that is not in it.
+- **A digest that fails** says which events it held, so the user can ask about
+  them; they are not lost silently.
 - **Outsiders.** A digest that holds an outsider's event is an outsider's turn:
   rulebook edits in it become asks (parent section 7).
 - **Standing rules.** The rules that match each event are listed under that event,
@@ -152,7 +163,11 @@ them in the queue:
   gate. A worker started from a digest is not urgent, and the gate has lifted, so
   it starts in the worker queue's order.
 - **Usage limit.** A digest turn cut off by the limit is picked up again after
-  the reset with the same events, as an investigation is.
+  the reset with the same events, as an investigation is: told to carry on, not
+  sent the events again.
+- **Everything that looks for the next pending row** (the drain, a message fed
+  into a running turn, the continuation after a usage-limit reset) skips the
+  rows a gate holds back. A waiting event never blocks the user's own work.
 - **Restart.** Gated events are pending rows in the store, marked as gated. At
   startup the gate is asked again; if it no longer holds, they are delivered as a
   digest.
@@ -178,7 +193,9 @@ Every model call the daemon makes is logged with the SDK's cost estimate in USD:
 - A session reports a running total (`total_cost_usd`) that carries over when it
   is resumed. A turn's cost is the increase in that total since the session's
   last logged total. A total lower than the last one (a session whose saved total
-  was lost) is taken as the turn's cost in full.
+  was lost) is taken as the turn's cost in full. Claude Code saves a session's
+  total only when its process ends normally, so a turn that was stopped can go
+  uncounted: the log is a floor, never more than was spent.
 - A one-off call (triage, the router, the routing call, the sweep, re-grounding)
   is a fresh session, so its total is its cost.
 - Each line is stored with its time, so the log can be read for any week.
@@ -202,7 +219,8 @@ Answered at once by the daemon, during a turn too, like `&rules`. It shows:
 
 The first time in a week that a Clot's total passes `spend.weeklyWarnUsd`, the
 daemon posts one line in its live channel: what it has spent, the figure, and
-that `&spend` shows where. It is stored, so a restart never repeats it. The
+that `&spend` shows where. It is claimed before it is posted, so two bookings at
+once post it once, and stored, so a restart never repeats it. The
 warning stops nothing. Without `weeklyWarnUsd` there is no warning.
 
 ## 6. The sweep
@@ -221,20 +239,30 @@ client cannot reach. Sources the daemon already hears from are not swept.
 
 ### Where and how
 
-- A fresh session in the home Clot's container, or the first Clot's container
-  when there is no home Clot, on Opus 5.5 at low effort, started in `/workspace`.
-- Under the lock, with no daemon tools. To the lock it adds the connector tools
-  that declare themselves read-only: the daemon reads the session's MCP servers
-  with `mcpServerStatus()` when it starts, and the sweep's hook approves a
-  connector tool only when its annotations say read-only. Every other connector
-  tool is refused, and so is every tool of a server not on that list.
-- A time limit of 15 minutes.
+- **The account's container:** the home Clot's when it has its own claude.ai
+  login, else the first Clot's that has one. A token from `claude setup-token`
+  brings no connectors. With no such container there is no sweep, and the daemon
+  logs that once.
+- A fresh session there, on Opus 5.5 at low effort, started in `/workspace`, with
+  no daemon tools and without the Clots' GitHub token in its environment.
+- **Only connector reads.** The sweep may call a connector tool and nothing else:
+  no shell, no files, no web, no subagents, no skills, no memory. The daemon reads
+  the session's MCP servers with `mcpServerStatus()` when it starts, waiting until
+  none is still connecting, and allows a tool only when its server is one of the
+  claude.ai login's connectors (not a server from a project's settings) and the
+  tool declares itself read-only and not destructive.
+- No allowed tool at all (no connector, or none connected) skips the run and
+  counts as a failure: the record stays as it was.
+- At most 30 model turns and 15 minutes. A sweep that runs out of time is
+  interrupted, and its process stopped inside the container.
 - When the session ends, its transcript is deleted.
 
 ### What it is given
 
-- **The record** it returned last time: its own notes of what it saw, at most
-  8,000 characters.
+- **The record** it returned last time, in a block marked as data: its own notes
+  of what it saw. It is asked to keep the record under 6,000 characters; the
+  daemon cuts it at 8,000. The record says what to report; it is not what keeps a
+  finding from being reported twice (the event ID does that, below).
 - **The Clots:** each name with its `about` line, and the home Clot as "anything
   that belongs to no project", as the routing call is.
 - **What not to sweep:** the sources the daemon already receives (each configured
@@ -250,8 +278,14 @@ client cannot reach. Sources the daemon already hears from are not swept.
 A fixed output schema:
 
 - `findings`: a list, each with `connector`, `item` (the connector's own ID for
-  the thing), `title`, `body`, and optionally `url` and `actor`;
+  the thing), `version` (what the connector itself gives for the thing's state,
+  copied exactly: a modified time, a revision, the latest comment's ID), `title`,
+  `body`, and optionally `url` and `actor`;
 - `record`: the new record.
+
+The daemon keeps at most 25 findings per sweep, drops one whose `connector` is
+not an allowed server's name, and cuts `title` to 200 characters, `body` to the
+event body limit, and `actor` to 100. A `url` that is not `https` is dropped.
 
 The first sweep, with no record, reports nothing: its findings are discarded and
 its record stored, as a watch recipe's first call is.
@@ -262,7 +296,7 @@ Each finding becomes an event:
 
 | Field | Value |
 |---|---|
-| `id` | `sweep:<connector>:<item>:<hash of title and body>` |
+| `id` | `sweep:<connector>:<item>:<hash of version>`: the same state of the same thing, however the sweep words it, is one event |
 | `source`, `account` | `sweep` |
 | `kind` | `finding` |
 | `place` | the connector's name, as `mcpServerStatus()` gives it |
@@ -271,6 +305,7 @@ Each finding becomes an event:
 | `ref` | the item |
 | `subject` | `sweep:<connector>:<item>` |
 | `automated` | false: the sweep has already gathered what belongs together |
+| `outsider` | true: what a connector returns can be anyone's text, as for watch recipes |
 
 The events are stored and the record saved in one transaction, so a restart never
 keeps a record without its events. From there each event goes through the
@@ -286,8 +321,7 @@ A sweep that fails, times out, or returns output that does not fit the schema
 changes nothing: the record stays as it was, so the next sweep compares against
 the same state. After three failures in a row the user is told once, in the home
 Clot's channel or in every Clot's channel without one, and told again when it
-works. A container with no claude.ai login has no connectors; the sweep then
-finds nothing, and the daemon logs that once.
+works. The count of failures is stored, so a restart does not reset it.
 
 ## 7. Re-grounding
 
@@ -313,7 +347,9 @@ it does now.
    - **Changes found:** the daemon posts them in the new channel under "Since the
      recap was written:", one line each, and stores them as a note for the new
      session. A note starts no turn; it is placed in front of the first turn,
-     whatever starts it.
+     whatever starts it. The lines were written from what strangers may have
+     written (issues, emails), so the note wraps them as untrusted data, and keeps
+     at most 20 lines of 300 characters.
    - **Nothing changed:** nothing is posted, and no note.
    - **Failed, timed out or hit the usage limit:** the daemon posts one line saying
      the recap could not be checked, and leaves the same as a note. A usage limit
@@ -327,12 +363,14 @@ starts from its recap.
 - Fresh, in that Clot's container, started where its main session starts, on Opus
   5.5 at low effort.
 - Under the lock, with the read-only connector tools as for the sweep, and no
-  daemon tools.
-- Given the recap and the daemon's worker lines. Told to check the current state
+  daemon tools. Unlike a main turn it may not write its memory folder, and has no
+  subagents or skills: it only reads and looks things up.
+- Given the recap, in a block marked as data, and the daemon's worker lines. Told to check the current state
   of everything the recap names as open or in progress (pull requests, issues,
   emails, workers, asks) and to return only what differs from the recap.
 - A fixed output schema: `changes`, a list of one-line strings.
-- A time limit of 10 minutes; the transcript is deleted when it ends.
+- At most 30 model turns and 10 minutes, stopped inside the container as the
+  sweep is; the transcript is deleted when it ends.
 - Its cost is booked to the Clot as "re-grounding".
 
 ## 8. Configuration
@@ -398,8 +436,8 @@ starts from its recap.
   may start under a gate, as their urgent flag is kept.
 - **A digest or a re-grounding hits the usage limit:** sections 4 and 7.
 - **The cost of a turn cannot be read** (a turn that fails before its result):
-  nothing is logged for it; the next turn's increase covers what the session
-  spent.
+  nothing is logged for it. The next turn's increase covers it when the session
+  saved its total; otherwise it goes uncounted (section 5: the log is a floor).
 - **The weekly warning cannot be posted:** it is tried again after the Clot's next
   turn, and stored as sent only once posted.
 
@@ -480,5 +518,9 @@ In the development environment:
   result that fits it.
 - Deleting a finished session's transcript in the container leaves nothing that
   breaks later sessions.
+- A connector tool can be told from a project's own MCP server by the server's
+  scope in `mcpServerStatus()`, and the hook's tool names can be matched to it.
+- A sweep's `version` can be filled from what the claude.ai connectors return
+  (a modified time, a revision, a comment's ID) for the services the login has.
 
 If any of these fails, stop and bring the finding to the user before continuing.

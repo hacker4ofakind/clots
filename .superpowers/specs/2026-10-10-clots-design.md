@@ -846,7 +846,8 @@ passes a configured figure.
   give the event. The Clot adds one with its undo (section 5); the user sets up
   the webhook and puts its secret in `.env`.
 - **Sweep**: every 90 minutes the daemon starts one fresh Opus 5.5 low session for
-  all Clots, in the home Clot's container (or the first Clot's), with the record
+  all Clots, in the home Clot's container (or the first Clot's) that has its own
+  claude.ai login, with the record
   it returned last time, each Clot's one-line description, and the sources the
   daemon already hears from, which it skips. Under the lock, it may call the
   connector tools that declare themselves read-only. It returns its findings and
