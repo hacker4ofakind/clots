@@ -2,7 +2,8 @@
 
 Date: 2026-11-10
 Status: approved in brainstorming; not yet built.
-Parent design: `.superpowers/specs/2026-10-10-clots-design.md`. This document
+Parent design: `.superpowers/specs/2026-10-10-clots-design.md`. Plan:
+`.superpowers/plans/2026-11-10-clots-stage-2d-gates-sweep.md`. This document
 specifies the last of the parts of stage 2 (section 16 there). It builds on stages
 2a, 2b and 2c, on global memory, on the main session and workers, and on autonomy.
 
