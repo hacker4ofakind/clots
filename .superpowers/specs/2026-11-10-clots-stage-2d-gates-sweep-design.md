@@ -1,7 +1,7 @@
 # Clots stage 2d: gates, digests, spend log, sweep and re-grounding
 
 Date: 2026-11-10
-Status: built on branch `stage-2d`; code and unit tests done. Live checks that need a container logged in with `claude /login` (the usage call, the connectors, the sweep) are still to be run.
+Status: built on branch `stage-2d`; code and unit tests done. Live checks passed on 2026-11-19 (see the plan's Implementation Notes), except that Claude Docs gives the sweep no way to find a changed doc, so a finding from the sweep has not been seen live.
 Parent design: `.superpowers/specs/2026-10-10-clots-design.md`. Plan:
 `.superpowers/plans/2026-11-10-clots-stage-2d-gates-sweep.md`. This document
 specifies the last of the parts of stage 2 (section 16 there). It builds on stages

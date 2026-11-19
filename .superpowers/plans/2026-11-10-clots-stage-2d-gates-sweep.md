@@ -258,7 +258,7 @@ If any assumption fails, stop and bring the finding to the user before continuin
 
 **Done when:** every line is in Implementation Notes and none failed.
 
-- [ ] Task 1 complete (passed where it could run; the login-dependent probes are listed in Implementation Notes)
+- [x] Task 1 complete (one probe not run: a resume after an interrupted turn)
 
 ### Task 2: Config, gate and usage meter
 **Files:** `src/config.ts`, `src/gates.ts`, `src/usage-meter.ts`, `src/agent/usage.ts`, `src/agent/runner.ts` (`onRateLimit`, `readUsage`, `totalCostUsd`), tests.
@@ -456,7 +456,7 @@ Config gives `config.gates: GateConfig`, `config.sweep: { enabled: boolean; ever
 
 **Done when:** `npm test` and `npm run typecheck` pass, the checklist results are recorded, and the commit exists.
 
-- [ ] Task 8 complete
+- [x] Task 8 complete
 
 ## Manual Verification Checklist
 
@@ -616,8 +616,14 @@ To force a sweep, use either:
 **Task 1 (probes, `scripts/spike-2d.ts`).** Run with the setup-token in `clot-encryptify` (its own login had expired: "OAuth session expired and could not be refreshed"; `clot-home` has none).
 - Passed: a resumed session's `total_cost_usd` carries on (0.223, 0.265, 0.272, the last after a one-off session ran between); `outputFormat` with a Read tool ends with `structured_output`; deleting a one-off's transcript leaves the main session resumable; rate-limit events give utilization as a **fraction** and `resetsAt` in **seconds**, and every event carries both windows in `unifiedWindows` (not in the SDK types).
 - With the token the usage call answers `rate_limits: null`, `subscription_type: null`: it needs `claude /login`.
-- **Not run, needs `docker exec -it clot-home claude /login`:** the usage call with a login; `mcpServerStatus()` for connectors; a resume after an interrupted turn; what the connectors give as a finding's `version`. The code assumes a claude.ai connector has `scope` or `source` `"claudeai"` and that a hook sees `mcp__<server>__<tool>` with every character outside `[A-Za-z0-9_-]` replaced by `_`. MV-9 checks both; if either is wrong the sweep fails with "no connector available" or every connector call is refused.
+- With `clot-home` logged in: the usage call answers percent and an ISO reset (`resets_at` with microseconds; `Date.parse` takes it); `mcpServerStatus()` lists the connectors with `scope` and `source` both `"claudeai"`, named `claude.ai <Name>` (Claude Docs, PostHog, Firecrawl here), the list is empty until the connectors have been fetched (the runner waits for it), and a tool's `annotations` carry `readOnly`, `destructive` and `openWorld`. A hook accepted `mcp__claude_ai_Claude_Docs__read`, so the naming rule holds. Not run: a resume after an interrupted turn.
+- Claude Docs gives the sweep no way to list docs (`read` and `query` need an ID) and no revision, so a finding's `version` was the content node's ID. The sweep records a baseline and cannot discover a new doc by itself; findings need a connector that lists what changed.
 - Live, with the token: `runOneOff` for re-grounding returned a correct change from `gh` and deleted its transcript; a sweep returned "no connector available".
+
+**Live checks (2026-11-19, daemon run by hand, scarce window set around now; a Funnel that would not start was replaced by signed webhooks posted to the local intake).**
+- Passed: MV-1 (two notices ending "(waiting until 12:09)", no investigation in the window, one digest turn at 12:13 with a `digest` row and two `digested` rows, the reply handling both issues); MV-2 (a message answered at once, the tight line in its transcript, the events still waiting); MV-3 (an urgent issue investigated at once, notice without a suffix); MV-4 (a worker asked for in chat started in the window, Haiku low); MV-6 (a held lead-in at `leadInPercent: 1`: `&spend` said "Gate: the five-hour window is at 47%", the notice ended "(waiting until 12:54)", a restart without windows delivered it); MV-7 (the layout, with main session, re-grounding, triage, worker and sweep lines); MV-8 (one warning, none after restarts); MV-9 baseline (the daemon's sweep recorded a record, no events, no transcript left); MV-10 ("sweep ... skipped" in the log, no start time kept); MV-11 (a closed PR and two other differences posted under "Since the recap was written:", the note in front of the digest turn; `&close` in home with nothing changed posted nothing); MV-12; MV-13 (`&rules`, a plain issue investigated at once after the gates were taken away).
+- Not run: MV-5 (a worker from an event's turn waits; covered by unit tests), the sweep finding a changed doc (see above), the calendar step of MV-13.
+- `clot-encryptify`'s login had expired and made every turn fail ("Failed to authenticate"); its credentials file was renamed to `.credentials.json.expired` so that it signs in with the token again. A container with a dead login is worse than none.
 
 **Deviations.**
 - `SdkRunner` (not `ClaudeRunner`); `readUsage` and `runOneOff` are on it only. `OneOffRequest` has `kind` and a `prompt` that may be a function of the connector names; the result has `connectors`.
@@ -626,6 +632,7 @@ To force a sweep, use either:
 - `workers.gate_ok` defaults to 1 for rows an earlier version made.
 - `GateTicker.recheck()` (also called by `meter.onChange`); `planDrain(rows, holds)` is in `src/digest.ts` and `nextRunnable` is a Clot method over it, not a store helper. A digest's chunks run one after the other inside the drain.
 - `SpendLog.report` formats the week start as "Mon 9 Nov 00:00" (no zero padding). `structuredQuery` (`src/structured-query.ts`) is the one place triage, the router and the routing call run their `query()`.
+- The runner waits for a login's connectors to appear (an empty status counts as unsettled) when the container uses its own login; and open-world connector tools (a scrape, a search) are left out of the sweep's and re-grounding's allow-list, since a stranger's text could make one carry data out in a URL.
 - Time helpers live in `src/time.ts` (`weekStart`, `clockLabel`, `localDayAt` added). Zod is 4.6.7.
 
 **For the next planner.** Run the shared setup in the checklist with a real login before trusting the sweep. The sweep's first run is the ticker's first minute after startup, not at once. Sessions started before this build keep the old system prompt until `&close`.
