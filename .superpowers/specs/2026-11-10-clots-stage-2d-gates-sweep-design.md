@@ -259,7 +259,7 @@ client cannot reach. Sources the daemon already hears from are not swept.
   the session's MCP servers with `mcpServerStatus()` when it starts, waiting until
   none is still connecting, and allows a tool only when its server is one of the
   claude.ai login's connectors (not a server from a project's settings) and the
-  tool declares itself read-only and not destructive.
+  tool declares itself read-only, not destructive and not open-world (a tool that reaches arbitrary addresses could carry data out in a URL).
 - No allowed tool at all (no connector, or none connected) skips the run and
   counts as a failure: the record stays as it was.
 - At most 30 model turns and 15 minutes. A sweep that runs out of time is
