@@ -250,6 +250,8 @@ const REGROUND_REFUSED = new Set(["Task", "Agent", "Skill", "Edit", "Write"]);
 /** Re-grounding is the lock without memory writes, subagents and skills, plus the read-only connector tools. It only reads and looks things up. */
 export function regroundDecision(toolName: string, input: Record<string, unknown>, testCommand?: string, connectorTools?: ConnectorTools): Verdict {
   if (toolName === ANSWER_TOOL || connectorTools?.has(toolName)) return OK;
+  // No MCP tool but the validated connector ones: a server a project or the user configured may be named like the daemon's (mcp__clots__).
+  if (toolName.startsWith("mcp__")) return no(`Refused: ${toolName} is not available while checking a recap.`);
   if (REGROUND_REFUSED.has(toolName)) return no(`Refused: ${toolName} is not available while checking a recap. This session only reads and looks things up.`);
   return lockDecision(toolName, input, testCommand, connectorTools);
 }

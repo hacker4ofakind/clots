@@ -116,6 +116,21 @@ describe("refresh", () => {
     expect(meter.failing).toBe(true);
   });
 
+  it("keeps a reading a rate-limit event gave while a slow call was out", async () => {
+    let release!: (s: UsageSnapshot) => void;
+    const { meter, clock } = make(() => new Promise<UsageSnapshot | undefined>((r) => (release = r)));
+    meter.observe({ status: "allowed", type: "five_hour", utilization: 20, resetsAt: (clock.now + 3_600_000) / 1000 });
+    clock.now += 10 * MIN;
+    const pending = meter.refresh(5 * MIN);
+    clock.now += MIN;
+    meter.observe({ status: "allowed", type: "five_hour", utilization: 80, resetsAt: (clock.now + 3_600_000) / 1000 });
+    clock.now += MIN;
+    release({ fiveHour: { percent: 30, resetsAt: clock.now + 3_600_000, readAt: clock.now }, sevenDay: { percent: 5, resetsAt: clock.now + 86_400_000, readAt: clock.now } });
+    await pending;
+    expect(meter.fiveHour()?.percent).toBe(80);
+    expect(meter.sevenDay()?.percent).toBe(5);
+  });
+
   it("leaves a window alone when the answer has nothing for it", async () => {
     const { meter, clock } = make(async () => ({ sevenDay: { percent: 5, resetsAt: clock.now + 86_400_000, readAt: clock.now } }));
     meter.observe({ status: "allowed", type: "five_hour", utilization: 44, resetsAt: (clock.now + 3_600_000) / 1000 });

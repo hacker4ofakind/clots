@@ -269,6 +269,9 @@ describe("the lock with connector tools", () => {
     expect(regroundDecision("Write", { file_path: "/home/clot/.claude/projects/-workspace/memory/note.md" }, undefined, connectors).ok).toBe(false);
     expect(regroundDecision("Edit", { file_path: "/home/clot/.claude/projects/-workspace/memory/note.md" }, undefined, connectors).ok).toBe(false);
     for (const name of ["Task", "Agent", "Skill"]) expect(regroundDecision(name, {}, undefined, connectors).ok).toBe(false);
+    // An MCP server named like the daemon's must not get through the lock's own prefix rule.
+    expect(regroundDecision("mcp__clots__send_from_template", {}, undefined, connectors).ok).toBe(false);
+    expect(regroundDecision("mcp__other__anything", {}).ok).toBe(false);
     expect(regroundDecision("Bash", { command: "rm -rf x" }, undefined, connectors).ok).toBe(false);
   });
 });

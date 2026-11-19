@@ -127,6 +127,21 @@ describe("the weekly warning", () => {
     expect(posted).toHaveLength(1);
   });
 
+  it("takes over a claim whose post never finished after five minutes, and never one that was posted", async () => {
+    const log = make({ weeklyWarnUsd: 1 });
+    const key = `spend-warned:graphite:${log.weekStart(clock)}`;
+    store.setState(key, `posting:${clock}`);
+    await log.book({ clot: "graphite", who: "main", sessionId: "a", total: 2 });
+    expect(posted).toEqual([]);
+    clock += 6 * MIN;
+    await log.book({ clot: "graphite", who: "main", sessionId: "a", total: 3 });
+    expect(posted).toHaveLength(1);
+    expect(store.getState(key)).toBe("posted");
+    clock += 60 * MIN;
+    await log.book({ clot: "graphite", who: "main", sessionId: "a", total: 4 });
+    expect(posted).toHaveLength(1);
+  });
+
   it("is off without a figure, and never for the daemon or the sweep", async () => {
     await make({ weeklyWarnUsd: undefined }).book({ clot: "graphite", who: "main", sessionId: "a", total: 500 });
     const log = make({ weeklyWarnUsd: 1 });

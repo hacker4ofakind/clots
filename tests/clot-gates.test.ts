@@ -261,6 +261,23 @@ describe("a gate holding", () => {
     expect(contexts[1].digest?.map((e) => e.id)).toEqual(["1", "2"]);
   });
 
+  it("picks a cut-off digest up again after the reset even when a message is waiting", async () => {
+    gate = SCARCE;
+    await clot.queueEvent(event("1"), "One.");
+    await clot.queueEvent(event("2"), "Two.");
+    gate = FREE;
+    runner.script = [{ limit: { resetsAt: Math.floor(now.getTime() / 1000) + 3600 } }];
+    clot.kick();
+    await vi.waitFor(() => expect(timers.length).toBeGreaterThan(0));
+    store.enqueue({ id: "m-waiting", clot: "graphite", channelId: channel(), text: "a question", receivedAt: 1 });
+    now = new Date(now.getTime() + 3_700_000);
+    timers[0].fn();
+    await vi.waitFor(() => expect(runner.calls).toHaveLength(3));
+    expect(runner.calls[1].prompt).toContain("a question");
+    expect(runner.calls[2].prompt).toContain(CONTINUE_TEXT);
+    expect(contexts[2].digest?.map((e) => e.id)).toEqual(["1", "2"]);
+  });
+
   it("feeds a message into a running chat turn while an event waits", async () => {
     gate = SCARCE;
     runner.script = [{ hold: true }];

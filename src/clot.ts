@@ -382,13 +382,14 @@ export class Clot {
   }
 
   /**
-   * After a reset: if a turn was cut off and nothing is waiting, queue a prompt that tells the session to carry on.
+   * After a reset: if a turn was cut off and nothing is waiting (a digest is queued either way), queue a prompt that tells the session to carry on.
    * It is queued as what the cut-off turn was, so an investigation is picked up again under the lock.
    */
   private queueContinuation(resetsAt: number): void {
     const { store, name } = this.d;
     const session = store.activeSession(name)!;
-    if (!session.interrupted || this.nextRunnable()) return;
+    // A cut-off digest is always picked up again: its events are no longer waiting rows, so nothing else would look at them.
+    if (!session.interrupted || (session.interruptedKind !== "digest" && this.nextRunnable())) return;
     store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime(), kind: session.interruptedKind, eventId: session.interruptedEvent, outsider: session.interruptedOutsider });
   }
 

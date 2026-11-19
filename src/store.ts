@@ -1137,6 +1137,11 @@ export class Store {
     });
   }
 
+  /** Replaces a state value only while it is still `from`. Returns whether this call replaced it. */
+  swapState(key: string, from: string, to: string): boolean {
+    return this.db.prepare("UPDATE state SET value = ? WHERE key = ? AND value = ?").run(to, key, from).changes === 1;
+  }
+
   /** Sets a state value only when the key is not set yet. Returns whether this call set it: only that caller carries on. */
   claimState(key: string, value: string): boolean {
     return this.db.prepare("INSERT OR IGNORE INTO state (key, value) VALUES (?, ?)").run(key, value).changes === 1;

@@ -32,6 +32,7 @@ export interface SpendDeps {
 const usd = (amount: number) => `$${amount.toFixed(2)}`;
 const FIVE_MINUTES = 5 * 60_000;
 const REFRESH_CEILING_MS = 15_000;
+const STALE_CLAIM_MS = 5 * 60_000;
 
 /**
  * The spend log: every model call's estimated cost in USD, booked per Clot and per kind of call, with
@@ -64,7 +65,8 @@ export class SpendLog {
     const spent = this.d.store.spendSince(start).filter((row) => row.clot === clot).reduce((sum, row) => sum + row.usd, 0);
     if (spent <= limit) return;
     const key = `spend-warned:${clot}:${start}`;
-    if (!this.d.store.claimState(key, "posting")) return;
+    const claim = `posting:${now}`;
+    if (!this.d.store.claimState(key, claim) && !this.takeOver(key, claim, now)) return;
     try {
       await this.d.post(clot, `${clot} has spent an estimated ${usd(spent)} this week, past the ${usd(limit).replace(/\.00$/, "")} warning. \`&spend\` shows where.`);
       this.d.store.setState(key, "posted");
@@ -72,6 +74,13 @@ export class SpendLog {
       this.d.store.deleteState(key);
       console.error(`[${clot}] posting the spend warning failed; it is tried again after the next turn:`, error);
     }
+  }
+
+  /** A claim whose post never finished (the daemon stopped in between) is taken over once it is five minutes old. A confirmed post stays. */
+  private takeOver(key: string, claim: string, now: number): boolean {
+    const held = this.d.store.getState(key);
+    const since = held?.startsWith("posting:") ? Number(held.slice("posting:".length)) : NaN;
+    return held !== undefined && now - since > STALE_CLAIM_MS && this.d.store.swapState(key, held, claim);
   }
 
   /** The text of `&spend` for one Clot. */

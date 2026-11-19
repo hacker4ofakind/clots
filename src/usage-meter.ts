@@ -66,7 +66,10 @@ export class UsageMeter {
     this.listeners.push(fn);
   }
 
-  private set(window: "fiveHour" | "sevenDay", percent: number, resetsAtMs: number): boolean {
+  /** Stores a reading. With `unlessNewerThan`, one taken after that moment (a rate-limit event while a slow call was out) is kept instead. */
+  private set(window: "fiveHour" | "sevenDay", percent: number, resetsAtMs: number, unlessNewerThan?: number): boolean {
+    const kept = window === "fiveHour" ? this.five : this.seven;
+    if (unlessNewerThan !== undefined && kept !== undefined && kept.readAt > unlessNewerThan) return false;
     const next: Reading = { percent, resetsAt: resetsAtMs, readAt: this.d.now() };
     const previous = window === "fiveHour" ? this.five : this.seven;
     if (window === "fiveHour") this.five = next;
@@ -110,6 +113,7 @@ export class UsageMeter {
     this.lastAttemptAt = now;
     this.inFlight = (async () => {
       try {
+        const startedAt = this.d.now();
         const snapshot = await this.d.read();
         if (snapshot === undefined || (snapshot.fiveHour === undefined && snapshot.sevenDay === undefined)) {
           this.failures += 1;
@@ -117,8 +121,8 @@ export class UsageMeter {
         }
         this.failures = 0;
         let changed = false;
-        if (snapshot.fiveHour && this.set("fiveHour", snapshot.fiveHour.percent, snapshot.fiveHour.resetsAt)) changed = true;
-        if (snapshot.sevenDay && this.set("sevenDay", snapshot.sevenDay.percent, snapshot.sevenDay.resetsAt)) changed = true;
+        if (snapshot.fiveHour && this.set("fiveHour", snapshot.fiveHour.percent, snapshot.fiveHour.resetsAt, startedAt)) changed = true;
+        if (snapshot.sevenDay && this.set("sevenDay", snapshot.sevenDay.percent, snapshot.sevenDay.resetsAt, startedAt)) changed = true;
         if (changed) this.notify();
       } catch (error) {
         console.error("reading the usage failed:", error);
