@@ -276,7 +276,7 @@
 ### Task 7: Rating and the reviewer
 **Files:** `src/composio/rating.ts`, `src/composio/reviewer.ts`, `tests/composio-rating.test.ts`, `tests/composio-reviewer.test.ts`
 **Interfaces:**
-- Produces: `type Audience = "private" | "team" | "public"`; `rateComposioCall(tool: Pick<ToolInfo, "slug" | "toolkit" | "tags">, audience: Audience, outsiderTurn: boolean): { rating: "run" | "review" | "ask"; reason: string }`; `isDestructive(tool): boolean`; `onFixedList(tool): "money" | "people" | undefined`; `interface WriteReviewer { review(i: ReviewInput): Promise<{ verdict: "run" | "ask"; reason: string }> }`; `ReviewInput = { slug: string; description: string; args: Record<string, unknown>; account: string; toolkit: string; audience: Audience; outsiderTurn: boolean }`; `sdkWriteReviewer(onCost: (usd: number) => void): WriteReviewer`.
+- Produces: `type Audience = "private" | "team" | "public"`; `rateComposioCall(tool: Pick<ToolInfo, "slug" | "toolkit" | "tags">, audience: Audience, outsiderTurn: boolean, targetCreatedByClot: boolean | "unknown"): { rating: "run" | "review" | "ask"; reason: string }` (`"unknown"` counts as not created by a Clot; the caller resolves the target ID from the args through the def's per-tool target field, against `composio_writes`); `isDestructive(tool): boolean`; `onFixedList(tool): "money" | "people" | undefined`; `interface WriteReviewer { review(i: ReviewInput): Promise<{ verdict: "run" | "ask"; reason: string }> }`; `ReviewInput = { slug: string; description: string; args: Record<string, unknown>; account: string; toolkit: string; audience: Audience; outsiderTurn: boolean }`; `sdkWriteReviewer(onCost: (usd: number) => void): WriteReviewer`.
 
 **Build:**
 - Rating per spec section 11 and Key Decisions. `reason` strings are user-facing in the ask: "this account is public", "it moves money", "it reaches people outside the workspace", "the reviewer: <reason>".
@@ -284,7 +284,7 @@
 
 **Tests (behaviours):**
 - the table uses the real tag sets recorded in Task 1; `createHint`-only create in a team account → run; read tag on `LINEAR_CREATE_…` → write; any `GRAPHQL`/`PROXY`/`COMPOSIO_*` slug → destructive; `LINEAR_CREATE_WEBHOOK` → ask in private; a Google Calendar write → refused;
-- read tag → run in every audience and turn; Stripe write → ask everywhere; `GMAIL_SEND_EMAIL` → ask in private; private create → run, private create in outsider turn → review; team create → run, team delete → review, team untagged → review, team create in outsider turn → review; public anything-not-read → ask; both tags → destructive;
+- read tag → run in every audience and turn; Stripe write → ask everywhere; `GMAIL_SEND_EMAIL` → ask in private; private create → run, private create in outsider turn → review; team create → run, team delete → review, team untagged → review, team create in outsider turn → review; outsider turn, private or team, delete of something no Clot created (or unknown) → ask, delete of a Clot-created object → review; public anything-not-read → ask; both tags → destructive;
 - slug-word cases that must and must not match (`LINEAR_ARCHIVE_ISSUE` destructive; `NOTION_SHARE_PAGE` people; `LINEAR_LIST_ARCHIVED_ISSUES` with read tag → read);
 - reviewer parsing: valid `run`, valid `ask`, garbage, thrown error → ask;
 - labelled set: `tests/fixtures/composio/reviewer-cases.json` (8–12 writes with the expected verdict) is scored by an opt-in live test (`LIVE=1`), skipped by default, as the triage set is.

@@ -562,7 +562,8 @@ asking, and asks only for what is high on any one.
   report. So a client's email can get a tentative event in the user's calendar
   with no question asked. The exceptions are a rulebook edit in a turn started
   by an outsider's event, which is an ask (section 5), and a Composio write in
-  such a turn, which goes to the write reviewer.
+  such a turn, which goes to the write reviewer, or is an ask when it destroys
+  something no Clot created.
 - **The Clot knows the axes too.** The main prompt carries a short version: do
   without asking whatever is free to undo, seen only by the user, under $5 and
   commits them to nothing; anything else the daemon puts to the user; prepare
@@ -591,8 +592,9 @@ asking, and asks only for what is high on any one.
   - through Composio, every read; and a write in an account whose audience is
     `private`, or `team` when the write is not destructive. A destructive write
     in a team account, and every private or team write in a turn an outsider's
-    text started, goes to the write reviewer, which runs it or makes it an ask.
-    Each write that runs is posted, with `&composio undo` where it has an inverse
+    text started, goes to the write reviewer, which runs it or makes it an ask;
+    in such a turn, a destructive write on something no Clot's own write
+    created asks without the reviewer. Each write that runs is posted, with `&composio undo` where it has an inverse
     (stage 2e specification).
 - **High, an ask:**
   - adding, replacing or removing a standing rule;

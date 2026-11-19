@@ -263,11 +263,15 @@ applies decides:
 2. **Always asks**: the tool is on the fixed list below. It becomes an ask,
    whatever the audience.
 3. **Public account**: an ask.
-4. **Private account**: it runs. In a turn an outsider's text started, it goes to
-   the reviewer.
-5. **Team account**: a write that is not destructive runs; a destructive one goes
-   to the reviewer. In a turn an outsider's text started, every write goes to the
+4. **An outsider's turn, in a private or team account**: a destructive write on
+   something no Clot's own write created is an ask. Every other write goes to the
    reviewer.
+5. **Private account**: it runs.
+6. **Team account**: a write that is not destructive runs; a destructive one goes
+   to the reviewer.
+
+"Something a Clot's own write created" is checked by the daemon, against its log
+of Composio writes, never taken from the model.
 
 Composio tags each tool `readOnlyHint`, `createHint`, `updateHint` or
 `destructiveHint`. A tool is **destructive** when it is tagged
