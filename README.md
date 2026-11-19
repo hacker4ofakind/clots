@@ -2,7 +2,15 @@
 
 Always-on agents built on Claude Code. Design: `.superpowers/specs/2026-10-10-clots-design.md`.
 
-This repository currently implements stage 1 (one Clot, in a container, reachable through Discord) and stage 2a (GitHub events reach the Clot, which investigates them without being able to change anything).
+This repository implements stages 1 and 2:
+
+- **Stage 1**: Clots, each in its own container, reachable through Discord.
+- **Stage 2a**: GitHub events reach the Clot, which investigates them (the pipeline).
+- **Stage 2b**: the rulebook, with standing rules and global memory.
+- **Stage 2c**: more sources: Stripe, email, Google Calendar, Linear, Notion, MCP servers and recipe webhooks.
+- **Stage 2d**: gates, digests, the spend log, the sweep and re-grounding.
+
+The main session runs at medium effort by default, and at low only for a message it answers without taking any action.
 
 ## Requirements
 
@@ -111,8 +119,8 @@ A message that starts with `&` is handled by the daemon and never reaches the mo
 |---|---|
 | `&close` | Closes the session and starts a new one in a new channel, seeded with a recap, as a context rollover does. |
 | `&close nosummary` | Starts a new session from scratch: no recap, action mode. |
-| `&effort low\|medium\|high` | Sets the effort for your next message only. |
-| `&effort low\|medium\|high <message>` | Sends the message at that effort. |
+| `&effort low\|medium` | Sets the effort for your next message only. |
+| `&effort low\|medium <message>` | Sends the message at that effort. |
 | `&rules`, `&rules undo` | Lists the rules in force for this Clot, routing rules included; undoes the latest edit made from chat. |
 | `&memory`, `&memory undo` | Lists the global memories in force; undoes the latest change. |
 | `&calendar undo` | Reverses this Clot's latest calendar change: removes an event it added, puts back what it changed, or creates again one it removed. Sent again, it steps further back. |
