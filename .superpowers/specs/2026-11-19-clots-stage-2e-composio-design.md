@@ -104,7 +104,9 @@ for every toolkit:
 - **`apiKey`**: the `.env` key of the service's key. Absent for the calendar.
 - **`triggers`** (any other toolkit only): a list of Composio trigger slugs, each
   with its `config`. Their events are of kind `trigger`, titled by the trigger's
-  name and carrying the payload as their body.
+  name and carrying the payload as their body. Since the daemon cannot tell who
+  wrote what such a payload carries, these events are marked as from an
+  outsider.
 - `sources.stripe`, `sources.linear`, `sources.notion` and `sources.calendar` no
   longer exist. A configuration that still has one fails to load, naming the key
   and pointing at `sources.composio`.
