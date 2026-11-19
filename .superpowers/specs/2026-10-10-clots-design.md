@@ -4,7 +4,8 @@ Date: 2026-10-10
 Status: approved in brainstorming. Stages 1, 2a, 2b and 2c (but for Sentry, Vercel
 and PostHog), global memory, and the main session and workers (section 4) are
 implemented, and so is autonomy (sections 3 and 7: the four axes, asks, choices,
-merges and `clots-waiting`). Stage 2d is specified and next to build.
+merges and `clots-waiting`), and stage 2d. Stage 2e (Composio) is specified and
+next to build.
 
 ## 1. What Clots is
 
@@ -56,11 +57,13 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 
 | Component | Responsibility | Depends on |
 |---|---|---|
-| Intake | Receive webhooks, hold IMAP IDLE connections, poll calendar feeds, run watch and webhook recipes, fire the 90-minute tick. Verify each delivery, drop repeats, store the event and answer the source at once. Normalise everything into one event format (section 3). | Tunnel, source credentials |
+| Intake | Receive webhooks (GitHub's, Composio's and recipes'), hold IMAP IDLE connections, poll the calendar, run watch and webhook recipes, fire the 90-minute tick. Verify each delivery, drop repeats, store the event and answer the source at once. Normalise everything into one event format (section 3). | Tunnel, source credentials |
 | Rulebook | A folder and git repository of its own, one file for every Clot and one per Clot: pre-filters, routing match rules, triage guidance, urgency markers, standing-rule templates, watch recipes. | None |
 | Hold | Keeps automated events (CI runs, anything from a bot account) back for a minute or two and gathers those about the same pull request or branch into one event. | A timer |
 | Routing call | Haiku 5.5, medium effort, no tools, fixed output schema. Picks the Clot for an event from a shared source that no routing rule matched. | Each Clot's one-line description |
 | MCP client | Connects the daemon to MCP servers of its own, logging in through OAuth where a server needs it, for watch recipes. | Tunnel |
+| Composio | Holds the connections to third-party services (Stripe, Linear, Notion, Google Calendar, PostHog and any other Composio toolkit), keeps their trigger instances and the webhook subscription in step with the configuration, and runs their tools for the daemon tools `composio_find` and `composio_run`. Its key never enters a container. | Composio, tunnel |
+| Write reviewer | Haiku 5.5, medium effort, no tools, fixed output schema. Decides whether a destructive Composio write in a team workspace runs or becomes an ask; fails closed. | Account audiences |
 | Triage | Haiku 5.5 (`claude-haiku-5-5`), medium effort, no tools, fixed output schema. | Rulebook |
 | Lock | Decides what the main session may do: read, look things up, run a fixed list of read-only commands, and call daemon tools. Asked before every tool call. | None |
 | Worker guard | Decides what a worker may do outside its worktree: refuses every shell command that reaches a person or the default branch. Asked before every shell command. | None |
@@ -557,8 +560,9 @@ asking, and asks only for what is high on any one.
 - **Who started the turn does not matter.** A low action runs in every kind of
   main session turn: one the user's message started, an event's, or a worker's
   report. So a client's email can get a tentative event in the user's calendar
-  with no question asked. The one exception is a rulebook edit in a turn started
-  by an outsider's event, which is an ask (section 5).
+  with no question asked. The exceptions are a rulebook edit in a turn started
+  by an outsider's event, which is an ask (section 5), and a Composio write in
+  such a turn, which goes to the write reviewer.
 - **The Clot knows the axes too.** The main prompt carries a short version: do
   without asking whatever is free to undo, seen only by the user, under $5 and
   commits them to nothing; anything else the daemon puts to the user; prepare
@@ -584,12 +588,22 @@ asking, and asks only for what is high on any one.
     not happen is not made twice, and the kept copy stays until it is put back. The calendar's feed can lag by
     hours, so `calendar_list` also shows the Clots' changes of the last two days
     from that log, marked as added, changed or removed by a Clot.
+  - through Composio, every read; and a write in an account whose audience is
+    `private`, or `team` when the write is not destructive. A destructive write
+    in a team account, and every private or team write in a turn an outsider's
+    text started, goes to the write reviewer, which runs it or makes it an ask.
+    Each write that runs is posted, with `&composio undo` where it has an inverse
+    (stage 2e specification).
 - **High, an ask:**
   - adding, replacing or removing a standing rule;
   - sending an email, through send review: the daemon shows the email and sends it
     only on the user's yes. A daemon-wide switch turns send review off, leaving
     drafts and standing rules;
-  - a comment, review or reply that reaches a person on any source;
+  - a comment, review or reply that reaches a person on any source, except a
+    Composio write in a private or team account, which its audience decides;
+  - every Composio write in a `public` account, and, whatever the audience, every
+    Composio write that moves money or reaches a person outside the workspace
+    (an email, a direct message, an invitation, sharing, publishing);
   - merging to the default branch, and deploying. A Clot commits straight to the
     default branch only when the user asks for it in chat, which is then the ask's
     answer. A pull request is merged with the daemon tool
@@ -667,7 +681,9 @@ naming its own pick.
   scope, which reaches exactly the repositories it was invited to. (A fine-grained
   token cannot reach a repository its account is only a collaborator on.)
   On Linear the Clots have a member of their own, as on GitHub. Elsewhere,
-  read-only keys unless a standing rule needs more. The one exception is email:
+  keys of their own, scoped to what the Clots need. Composio holds these keys
+  and connects with them; the one connection made as the user is Google
+  Calendar, which has no key, through Composio's managed sign-in. The one exception is email:
   the daemon reads the user's own mailboxes, and sends as the user only text the
   user approved word for word: a standing `email_reply`, from the address the
   mail came to, or an email the user approved in its review channel.
@@ -693,7 +709,7 @@ naming its own pick.
 - **Privileged actions** (sending from a template, editing the rulebook, posting to
   chat, saving an email draft, asking to send an email, changing the calendar,
   handing an event to another Clot, starting and messaging workers, asking a
-  choice) exist only as daemon tools, outside the container, each with its rating
+  choice, acting through Composio) exist only as daemon tools, outside the container, each with its rating
   on the axes. They are the main session's; a worker has only `ask_main`.
 
 ### The worker guard
@@ -818,11 +834,11 @@ passes a configured figure.
 
 | Source | Mechanism | Target latency |
 |---|---|---|
-| GitHub, Stripe, Linear, Notion, Sentry, Vercel | Webhook | Seconds |
+| GitHub, Sentry, Vercel | Webhook | Seconds |
+| Stripe, Linear, Notion, PostHog, and any other service Composio has triggers for | Composio trigger, delivered to one webhook | Seconds; a minute or more for Composio's polled triggers |
 | Email (Gmail or any IMAP server) | IMAP IDLE | Seconds |
-| PostHog | Webhook destination with a token header | Seconds |
-| Google Calendar | Poll of the calendar's secret iCal address; changes through an Apps Script the user deploys | 1 to 5 minutes |
-| Any service that sends webhooks | Webhook recipe | Seconds |
+| Google Calendar | Polled through Composio's calendar tools; reminders made by the daemon | 1 to 5 minutes |
+| Any other service that sends webhooks | Webhook recipe | Seconds |
 | Any other MCP server | Watch recipe | 1 to 5 minutes |
 | Connectors that exist only in the user's claude.ai account | Sweep | Up to 90 minutes |
 
@@ -836,9 +852,12 @@ passes a configured figure.
   and a workflow run that failed or timed out. Every other delivery is
   acknowledged and discarded. What each other source sends, and how it is
   verified, is in the stage 2c specification.
-- **No Google Cloud project**: the calendar is read through its secret iCal
-  address and changed through an Apps Script that runs as the user, so the user's
-  own Google account is all it needs.
+- **Composio** (stage 2e specification): the daemon connects each account
+  through Composio with the Clots' own key, or, for the calendar, the user's
+  Google account through Composio's managed sign-in, so there is no Google Cloud
+  project. Every trigger is delivered to one path, `/webhooks/composio`, signed
+  by Composio, and mapped to the common event; enrichment uses Composio's read
+  tools.
 - **Watch recipes**: the daemon acts as an MCP client of servers set in its own
   configuration, logging in through OAuth with a link it posts in chat when a
   server needs it. On a timer it calls one read-only tool and diffs the result
@@ -944,6 +963,7 @@ onboarding can be resumed.
 - TypeScript on Node. TypeScript is required: live effort switching
   (`applyFlagSettings`) exists only in the TypeScript Agent SDK.
 - `@anthropic-ai/claude-agent-sdk`.
+- `@composio/core` for Composio, on the free Hobby plan.
 - SQLite for the queue, events, bindings and spend log.
 - Plain YAML files in a git repository of their own for the rulebook.
 - Node's built-in HTTP server for intake, behind Tailscale Funnel.
@@ -1055,7 +1075,15 @@ Each stage gets its own specification and plan.
    - **2d. Gates and sweep**, with digests, the spend log and `&spend`, and
      rollover re-grounding. The gates also hold back worker starts
      (`.superpowers/specs/2026-11-10-clots-stage-2d-gates-sweep-design.md`).
-3. **Pi deployment and onboarding.**
+   - **2e. Composio**: Stripe, Linear, Notion and Google Calendar connected
+     through Composio with the Clots' own keys, PostHog and any other Composio
+     toolkit as accounts, one Composio webhook, `composio_find` and
+     `composio_run` rated by account audience (private, team, public),
+     Composio's tags and a fixed list, the write reviewer, and
+     `&composio undo`. GitHub and email stay as built
+     (`.superpowers/specs/2026-11-19-clots-stage-2e-composio-design.md`).
+3. **Pi deployment and onboarding**, with Composio's connections in the
+   onboarding checklist.
 4. **Browser and live view.**
 5. **Slack adapter.**
 
@@ -1160,3 +1188,11 @@ If any of these fails, stop and bring the finding to the user before continuing.
   with its undo, which is what keeps this acceptable.
 - Agent SDK billing terms changed three times in 2026. As of 2026-10-07, SDK usage
   draws from subscription limits.
+- Composio holds every key and token the Clots connect with, in its cloud, and
+  its key can use all of them. It is also a single point of failure for the
+  sources moved to it, and its free plan pauses at a monthly cap.
+- Composio's own tags decide what counts as a read. A write wrongly tagged
+  `readOnlyHint` would run in any turn, under the lock.
+- A Composio write in a private or team account runs without asking, so a write
+  the Clot was talked into by an event's text is noticed afterwards, from its
+  post. The reviewer narrows this in an outsider's turn; it does not close it.
