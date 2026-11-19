@@ -14,7 +14,8 @@
 - Install exactly `npm install @composio/core@0.28.0 --save-exact` (released 2026-11-03; 0.29 and 0.30 are too new to pin). Remove `ical.js` with `npm uninstall ical.js` once Task 6 no longer imports it. No other dependency changes; never a broad update. npm regenerates the lockfile; never edit it.
 - `COMPOSIO_API_KEY` is read by the daemon only. It must never be passed to a container, a session's environment, a log line or chat.
 - Reviewer model: `HAIKU` from `src/models.ts`, effort `medium`, through `structuredQuery` like the routing call.
-- Webhook replay window: 300 s. Event IDs from Composio: `composio:<webhook-id>`.
+- Webhook replay window: 300 s. Event IDs: `<source>:<account>:<the service's own ID>` where the payload gives one (2c's IDs), else `composio:<webhook-id>`.
+- Node: `@composio/core` needs Node ≥ 22.22.3 (`engines.node`). The dev machine runs 25.1.0; the README's requirement becomes "Node 22.22.3 or later".
 - Default audience: `public`.
 - Spec and plan describe the design as built: when the build changes a decision, edit them in place, with no change notes. The same goes for the 2c spec sections that 2e replaces only if the parent design would otherwise contradict the code; the 2c spec otherwise stays as the record of stage 2c.
 - `src/commands.ts` and `tests/commands.test.ts` are stored with CRLF; keep them that way.
@@ -24,7 +25,12 @@
 
 - `scripts/spike-2e.ts` (create, Task 1): live probes for spec section 16. Kept.
 - `scripts/capture-2e.ts` (create, Task 1): prints and saves raw Composio deliveries for one account, for fixtures.
-- `src/composio/api.ts` (create): `ComposioApi` interface, its `@composio/core` implementation, and the result types. The only file that imports `@composio/core`.
+- `src/composio/api.ts` (create): `ComposioApi` interface, its `@composio/core` implementation, the result types, and the pure exported `classifyComposioError(e): ExecResult["reason"]`. The only file that imports `@composio/core`.
+- `src/composio/toolkits/{stripe,linear,notion,googlecalendar,posthog,generic}.ts` (create): one `ToolkitDef` per toolkit (below), the single home of every toolkit-specific slug, trigger set, identity reader and inverse. The mapper/enricher/sender bodies live in `src/sources/*` as listed; the def wires them.
+- `src/composio/actions.ts` (create): the one `executeWrite` used by `composio_run`, the ask's yes and nothing else; the limits; the own-writes record.
+- `src/composio/store.ts` (create): the Composio tables and their methods, given the `Store`'s database handle (keeps `src/store.ts` from growing).
+- `src/composio/wire.ts` (create): builds and starts everything Composio for the daemon; tested with the fake.
+- `src/composio/meter.ts` (create): monthly counts of tool calls and deliveries, and the 70%/90% warnings.
 - `src/composio/component.ts` (create): `Composio` class: reconcile, sessions, `run`, identities, daily trigger check, failure reports.
 - `src/composio/intake.ts` (create): `/webhooks/composio` handler and the trigger-to-mapper dispatch.
 - `src/composio/rating.ts` (create): `rateComposioCall`, the fixed list, `isDestructive`. Pure.
@@ -43,7 +49,7 @@
 - `src/commands.ts` (modify): `&composio undo`.
 - `src/agent/prompts.ts` (modify): the Composio lines and audiences in the system prompt.
 - `src/events/kinds.ts`, `src/rulebook.ts` (modify): `posthog` source with `analytics_event`; generic toolkit sources with kind `trigger`.
-- `src/daemon.ts` (modify): wiring; the old per-source handlers, the Apps Script and iCal wiring go.
+- `src/daemon.ts` (modify): calls `wire.ts`; the old per-source handlers, the Apps Script and iCal wiring, and `learnIdentity` go (Supervisor jobs replace its retry).
 - Delete: `setup/calendar.gs`, `src/sources/calendar-script.ts`, `tests/calendar-script.test.ts`, `tests/fixtures/stripe/*`, `tests/fixtures/linear/*`, `scripts/spike-2c-calendar.ts`.
 - `README.md`, `clots.config.example.json`, `.env.example` (modify).
 - Tests (create): `tests/composio-rating.test.ts`, `composio-intake.test.ts`, `composio-component.test.ts`, `composio-reviewer.test.ts`, `composio-undo.test.ts`, `asks-composio.test.ts`, `posthog.test.ts`; fixtures in `tests/fixtures/composio/<toolkit>/`. Rewrite `stripe.test.ts`, `linear.test.ts`, `notion.test.ts`, `calendar.test.ts`; extend `config.test.ts`, `tools.test.ts`, `commands.test.ts`, `axes.test.ts`, `store.test.ts`, `prompts.test.ts`.
@@ -84,10 +90,10 @@
 - **Enrichers and senders keep their logic; change only transport.** Linear: replace `linearApi(apiKey)` with a function of the same shape that runs Composio's GraphQL tool (`query_or_mutation`, `variables`) on the account. The `ISSUE_QUERY`, the comment mutation, and the error classification (`refused` vs not) stay. Notion and Stripe: use the read tools confirmed in Task 1 that return the same fields 2c read; keep the output text format, so triage and prompts see what they saw. An `ExecResult` with `ok: false` maps to the old "could not be read" line.
 - **Standing rules are not rated again.** `linear_comment` and `notion_comment` senders call `Composio.run` directly, never `composio_run`'s rating. Their record-before-send behaviour stays.
 - **Calendar: same contract, new backend.** `calendar-composio.ts` implements `call(account, req)` for `create | update | remove | check` with Google Calendar tools on the account's connection, returning the same result union with `reached` and `missing` semantics (`check` on a deleted event → `missing: true`). `uid` is now Google's event ID (not the iCal UID). A repeating event is one with `recurringEventId` (an occurrence) or `recurrence` (the series); `update` on an occurrence applies to the series by addressing `recurringEventId`, matching the Apps Script's series behaviour. The guests refusal stays in `tools.ts` and is re-checked in `calendar-composio.ts` before `remove`, as the script did.
-- **Calendar reading.** `CalendarFeed.read()` calls the list tool with `singleEvents: true`, `timeMin` now, `timeMax` now + 31 days (+ the longest lead time), and maps each item to `Occurrence`. All-day items (`start.date`) start at midnight in `timeZone` (reuse the helpers in `src/time.ts`). The cached list serves `calendar_list` while younger than `pollMinutes`; a range beyond the cached one triggers a fresh read for that range.
+- **Calendar reading.** `CalendarFeed.read()` calls the list tool with `singleEvents: true`, `timeMin` now, `timeMax` now + 31 days (+ the longest lead time), and maps each item to `Occurrence`. All-day items (`start.date`, a bare `YYYY-MM-DD`) start at midnight of that date in `timeZone` via the helpers in `src/time.ts`; never parse it as UTC, or it lands a day early east of UTC. An item with `status: "cancelled"` is skipped in lists, and `check` treats it as `missing`. Reminder IDs use the item's `iCalUID` plus its `originalStartTime` (or start), as 2c's IDs did, so reminders already made before the upgrade are not made again. One mapping from Google's JSON to `Occurrence`/`CalEvent` lives in `calendar-composio.ts`; `CalendarFeed` uses it. The cached list serves `calendar_list` while younger than `pollMinutes`; a range beyond the cached one triggers a fresh read for that range.
 - **Old calendar log.** `calendar_changes` rows from the Apps Script era hold iCal UIDs the new backend cannot address. A store migration deletes rows written before the 2e schema version, so `&calendar undo` says "Nothing to put back." instead of failing on them.
 - **Managed calendar sign-in.** When the calendar's connection is not active, reconcile calls `linkManaged` and posts `Sign in to Google Calendar for the Clots: <redirectUrl>` in the bound Clot's live channel (home Clot for a shared account), once per startup; then polls `connection(id)` every 30 s until active or 15 minutes pass. This mirrors the MCP OAuth link in 2c section 13.
-- **Rating is pure and total.** `rateComposioCall({ slug, toolkit, tags }, audience, outsiderTurn) → { rating: "run" | "review" | "ask"; reason: string }`, in the spec's order. Matching on slugs is on the uppercase slug split at `_` into words, so `ARCHIVE` matches `LINEAR_ARCHIVE_ISSUE` but `LINEAR_LIST_ARCHIVED…` is still a read by its tag first. Fixed-list words: money (`PAYMENT`, `CHARGE`, `REFUND`, `PAYOUT`, `TRANSFER`, `INVOICE`, `SUBSCRIPTION`), plus every non-read tool whose toolkit is `stripe`; reaching people (`SEND`, `EMAIL` with a write tag, `MESSAGE` with a write tag, `SMS`, `INVITE`, `SHARE`, `PUBLISH`). Destructive words: `DELETE`, `ARCHIVE`, `REMOVE`, `REVOKE`, `CANCEL`, `REASSIGN`, `TRANSFER`. A read tag wins over every word: `GMAIL_LIST_MESSAGES` is a read. A tool with both `readOnlyHint` and `destructiveHint` is treated as destructive (tags contradict; take the worst).
+- **Rating is pure and total** (the tag and slug rules in "From the plan review" refine this bullet). `rateComposioCall({ slug, toolkit, tags }, audience, outsiderTurn) → { rating: "run" | "review" | "ask"; reason: string }`, in the spec's order. Matching on slugs is on the uppercase slug split at `_` into words, so `ARCHIVE` matches `LINEAR_ARCHIVE_ISSUE` but `LINEAR_LIST_ARCHIVED…` is still a read by its tag first. Fixed-list words: money (`PAYMENT`, `CHARGE`, `REFUND`, `PAYOUT`, `TRANSFER`, `INVOICE`, `SUBSCRIPTION`), plus every non-read tool whose toolkit is `stripe`; reaching people (`SEND`, `EMAIL` with a write tag, `MESSAGE` with a write tag, `SMS`, `INVITE`, `SHARE`, `PUBLISH`). Destructive words: `DELETE`, `ARCHIVE`, `REMOVE`, `REVOKE`, `CANCEL`, `REASSIGN`, `TRANSFER`. A read tag wins over every word: `GMAIL_LIST_MESSAGES` is a read. A tool with both `readOnlyHint` and `destructiveHint` is treated as destructive (tags contradict; take the worst).
 - **`composio_run` flow.** Refuse if the account is unknown or the tool's toolkit differs from the account's. Fetch `ToolInfo` (cache per slug for the daemon's life; refuse an unknown slug). Rate. `run` → execute, log, post. `review` → reviewer; `run` → as before, the post adds "(reviewed)"; `ask` → open the `composio` ask with the reviewer's reason. `ask` → open the ask. The tool returns at once in the ask case, with the same "do not wait" wording the merge ask uses.
 - **`TOOL_AXES` entries.** `composioFind: LOW`; `composioRun: LOW`, with a comment that it rates each call itself (like the calendar tools enforce their own rules). Under the lock both are approved as daemon tools; the read path is what lets the locked main session read.
 - **The `composio` ask kind.** Channel: `mergeChannelName` (`<clot>-ask`). Payload: account, audience, slug, tool name, description, args, why. Exact yes runs the stored args exactly; the outcome goes to the main session as a note and is posted. Exact no declines. Other text goes to the main session as the user's feedback and closes the ask. No deadline, no stale check. Max open per Clot: 5; from outsiders' turns: `OUTSIDER_MAX`. Dedupe key: hash of account + slug + args.
@@ -96,7 +102,44 @@
 - **Cap.** The first `ExecResult` with `reason: "cap"` (or a delivery saying so, if Composio sends one; Task 1 checks) posts once in the home Clot's channel (first Clot's without one): "Composio's free monthly limit is reached: tools and events from Composio pause until <first of next month>." Remember the month in `state` so it is said once per month.
 - **Spend.** The reviewer's cost is booked with the existing `onCost(usd, clot)`.
 - **System prompt.** Add, near the calendar lines: what `composio_find`/`composio_run` are; that reads always work; that private and team writes usually run and are posted, destructive team writes may be reviewed, public writes and anything moving money or reaching people outside the workspace become asks; list the configured accounts with toolkit and audience. Keep it to a few lines. Resumed sessions keep their old prompt, so the README tells the user to `&close` each Clot after updating.
-- **Removing old paths.** `/webhooks/stripe/*`, `/webhooks/linear/*`, `/webhooks/notion/*` stop existing (404 with the existing log line). The config refusal for `sources.stripe|linear|notion|calendar` says: ``sources.<name> moved to sources.composio in stage 2e; see clots.config.example.json``.
+- **`ToolkitDef`.** `{ toolkit: string; source: string /* "linear", "calendar", … */; triggers(a): { slug: string; config: Record<string, unknown> }[]; mapper: Mapper; enricher?: (c: Composio) => Enricher; sender?: { via: string; make(c: Composio): Sender }; identity?: (c: Composio, a: ComposioAccount) => Promise<string>; inverses: Record<string, Inverse>; refusedInRun?: (slug: string) => string | undefined; responseChecks: Record<string, ZodType> }`. A registry `TOOLKITS` maps slug → def; unknown toolkits use `generic`. Config is a discriminated union on `toolkit` with one strict schema per built-in toolkit; consumers get narrowed types (`CalendarComposioAccount`).
+
+### From the plan review (2026-11-19)
+
+**Startup and reconcile**
+- **Nothing Composio blocks startup.** `wire.ts` never awaits reconcile at top level and never throws out of it. The webhook subscription is one Supervisor job, and each account is another, each with its own backoff. The calendar sign-in wait and the Notion token wait are detached timers. `/webhooks/composio` is registered at once and answers 503 only while no secret is stored. One account's failing identity read does not hold back its triggers: identity is a separate retried step, and only the standing-rule sender waits for it.
+- **Reconcile adopts what Composio already holds.** The store is not the truth. Per user, list the auth configs, connections and trigger instances Composio has. Adopt one of each (prefer an active connection, and the trigger whose config hash matches). Delete extras of the same slug for that user. Only then create what is missing. `spike-2e.ts` deletes everything it creates (its users are named `spike:<toolkit>`).
+- **The webhook secret is read once and kept.** Set the subscription only when none exists or its URL differs. Keep the secret Composio returned when it created the subscription; never set it again on each start. When the stored secret is missing but a subscription exists, rotate it once and store the new one. Three 401s in an hour are told once in the home Clot's channel ("Composio deliveries are failing their signature check").
+- **A key change rebinds before it deletes.** Connect the new key first. Then move the account's triggers to the new connection (upsert them on it, then delete the old instances), recreate the Notion ingress on it, and only then delete the old connection. Store `key_hash` after the whole sequence succeeds, so a crash midway redoes it.
+- **Lifecycle events.** Subscribe to `composio.trigger.message`, `composio.trigger.disabled` and `composio.connected_account.expired` (and `.activated` if offered). Disabled with `connection_expired` → nothing (Composio re-enables it). Any other disabled reason → recreate once, and tell once if that fails. Expired → tell once (calendar: a fresh sign-in link). The daily check stays as a backstop: it reads the connection first and recreates triggers only when the connection is active. For Stripe it also lists webhook endpoints with a read tool and recreates the trigger if Composio's destination is gone (Stripe deletions don't reach Composio).
+- **Setup waits never just stop.** The calendar link is posted again by the daily check while the connection is not active (once a day, never more). The Notion token is polled every minute for an hour, then every 30 minutes until it is stored.
+
+**Events**
+- **Dedupe on the service's own IDs** (2c's IDs: Stripe `evt_…`, Notion's event ID, Linear's comment/issue ID plus kind). This also covers Linear's public and private triggers reporting one issue, and Stripe's retries. Fall back to `composio:<webhook-id>` for generic toolkits.
+- **Outsider is per source, as 2c had it**: Stripe `true` (a customer writes the description, name and address), PostHog `true`, generic `true`, calendar from the organiser (2c), Linear and Notion `false`. When a mapper cannot find the actor, `true`.
+- **The Clot's own writes are not events.** `actions.ts` records the object IDs each write created or changed (from the result). Intake drops, as self-caused, an event whose object ID matches a write of the same account in the last 10 minutes. This covers generic toolkits and the time before an identity is known.
+- **`place` is never empty.** The mapper sets a fallback from the payload (Linear team ID, Notion parent ID, Stripe account name), which enrichment replaces when it can.
+- **Generic triggers.** The trigger instance is keyed by slug and a hash of its config: a changed config replaces the instance. The same slug twice in one account fails config loading.
+- **Old webhooks.** The README's 2e upgrade steps tell the user to delete the Stripe endpoint, the Linear webhook and the Notion subscription that pointed at the old paths.
+
+**Calls**
+- **Timeouts.** Every `ComposioApi` call times out after 30 s; `structuredQuery` gains an optional `timeoutMs` (the reviewer uses 30 s). A write that times out is logged as `unknown`, posted as "outcome unknown: check <service>", never retried by the daemon, and has no undo.
+- **Limits.** `composio_run`: 30 calls per turn and 300 per Clot per day; past either it refuses with the limit named. Reviewer calls from outsiders' turns: 10 per Clot per day; past that, the write asks. Calendar polling: the sum over calendars of `43200 / pollMinutes` must be at most 10,000 a month, or config loading fails naming the limit. The list is read with `maxResults: 2500`, following `nextPageToken`.
+- **Meter.** `meter.ts` counts tool calls (managed and own-app apart) and deliveries per calendar month (Task 1 confirms Composio's period anchor; use it). It warns once at 70% and once at 90% of each Hobby allowance in the home Clot's channel, with the largest consumers named.
+- **Response checks.** Each fixed-purpose call the daemon makes (enrichment reads, identity, the calendar list, get, create, update and delete) checks the fields it relies on with a zod schema from the def's `responseChecks`. On a mismatch it fails closed: enrichment says "could not be read", and a calendar remove or update is refused. The daily check reports drift once ("Composio's <tool> answered in an unexpected shape").
+
+**Rating**
+- **Composio's tags are `readOnlyHint`, `createHint`, `updateHint`, `destructiveHint`** (and `idempotentHint`, ignored). A tool is untagged when it has none of the first four. Destructive means `destructiveHint`, untagged, or a destructive slug word. `createHint` and `updateHint` alone are ordinary writes.
+- **A read tag is not trusted alone.** It is demoted to a write when the slug's verb (the first word after the toolkit) is a write verb: `CREATE`, `ADD`, `UPDATE`, `EDIT`, `SET`, `DELETE`, `REMOVE`, `ARCHIVE`, `SEND`, `POST`, `INVITE`, `SHARE`, `PUBLISH`, `MOVE`, `MERGE`, `CANCEL`. Passthrough tools are always rated destructive: any slug with `GRAPHQL`, `QUERY_OR_MUTATION`, `PROXY`, `REQUEST`, `RAW`, `EXECUTE`, and every `COMPOSIO_*` meta tool. The daemon's own fixed-purpose calls are not rated.
+- **The fixed list also covers control-plane writes**: any non-read tool whose slug names `WEBHOOK`, `API_KEY`, `TOKEN`, `OAUTH`, `INTEGRATION`, `ROLE`, `PERMISSION`, `MEMBER`, `ADMIN` → ask, whatever the audience.
+- **Calendar writes go through the calendar tools only.** `composio_run` refuses any non-read Google Calendar tool: "use calendar_write or calendar_remove". Those tools keep the guests, repeating-event and outsider rules.
+- **Accounts are named `<toolkit>:<account>`** in `composio_find`, `composio_run`, asks and posts. That is the same string as the Composio user, and it is unambiguous when two toolkits share an account name.
+- **The reviewer gets facts the daemon checked.** Added to `ReviewInput`: `targetCreatedByClot: boolean | "unknown"` (the target ID matches a create in `composio_writes`), and, where the def has a read for it, the target's creator and last editor. The reviewer's reason is shown in asks as `Reviewer (Haiku): "<reason>"`, never as the daemon's own words.
+
+**Asks and undo**
+- **An ask shows every argument.** Show the full JSON and let the chat adapter split long posts (`src/chat/discord.ts:52`). An args payload over 6,000 characters makes `composio_run` refuse the call before any ask is opened ("too large to show the user; split it"). Args are put in a fenced block with backticks escaped.
+- **Yes re-checks.** On yes, re-read the account from config: if it is gone, or its toolkit or audience changed, withdraw the ask ("the account changed"). Then run through `actions.executeWrite`, the same path as a direct write. So the write is logged, has its before-read, and gets its undo.
+- **Undo is built from the table only.** The inverse's arguments come from the inverse table applied to the stored result and the stored before-values, never from model text. Undoing an update first re-reads the object: if a field the write set no longer has the value the write gave it, undo refuses ("changed since; not put back"). The before-read uses the same field names as the update's input, mapped per toolkit in the def. `/webhooks/stripe/*`, `/webhooks/linear/*`, `/webhooks/notion/*` stop existing (404 with the existing log line). The config refusal for `sources.stripe|linear|notion|calendar` says: ``sources.<name> moved to sources.composio in stage 2e; see clots.config.example.json``.
 
 ## Tasks
 
@@ -155,7 +198,9 @@
 - Calendar sign-in link and polling, per Key Decisions.
 - Notion ingress: create once, store, log `[composio] Notion (<account>): paste <url> into the connection's Webhooks tab`; while no verification token is stored, poll `ingressToken` every minute for an hour and log `[composio] Notion (<account>) verification token: <token>` when it appears.
 
-**Tests (behaviours):** (fake `ComposioApi` recording calls)
+`Composio` takes `schedule` (as `Supervisor` does) besides `now`, so every wait and poll is driven by tests. `classifyComposioError` is tested on a table of the errors captured in Task 1.
+
+**Tests (behaviours):** (fake `ComposioApi` recording calls; also every bullet under "Startup and reconcile" in Key Decisions)
 - first reconcile creates webhook, auth configs, connections, triggers, in order; a second is a no-op;
 - a changed key hash replaces the connection; an unchanged one does not;
 - a removed account's triggers are deleted; another account's failure does not stop the rest;
@@ -183,7 +228,10 @@
 - a correctly signed fixture is stored once and a repeat is "duplicate";
 - a wrong signature, a timestamp 301 s old, and a missing `webhook-id` are refused;
 - an unknown connection ID is acknowledged and not stored;
-- an event by the Clots' own Linear member is stored with `dropped`.
+- an event by the Clots' own Linear member is stored with `dropped`;
+- the same Linear issue from the public and the private trigger is stored once; a Stripe event redelivered under a new `webhook-id` is stored once;
+- an event about an object a Clot's write created 2 minutes earlier is dropped as self-caused; one 11 minutes later is not;
+- `trigger.disabled` and `connected_account.expired` deliveries reach the component and store no event.
 
 **Done when:** `npm test -- composio-intake` passes.
 
@@ -235,7 +283,8 @@
 - Reviewer prompt per spec section 11: the one question, the examples given there, args wrapped as `<untrusted>…</untrusted>` and labelled data, answer schema `{ verdict: "run" | "ask", reason: string (≤ 120 chars) }`. Anything unparseable, an error, or no output → `{ verdict: "ask", reason: "the reviewer gave no clear answer" }`.
 
 **Tests (behaviours):**
-- the table: read tag → run in every audience and turn; Stripe write → ask everywhere; `GMAIL_SEND_EMAIL` → ask in private; private create → run, private create in outsider turn → review; team create → run, team delete → review, team untagged → review, team create in outsider turn → review; public anything-not-read → ask; both tags → destructive;
+- the table uses the real tag sets recorded in Task 1; `createHint`-only create in a team account → run; read tag on `LINEAR_CREATE_…` → write; any `GRAPHQL`/`PROXY`/`COMPOSIO_*` slug → destructive; `LINEAR_CREATE_WEBHOOK` → ask in private; a Google Calendar write → refused;
+- read tag → run in every audience and turn; Stripe write → ask everywhere; `GMAIL_SEND_EMAIL` → ask in private; private create → run, private create in outsider turn → review; team create → run, team delete → review, team untagged → review, team create in outsider turn → review; public anything-not-read → ask; both tags → destructive;
 - slug-word cases that must and must not match (`LINEAR_ARCHIVE_ISSUE` destructive; `NOTION_SHARE_PAGE` people; `LINEAR_LIST_ARCHIVED_ISSUES` with read tag → read);
 - reviewer parsing: valid `run`, valid `ask`, garbage, thrown error → ask;
 - labelled set: `tests/fixtures/composio/reviewer-cases.json` (8–12 writes with the expected verdict) is scored by an opt-in live test (`LIVE=1`), skipped by default, as the triage set is.
@@ -255,7 +304,7 @@
 - `composio_run` flow per Key Decisions. The live-channel post: `Composio (<toolkit> <account>): <tool name>, <link or short result>. \`&composio undo\` reverses it.` or `… (no undo)`. Results returned to the model are clipped to 4,000 characters and wrapped as untrusted data (they can hold other people's text).
 - Before an update with an inverse, read the "before" fields; store `before` and `inverse` in `composio_writes`.
 - Every `composio_run` call, read or write, leaves one log line: `[composio] <clot> <account> <slug> → <run|review→run|review→ask|ask|refused|failed>`, with args clipped to 200 characters.
-- The ask kind per Key Decisions; render shows account, audience, tool, description, args as a JSON block (clipped to 1,500 chars, "…" marks clipping; the stored payload keeps them whole), and the reason.
+- The ask kind per Key Decisions; render shows account, audience, tool, description, every argument (see "An ask shows every argument"), and the reason.
 - `&composio undo` in `commands.ts` (CRLF), `COMMAND_USAGE` updated.
 - Prompt lines per Key Decisions; the accounts list is built from config.
 

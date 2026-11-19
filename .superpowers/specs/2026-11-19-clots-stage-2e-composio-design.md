@@ -121,8 +121,19 @@ for every toolkit:
   `<webhook-id>.<webhook-timestamp>.<raw body>` with the subscription's secret,
   compared in constant time. A `webhook-timestamp` more than 300 seconds from the
   daemon's clock is refused. This is done with the library's `verifyWebhook`.
-- **Repeats**: the event ID is `composio:<webhook-id>`; a stored ID is acknowledged
-  and ignored, as for every source.
+- **Repeats**: the event ID is the one 2c gave each source, built from the
+  service's own ID (`stripe:<account>:<evt_…>`, and so on), so a service's retry,
+  a recreated trigger, or two triggers reporting one thing make one event. A
+  generic toolkit's event is `composio:<webhook-id>`. A stored ID is
+  acknowledged and ignored, as for every source.
+- **Lifecycle events**: the subscription also takes `composio.trigger.disabled`
+  and `composio.connected_account.expired`. A trigger disabled for any reason but
+  an expired connection is recreated once (and the user told if that fails); an
+  expired connection is told once, with a new sign-in link for the calendar.
+  The daily check of section 13 stays as a backstop.
+- **The Clot's own writes**: an event about an object one of the Clot's
+  Composio writes created or changed in the last 10 minutes is dropped as
+  self-caused, whoever the service names as its actor.
 - **Account**: the payload's connected account ID is looked up in the stored
   connections. An unknown one is logged, acknowledged and discarded.
 - **Mapping**: each trigger slug has a function that turns its payload into the
@@ -258,10 +269,27 @@ applies decides:
    to the reviewer. In a turn an outsider's text started, every write goes to the
    reviewer.
 
-A tool is **destructive** when Composio tags it `destructiveHint`, when it has
-neither `readOnlyHint` nor `destructiveHint`, or when its slug names deleting,
-archiving, removing, revoking, cancelling, reassigning or transferring. So a tool
-whose tags are missing is treated as the worst case.
+Composio tags each tool `readOnlyHint`, `createHint`, `updateHint` or
+`destructiveHint`. A tool is **destructive** when it is tagged
+`destructiveHint`, when it has none of the four tags, or when its slug names
+deleting, archiving, removing, revoking, cancelling, reassigning or
+transferring. So a tool whose tags are missing is treated as the worst case.
+
+A `readOnlyHint` is not trusted alone: when the slug's verb is a write
+(create, add, update, set, delete, remove, archive, send, post, invite, share,
+publish, move, merge, cancel), the tool counts as a write. Passthrough tools
+(a GraphQL or raw request tool, a proxy, Composio's own meta tools) count as
+destructive, since what they do depends on their arguments.
+
+`composio_run` refuses any Google Calendar tool that writes: the calendar is
+changed only through `calendar_write` and `calendar_remove`, which keep their
+own rules (section 10). It refuses a call whose arguments are too large to
+show the user in full (over 6,000 characters). Accounts are named
+`<toolkit>:<account>` in both tools.
+
+**Limits**: 30 `composio_run` calls per turn and 300 per Clot per day; 10
+reviewer calls per Clot per day from turns an outsider's text started, after
+which such writes ask.
 
 The **fixed list** is matched on the tool's slug and toolkit, in code:
 
@@ -270,7 +298,9 @@ The **fixed list** is matched on the tool's slug and toolkit, in code:
   or subscription;
 - anything that reaches a person outside the workspace: sending an email, a direct
   message or an SMS, an invitation, sharing a document or page with someone, and
-  publishing (making something public).
+  publishing (making something public);
+- anything that changes who or what can reach the workspace: webhooks, API keys,
+  tokens, OAuth apps, integrations, roles, permissions, members and admins.
 
 A comment, an issue or a page inside a team or private workspace is not on the
 list: in those workspaces the audience decides, and parent section 7's "a comment
@@ -280,8 +310,10 @@ that reaches a person is an ask" applies to public accounts.
 
 One Haiku 5.5 call at medium effort, with no tools and a fixed output schema:
 `run` or `ask`, and a reason of one line. It sees the tool's slug and description,
-the arguments, the account, its audience, and whether an outsider's text started
-the turn. The arguments are wrapped and labelled as untrusted, as an event is, and
+the arguments, the account, its audience, whether an outsider's text started
+the turn, and facts the daemon checked itself: whether a Clot's own write
+created the target, and, where it can be read, who created and last edited it.
+Its reason is shown to the user as the reviewer's words, never as the daemon's. The arguments are wrapped and labelled as untrusted, as an event is, and
 its system prompt tells it to treat them as data.
 
 It is asked one question: would someone in this workspace mind this, or be hurt
@@ -358,6 +390,18 @@ recorded payloads are removed. New recorded Composio payloads take their place.
   Clot's), with the date usage resumes.
 - **Calendar poll fails**: retried with a growing wait, as every listener is (2c
   section 6).
+- **A call hangs**: every Composio call and the reviewer time out after 30
+  seconds. A write that timed out is posted as "outcome unknown", is never
+  retried by the daemon, and has no undo.
+- **Composio answers in an unexpected shape**: the daemon's own calls check the
+  fields they rely on; on a mismatch enrichment says it could not read, a
+  calendar change is refused, and the user is told once.
+- **The allowance runs low**: the daemon counts its tool calls and deliveries
+  each month and warns once at 70% and once at 90% of each Hobby allowance. The
+  calendars' polling may use at most 10,000 calls a month in all, checked when
+  the configuration loads.
+- **Startup**: nothing Composio does holds up the daemon's start. Each account
+  connects on its own, with its own retries.
 - **Daemon down**: nothing relies on Composio retrying a delivery; one it gives up
   on is lost, as with any webhook. The calendar's reminders are made at startup
   as in 2c.
