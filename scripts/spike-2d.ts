@@ -125,7 +125,7 @@ async function sweep() {
     store, now: () => clock, enabled: true, everyMinutes: 15,
     run: async (req) => { const t = Date.now(); const r = await runner.runOneOff(req); console.log("run", JSON.stringify(r).slice(0, 1500), Date.now() - t, "ms"); return r; },
     clots: () => [{ name: "home", about: "anything that belongs to no project" }, { name: "encryptify", about: "the Encryptify app" }],
-    skip: () => skipList({ sources: { stripe: [], email: [], calendar: [], linear: [], notion: [] }, mcpServers: {} }),
+    skip: () => skipList({ sources: { email: [], composio: [] }, mcpServers: {} }),
     held: () => false, deliver: async (e) => void delivered.push(JSON.stringify(e)), tell: async (t) => console.log("tell", t),
     book: async (a) => console.log("book", JSON.stringify(a)), onLimit: () => undefined, log: console.log,
   });

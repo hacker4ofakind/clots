@@ -1,0 +1,161 @@
+{
+  "synthetic": "the object of a Stripe event recorded in stage 2c, wrapped as Composio delivers a trigger; Composio's Stripe account had no webhook permission to record a real one",
+  "path": "/webhooks/composio",
+  "headers": {},
+  "raw": "{\"id\":\"msg_synthetic_1\",\"timestamp\":\"2026-10-16T09:00:00.000Z\",\"type\":\"composio.trigger.message\",\"metadata\":{\"log_id\":\"log_1\",\"trigger_slug\":\"STRIPE_PAYMENT_INTENT_PAYMENT_FAILED\",\"toolkit_slug\":\"stripe\",\"trigger_id\":\"ti_stripe\",\"connected_account_id\":\"ca_stripe\",\"auth_config_id\":\"ac_stripe\",\"user_id\":\"stripe:shop\"},\"data\":{\"id\":\"pi_3UQk7VRKNANwdhdD0wWcRLGu\",\"object\":\"payment_intent\",\"allowed_payment_method_types\":null,\"amount\":2000,\"amount_capturable\":0,\"amount_details\":{\"tip\":{}},\"amount_received\":0,\"application\":null,\"application_fee_amount\":null,\"automatic_payment_methods\":null,\"canceled_at\":null,\"cancellation_reason\":null,\"capture_method\":\"automatic\",\"client_secret\":\"pi_3UQk7VRKNANwdhdD0wWcRLGu_secret_CnF1VPGBbTYHof4qgGYJ1sRz5\",\"confirmation_method\":\"automatic\",\"created\":1792053277,\"currency\":\"usd\",\"customer\":\"cus_VRdOLbHbTinGH2\",\"customer_account\":null,\"description\":\"Payment for Invoice\",\"excluded_payment_method_types\":null,\"last_payment_error\":{\"advice_code\":\"try_again_later\",\"charge\":\"ch_3UQk7VRKNANwdhdD0sOYtBHX\",\"code\":\"card_declined\",\"decline_code\":\"generic_decline\",\"doc_url\":\"https://stripe.com/docs/error-codes/card-declined\",\"message\":\"Your card was declined.\",\"network_decline_code\":\"01\",\"payment_method\":{\"id\":\"pm_1UQk7RRKNANwdhdDIOb42uve\",\"object\":\"payment_method\",\"allow_redisplay\":\"unspecified\",\"billing_details\":{\"address\":{\"city\":null,\"country\":null,\"line1\":null,\"line2\":null,\"postal_code\":null,\"state\":null},\"email\":null,\"name\":null,\"phone\":null,\"tax_id\":null},\"card\":{\"brand\":\"visa\",\"checks\":{\"address_line1_check\":null,\"address_postal_code_check\":null,\"cvc_check\":\"pass\"},\"country\":\"US\",\"display_brand\":\"visa\",\"exp_month\":10,\"exp_year\":2027,\"fingerprint\":\"oTzb7etY9ONLDiQK\",\"funding\":\"credit\",\"generated_from\":null,\"last4\":\"0341\",\"networks\":{\"available\":[\"visa\"],\"preferred\":null},\"regulated_status\":\"unregulated\",\"three_d_secure_usage\":{\"supported\":true},\"wallet\":null},\"created\":1792053273,\"customer\":\"cus_VRdOLbHbTinGH2\",\"customer_account\":null,\"livemode\":false,\"metadata\":{},\"shared_payment_granted_token\":null,\"type\":\"card\"},\"payment_method_type\":\"card\",\"type\":\"card_error\"},\"latest_charge\":\"ch_3UQk7VRKNANwdhdD0sOYtBHX\",\"livemode\":false,\"managed_payments\":{\"enabled\":false},\"metadata\":{},\"next_action\":null,\"on_behalf_of\":null,\"payment_details\":{\"customer_reference\":null,\"order_reference\":\"in_1UQk7TRKNANwdhdDhwJmwMYJ\"},\"payment_method\":null,\"payment_method_configuration_details\":null,\"payment_method_options\":{\"amazon_pay\":{\"express_checkout_element_session_id\":null},\"card\":{\"installments\":null,\"mandate_options\":null,\"network\":null,\"request_three_d_secure\":\"automatic\"},\"cashapp\":{},\"klarna\":{\"preferred_locale\":null},\"link\":{\"persistent_token\":null}},\"payment_method_types\":[\"amazon_pay\",\"card\",\"cashapp\",\"klarna\",\"link\"],\"payment_record\":null,\"processing\":null,\"receipt_email\":null,\"review\":null,\"setup_future_usage\":null,\"shared_payment_granted_token\":null,\"shipping\":null,\"source\":null,\"statement_descriptor\":null,\"statement_descriptor_suffix\":null,\"status\":\"requires_payment_method\",\"transfer_data\":null,\"transfer_group\":null}}",
+  "body": {
+    "id": "msg_synthetic_1",
+    "timestamp": "2026-10-16T09:00:00.000Z",
+    "type": "composio.trigger.message",
+    "metadata": {
+      "log_id": "log_1",
+      "trigger_slug": "STRIPE_PAYMENT_INTENT_PAYMENT_FAILED",
+      "toolkit_slug": "stripe",
+      "trigger_id": "ti_stripe",
+      "connected_account_id": "ca_stripe",
+      "auth_config_id": "ac_stripe",
+      "user_id": "stripe:shop"
+    },
+    "data": {
+      "id": "pi_3UQk7VRKNANwdhdD0wWcRLGu",
+      "object": "payment_intent",
+      "allowed_payment_method_types": null,
+      "amount": 2000,
+      "amount_capturable": 0,
+      "amount_details": {
+        "tip": {}
+      },
+      "amount_received": 0,
+      "application": null,
+      "application_fee_amount": null,
+      "automatic_payment_methods": null,
+      "canceled_at": null,
+      "cancellation_reason": null,
+      "capture_method": "automatic",
+      "client_secret": "pi_3UQk7VRKNANwdhdD0wWcRLGu_secret_CnF1VPGBbTYHof4qgGYJ1sRz5",
+      "confirmation_method": "automatic",
+      "created": 1792053277,
+      "currency": "usd",
+      "customer": "cus_VRdOLbHbTinGH2",
+      "customer_account": null,
+      "description": "Payment for Invoice",
+      "excluded_payment_method_types": null,
+      "last_payment_error": {
+        "advice_code": "try_again_later",
+        "charge": "ch_3UQk7VRKNANwdhdD0sOYtBHX",
+        "code": "card_declined",
+        "decline_code": "generic_decline",
+        "doc_url": "https://stripe.com/docs/error-codes/card-declined",
+        "message": "Your card was declined.",
+        "network_decline_code": "01",
+        "payment_method": {
+          "id": "pm_1UQk7RRKNANwdhdDIOb42uve",
+          "object": "payment_method",
+          "allow_redisplay": "unspecified",
+          "billing_details": {
+            "address": {
+              "city": null,
+              "country": null,
+              "line1": null,
+              "line2": null,
+              "postal_code": null,
+              "state": null
+            },
+            "email": null,
+            "name": null,
+            "phone": null,
+            "tax_id": null
+          },
+          "card": {
+            "brand": "visa",
+            "checks": {
+              "address_line1_check": null,
+              "address_postal_code_check": null,
+              "cvc_check": "pass"
+            },
+            "country": "US",
+            "display_brand": "visa",
+            "exp_month": 10,
+            "exp_year": 2027,
+            "fingerprint": "oTzb7etY9ONLDiQK",
+            "funding": "credit",
+            "generated_from": null,
+            "last4": "0341",
+            "networks": {
+              "available": [
+                "visa"
+              ],
+              "preferred": null
+            },
+            "regulated_status": "unregulated",
+            "three_d_secure_usage": {
+              "supported": true
+            },
+            "wallet": null
+          },
+          "created": 1792053273,
+          "customer": "cus_VRdOLbHbTinGH2",
+          "customer_account": null,
+          "livemode": false,
+          "metadata": {},
+          "shared_payment_granted_token": null,
+          "type": "card"
+        },
+        "payment_method_type": "card",
+        "type": "card_error"
+      },
+      "latest_charge": "ch_3UQk7VRKNANwdhdD0sOYtBHX",
+      "livemode": false,
+      "managed_payments": {
+        "enabled": false
+      },
+      "metadata": {},
+      "next_action": null,
+      "on_behalf_of": null,
+      "payment_details": {
+        "customer_reference": null,
+        "order_reference": "in_1UQk7TRKNANwdhdDhwJmwMYJ"
+      },
+      "payment_method": null,
+      "payment_method_configuration_details": null,
+      "payment_method_options": {
+        "amazon_pay": {
+          "express_checkout_element_session_id": null
+        },
+        "card": {
+          "installments": null,
+          "mandate_options": null,
+          "network": null,
+          "request_three_d_secure": "automatic"
+        },
+        "cashapp": {},
+        "klarna": {
+          "preferred_locale": null
+        },
+        "link": {
+          "persistent_token": null
+        }
+      },
+      "payment_method_types": [
+        "amazon_pay",
+        "card",
+        "cashapp",
+        "klarna",
+        "link"
+      ],
+      "payment_record": null,
+      "processing": null,
+      "receipt_email": null,
+      "review": null,
+      "setup_future_usage": null,
+      "shared_payment_granted_token": null,
+      "shipping": null,
+      "source": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "requires_payment_method",
+      "transfer_data": null,
+      "transfer_group": null
+    }
+  }
+}

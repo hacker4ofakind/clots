@@ -33,7 +33,8 @@ it("merges the config file and the environment", () => {
     gates: expect.any(Object),
     sweep: { enabled: true, everyMinutes: 90 },
     spend: { weeklyWarnUsd: 50 },
-    sources: { stripe: [], email: [], calendar: [], linear: [], notion: [] },
+    sources: { email: [], composio: [] },
+    composioApiKey: undefined,
     mcpServers: {},
   });
 });
@@ -90,34 +91,83 @@ it("rejects a clot name Docker cannot use", () => {
 
 const withSources = (sources: unknown, more: Record<string, unknown> = {}) => ({ ...json, publicUrl: "https://box.example.ts.net/", sources, ...more });
 
-it("reads accounts, replacing each .env key by its value", () => {
+const composioKeys = { ...env, COMPOSIO_API_KEY: "ck", LINEAR_KEY: "lk", NOTION_KEY: "nk", STRIPE_KEY: "rk_1", PH_KEY: "phx_1" };
+const composio = (...accounts: Record<string, unknown>[]) => withSources({ composio: accounts });
+
+it("reads Composio accounts of every kind, replacing each .env key by its value and defaulting the audience to public", () => {
   const config = loadConfig(
-    withSources({
-      stripe: [{ account: "shop", clot: "graphite", webhookSecret: "STRIPE_SHOP_HOOK", apiKey: "STRIPE_SHOP_KEY" }],
-      linear: [{ account: "team", shared: true, webhookSecret: "LINEAR_HOOK", apiKey: "LINEAR_KEY" }],
-      notion: [{ account: "space", shared: true, token: "NOTION_TOKEN" }],
-    }),
-    { ...env, STRIPE_SHOP_HOOK: "whsec_1", STRIPE_SHOP_KEY: "rk_1", LINEAR_HOOK: "lh", LINEAR_KEY: "lk", NOTION_TOKEN: "nt" },
+    composio(
+      { toolkit: "linear", account: "team", clot: "graphite", apiKey: "LINEAR_KEY", audience: "team" },
+      { toolkit: "notion", account: "space", shared: true, apiKey: "NOTION_KEY", audience: "private" },
+      { toolkit: "stripe", account: "shop", clot: "graphite", apiKey: "STRIPE_KEY" },
+      { toolkit: "googlecalendar", account: "me", shared: true, audience: "private", leadTimes: ["2d", "90m"], pollMinutes: 10 },
+      { toolkit: "posthog", account: "app", clot: "graphite", apiKey: "PH_KEY", projectId: 42, events: ["signup"] },
+    ),
+    composioKeys,
   );
   expect(config.publicUrl).toBe("https://box.example.ts.net");
-  expect(config.sources.stripe).toEqual([{ account: "shop", clot: "graphite", shared: false, webhookSecret: "whsec_1", apiKey: "rk_1", checkoutCompleted: false }]);
-  expect(config.sources.linear).toEqual([{ account: "team", clot: undefined, shared: true, webhookSecret: "lh", apiKey: "lk" }]);
-  expect(config.sources.notion).toEqual([{ account: "space", clot: undefined, shared: true, token: "nt", verificationToken: undefined }]);
+  expect(config.composioApiKey).toBe("ck");
+  const [linear, notion, stripe, calendar, posthog] = config.sources.composio;
+  expect(linear).toEqual({ toolkit: "linear", account: "team", clot: "graphite", shared: false, audience: "team", apiKey: "lk", apiKeyName: "LINEAR_KEY", triggers: [] });
+  expect(notion).toMatchObject({ toolkit: "notion", shared: true, audience: "private", apiKey: "nk" });
+  expect(stripe).toMatchObject({ toolkit: "stripe", audience: "public", apiKey: "rk_1", checkoutCompleted: false });
+  expect(calendar).toMatchObject({ toolkit: "googlecalendar", audience: "private", leadMinutes: [2880, 90], pollMinutes: 10 });
+  expect(calendar.apiKey).toBeUndefined();
+  expect(posthog).toMatchObject({ toolkit: "posthog", region: "us", projectId: 42, events: ["signup"] });
 });
 
-it("names the .env key that is missing", () => {
-  expect(() => loadConfig(withSources({ linear: [{ account: "team", shared: true, webhookSecret: "LINEAR_HOOK", apiKey: "LINEAR_KEY" }] }), { ...env, LINEAR_HOOK: "x" })).toThrow("LINEAR_KEY");
+it("reads a calendar's lead times and poll interval with their defaults", () => {
+  const calendar = loadConfig(composio({ toolkit: "googlecalendar", account: "me", shared: true }), composioKeys).sources.composio[0];
+  expect(calendar).toMatchObject({ leadMinutes: [1440], pollMinutes: 5, audience: "public" });
+  expect(() => loadConfig(composio({ toolkit: "googlecalendar", account: "me", shared: true, leadTimes: ["soon"] }), composioKeys)).toThrow();
 });
 
-it("wants each account bound to one Clot that exists, or shared, and each account name once per source", () => {
-  const linear = (a: Record<string, unknown>) => withSources({ linear: [{ account: "team", webhookSecret: "H", apiKey: "K", ...a }] });
-  const keys = { ...env, H: "h", K: "k" };
-  expect(() => loadConfig(linear({}), keys)).toThrow("either clot or shared");
-  expect(() => loadConfig(linear({ clot: "graphite", shared: true }), keys)).toThrow("either clot or shared");
-  expect(() => loadConfig(linear({ clot: "nobody" }), keys)).toThrow("no Clot named nobody");
-  expect(() => loadConfig(linear({ clot: "home" }), keys)).toThrow("no Clot named home");
-  expect(loadConfig({ ...linear({ clot: "home" }), home: true }, keys).sources.linear[0].clot).toBe("home");
-  expect(() => loadConfig(withSources({ linear: [{ account: "team", shared: true, webhookSecret: "H", apiKey: "K" }, { account: "team", shared: true, webhookSecret: "H", apiKey: "K" }] }), keys)).toThrow("twice");
+it("refuses the source keys that moved to sources.composio, naming the key", () => {
+  for (const old of ["stripe", "linear", "notion", "calendar"]) {
+    expect(() => loadConfig(withSources({ [old]: [] }), composioKeys)).toThrow(`sources.${old} moved to sources.composio in stage 2e`);
+  }
+});
+
+it("refuses a field the toolkit does not take, and a key the toolkit needs, naming the field", () => {
+  expect(() => loadConfig(composio({ toolkit: "googlecalendar", account: "me", shared: true, apiKey: "LINEAR_KEY" }), composioKeys)).toThrow("apiKey");
+  expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true }), composioKeys)).toThrow("apiKey");
+  expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY", triggers: [{ slug: "X" }] }), composioKeys)).toThrow("triggers");
+  expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY", leadTimes: ["1h"] }), composioKeys)).toThrow("leadTimes");
+  expect(() => loadConfig(composio({ toolkit: "notion", account: "s", shared: true, apiKey: "NOTION_KEY", checkoutCompleted: true }), composioKeys)).toThrow("checkoutCompleted");
+  expect(() => loadConfig(composio({ toolkit: "stripe", account: "s", shared: true, apiKey: "STRIPE_KEY", region: "eu" }), composioKeys)).toThrow("region");
+  expect(() => loadConfig(composio({ toolkit: "posthog", account: "s", shared: true, apiKey: "PH_KEY", events: ["x"] }), composioKeys)).toThrow("projectId");
+  expect(() => loadConfig(composio({ toolkit: "posthog", account: "s", shared: true, apiKey: "PH_KEY", projectId: 1 }), composioKeys)).toThrow("events");
+});
+
+it("names the .env key that is missing, and wants COMPOSIO_API_KEY once there are Composio accounts", () => {
+  const account = { toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY" };
+  expect(() => loadConfig(composio(account), { ...composioKeys, LINEAR_KEY: undefined })).toThrow("LINEAR_KEY");
+  expect(() => loadConfig(composio(account), { ...composioKeys, COMPOSIO_API_KEY: undefined })).toThrow("COMPOSIO_API_KEY");
+  expect(loadConfig(withSources({ composio: [] }), env).composioApiKey).toBeUndefined();
+});
+
+it("wants each account bound to one Clot that exists, or shared, and each account name once per toolkit", () => {
+  const linear = (a: Record<string, unknown>) => composio({ toolkit: "linear", account: "team", apiKey: "LINEAR_KEY", ...a });
+  expect(() => loadConfig(linear({}), composioKeys)).toThrow("either clot or shared");
+  expect(() => loadConfig(linear({ clot: "graphite", shared: true }), composioKeys)).toThrow("either clot or shared");
+  expect(() => loadConfig(linear({ clot: "nobody" }), composioKeys)).toThrow("no Clot named nobody");
+  expect(() => loadConfig(linear({ clot: "home" }), composioKeys)).toThrow("no Clot named home");
+  expect(loadConfig({ ...linear({ clot: "home" }), home: true }, composioKeys).sources.composio[0].clot).toBe("home");
+  const twice = { toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY" };
+  expect(() => loadConfig(composio(twice, twice), composioKeys)).toThrow("twice");
+  expect(loadConfig(composio(twice, { ...twice, toolkit: "notion", apiKey: "NOTION_KEY" }), composioKeys).sources.composio).toHaveLength(2);
+});
+
+it("takes triggers for a toolkit with no built-in mapper, once each", () => {
+  const slack = { toolkit: "slack", account: "work", shared: true, apiKey: "LINEAR_KEY", triggers: [{ slug: "SLACK_RECEIVE_MESSAGE", config: { channel: "C1" } }] };
+  expect(loadConfig(composio(slack), composioKeys).sources.composio[0]).toMatchObject({ toolkit: "slack", triggers: [{ slug: "SLACK_RECEIVE_MESSAGE", config: { channel: "C1" } }] });
+  expect(() => loadConfig(composio({ ...slack, triggers: [slack.triggers[0], slack.triggers[0]] }), composioKeys)).toThrow("SLACK_RECEIVE_MESSAGE");
+});
+
+it("refuses calendars that would poll more than 10,000 times a month in all", () => {
+  const calendar = (account: string, pollMinutes: number) => ({ toolkit: "googlecalendar", account, shared: true, pollMinutes });
+  expect(() => loadConfig(composio(calendar("a", 5), calendar("b", 5)), composioKeys)).toThrow("10,000");
+  expect(loadConfig(composio(calendar("a", 5), calendar("b", 60)), composioKeys).sources.composio).toHaveLength(2);
 });
 
 it("fills in Gmail's servers, and wants them for any other address", () => {
@@ -137,18 +187,8 @@ it("tells the Clots an email account's addresses unless told not to", () => {
   expect(loadConfig(withSources({ email: [{ ...account, tellAddress: false }] }), keys).sources.email[0].tellAddress).toBe(false);
 });
 
-it("reads a calendar's lead times in minutes, and wants the script's secret with its address", () => {
-  const keys = { ...env, ICAL: "https://calendar.google.com/x.ics", SCRIPT: "https://script.google.com/macros/s/x/exec", SECRET: "s" };
-  const calendar = (a: Record<string, unknown>) => withSources({ calendar: [{ account: "me", shared: true, icalUrl: "ICAL", ...a }] });
-  expect(loadConfig(calendar({}), keys).sources.calendar[0]).toEqual({ account: "me", clot: undefined, shared: true, icalUrl: "https://calendar.google.com/x.ics", script: undefined, leadMinutes: [1440], pollMinutes: 5 });
-  expect(loadConfig(calendar({ leadTimes: ["2d", "90m"], script: "SCRIPT", scriptSecret: "SECRET" }), keys).sources.calendar[0]).toMatchObject({ leadMinutes: [2880, 90], script: { url: "https://script.google.com/macros/s/x/exec", secret: "s" } });
-  expect(() => loadConfig(calendar({ script: "SCRIPT" }), keys)).toThrow("scriptSecret");
-  expect(() => loadConfig(calendar({ leadTimes: ["soon"] }), keys)).toThrow();
-});
-
 it("wants the public address once anything has to reach the daemon from outside", () => {
-  const keys = { ...env, H: "h", K: "k" };
-  expect(() => loadConfig({ ...json, sources: { linear: [{ account: "team", shared: true, webhookSecret: "H", apiKey: "K" }] } }, keys)).toThrow("publicUrl");
+  expect(() => loadConfig({ ...json, sources: { composio: [{ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY" }] } }, composioKeys)).toThrow("publicUrl");
   expect(() => loadConfig({ ...json, mcpServers: { notion: { url: "https://mcp.notion.com/mcp", oauth: true } } }, env)).toThrow("publicUrl");
 });
 
@@ -169,7 +209,7 @@ it("reads what a Clot is about", () => {
 });
 
 it("refuses a credential written into the file instead of the name of its .env key", () => {
-  expect(() => loadConfig(withSources({ linear: [{ account: "team", shared: true, webhookSecret: "lin_wh_abc123", apiKey: "K" }] }), { ...env, K: "k" })).toThrow();
+  expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true, apiKey: "lin_api_abc123" }), composioKeys)).toThrow();
 });
 
 it("reads the worker limit, from 1 to 20, and names maxWorkers when it is wrong", () => {

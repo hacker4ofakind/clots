@@ -45,6 +45,8 @@ export interface ClotDeps {
   memory?: { list(): string; undo(): Promise<string> };
   /** Answers `&calendar undo`. Absent when no calendar can be changed. */
   calendar?: { undo(clot: string): Promise<string> };
+  /** Answers `&composio undo`. Absent when no Composio account is configured. */
+  composio?: { undo(clot: string): Promise<string> };
   /** One line per listed worker, for every prompt and the recap. */
   workerLines?: (clot: string) => string[];
   /** Called when a turn of this Clot hits the usage limit. resetsAt is in Unix seconds. */
@@ -60,11 +62,11 @@ export interface ClotDeps {
 }
 
 /** A command the daemon answers at once, without a turn and without the session. */
-type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" | "memory" | "calendar" | "spend" }>;
+type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" | "memory" | "calendar" | "composio" | "spend" }>;
 
 /** Returns the command when it is one answered at once; an `&effort` that carries a message is not. */
 function instantCommand(command: Command): InstantCommand | undefined {
-  return command.kind === "invalid" || command.kind === "rules" || command.kind === "memory" || command.kind === "calendar" || command.kind === "spend" || (command.kind === "effort" && command.rest === "") ? command : undefined;
+  return command.kind === "invalid" || command.kind === "rules" || command.kind === "memory" || command.kind === "calendar" || command.kind === "composio" || command.kind === "spend" || (command.kind === "effort" && command.rest === "") ? command : undefined;
 }
 
 const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: string; closed: string }> = {
@@ -86,6 +88,8 @@ export class Clot {
   private live?: TurnHandle;
   /** What the running turn is for. Only a chat turn takes in the user's messages while it runs. */
   private liveKind: TurnKind = "chat";
+  /** The running chat turn's context, so a message fed into it joins the text the write reviewer may trust. */
+  private liveContext?: TurnContext;
   /** The last of the daemon's notes that the running turn was given, or 0 when it was given none. */
   private liveNotes = 0;
   private draining = false;
@@ -157,6 +161,7 @@ export class Clot {
       // Refused once the turn's input has closed; the message then stays pending for the next turn,
       // and a one-off effort is kept for it.
       if (!live.push(`${MIDTURN_PREFIX}\n${text}`, effort)) return;
+      if (this.liveContext) this.liveContext.userText = `${this.liveContext.userText ?? ""}\n\n${text}`.trim();
       if (oneOff !== null) store.setNextEffort(name, null);
       store.appendTail(name, "user", text);
       store.setInboxStatus(m.id, "running");
@@ -266,6 +271,9 @@ export class Clot {
     } else if (command.kind === "calendar") {
       const calendar = this.d.calendar;
       await chat.post(channelId, calendar === undefined ? "No calendar can be changed from this daemon." : await calendar.undo(name));
+    } else if (command.kind === "composio") {
+      const composio = this.d.composio;
+      await chat.post(channelId, composio === undefined ? "No Composio account is configured." : await composio.undo(name));
     } else {
       await chat.post(channelId, `I don't know \`&${command.name}\` used that way. ${COMMAND_USAGE}`);
     }
@@ -316,6 +324,7 @@ export class Clot {
       result = row.kind === "digest" ? await this.runDigestTurn(row, session) : isEvent ? await this.runEventTurn(row, session) : row.kind === "worker" || row.kind === "choice" ? await this.runWorkerTurn(row, session) : await this.runTurn(row, session, command);
     } finally {
       this.live = undefined;
+      this.liveContext = undefined;
       stopTyping();
     }
     await this.posts;
@@ -512,13 +521,16 @@ export class Clot {
     const prompt = buildPrompt({ text, ...this.shared(session) });
 
     this.liveKind = "chat";
+    // The user's own words: the one text a write the Clot asks for may be judged against.
+    const context: TurnContext = { clot: name, kind: "chat", outsider: row.outsider, userText: text };
+    this.liveContext = context;
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt,
       effort,
       role: "main",
       model: OPUS,
-      tools: this.d.makeTools?.({ clot: name, kind: "chat", outsider: row.outsider }),
+      tools: this.d.makeTools?.(context),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;

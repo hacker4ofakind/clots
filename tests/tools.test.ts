@@ -9,7 +9,7 @@ import { RuleWriter } from "../src/rule-writer.js";
 import { parseRuleFile, Rulebook } from "../src/rulebook.js";
 import type { RuleEdit, RuleScope } from "../src/rulebook-edit.js";
 import { Store } from "../src/store.js";
-import { describeEmailAccounts, makeTools, showRules, UNDONE_REFUSAL, type DaemonTools, type TurnContext, type TurnKind } from "../src/tools.js";
+import { describeEmailAccounts, makeTools, showRules, UNDONE_REFUSAL, type DaemonTools, type ToolDeps, type TurnContext, type TurnKind } from "../src/tools.js";
 
 const Z = "​";
 
@@ -416,7 +416,7 @@ describe("email_draft", () => {
 });
 
 describe("calendar_list", () => {
-  const occurrence = { uid: "demo@google.com", title: "Demo with ACME", start: new Date("2026-10-16T12:00:00Z"), end: new Date("2026-10-16T13:00:00Z"), allDay: false, location: "Room 2", description: "Show the export.", organizer: "me@gmail.com", guests: ["ann@acme.com"], repeats: false };
+  const occurrence = { uid: "demo@google.com", icalUid: "demo@google.com", title: "Demo with ACME", start: new Date("2026-10-16T12:00:00Z"), end: new Date("2026-10-16T13:00:00Z"), allDay: false, location: "Room 2", description: "Show the export.", organizer: "me@gmail.com", guests: ["ann@acme.com"], repeats: false };
   let asked: { account: string; from: string; to: string }[];
   let calls: { account: string; req: any }[] = [];
   const scriptAnswers: Record<string, any> = {};
@@ -435,7 +435,7 @@ describe("calendar_list", () => {
             calls.push({ account, req });
             return scriptAnswers[req.action] ?? { ok: false, reason: "no answer set", reached: true };
           },
-          accounts: [{ account: "me", shared: true, icalUrl: "u", script: { url: "s", secret: "x" }, leadMinutes: [1440], pollMinutes: 5 }],
+          accounts: [{ toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], leadMinutes: [1440], pollMinutes: 5 }],
           timeZone: "Europe/Zurich",
           now: () => new Date("2026-10-15T12:30:00Z").getTime(),
           list: async (account, from, to) => {
@@ -702,5 +702,36 @@ describe("rulebook_webhook", () => {
     expect(await tools("chat").webhook({ action: "set", file: "global", recipe })).toContain("Applied");
     expect(opened).toEqual([]);
     expect(await tools("chat").webhook({ action: "set", file: "own", recipe: { name: "x" } as never })).toContain("Not done");
+  });
+});
+
+describe("the Composio tools", () => {
+  const withComposio = (kind: TurnKind, composio?: ToolDeps["composio"]) =>
+    makeTools(
+      { rulebook, writer, asks: { rule: async () => "FILED" }, store, senders: {}, say: async () => undefined, handOver: async () => "", ...(composio === undefined ? {} : { composio }) },
+      { clot: "graphite", kind, outsider: kind === "event", userText: kind === "chat" ? "go" : undefined },
+    );
+
+  it("are absent when no Composio account is configured", () => {
+    const t = withComposio("chat");
+    expect(t.composioFind).toBeUndefined();
+    expect(t.composioRun).toBeUndefined();
+  });
+
+  it("hand each call to Composio with the turn's own context, in every kind of turn, since the tool rates each call itself", async () => {
+    const seen: { ctx: TurnContext; what: string }[] = [];
+    const composio = {
+      find: async (ctx: TurnContext, a: { account: string; query: string }) => (seen.push({ ctx, what: `find ${a.account} ${a.query}` }), "FOUND"),
+      run: async (ctx: TurnContext, a: { account: string; tool: string; args: Record<string, unknown> }) => (seen.push({ ctx, what: `run ${a.account} ${a.tool} ${JSON.stringify(a.args)}` }), "RAN"),
+    };
+    for (const kind of ["chat", "event", "worker"] as const) {
+      const t = withComposio(kind, composio);
+      expect(await t.composioFind!({ account: "linear:proton", query: "archive" })).toBe("FOUND");
+      expect(await t.composioRun!({ account: "linear:proton", tool: "LINEAR_GET_LINEAR_ISSUE", args: { issue_id: "CLO-1" } })).toBe("RAN");
+    }
+    expect(seen.map((s) => s.what)).toEqual(Array(3).fill(["find linear:proton archive", 'run linear:proton LINEAR_GET_LINEAR_ISSUE {"issue_id":"CLO-1"}']).flat());
+    expect(seen.map((s) => s.ctx.kind)).toEqual(["chat", "chat", "event", "event", "worker", "worker"]);
+    expect(seen[0].ctx.userText).toBe("go");
+    expect(seen[2].ctx.outsider).toBe(true);
   });
 });

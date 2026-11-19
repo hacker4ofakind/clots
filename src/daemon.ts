@@ -2,11 +2,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { addWorktree, containerName, defaultBranch, ensureContainer, hasOwnLogin, killStrayClaude, prsForBranch, refreshMainCheckout, removeWorktree, sessionEnv, sessionExistsAsync, worktreeExists } from "./agent/container.js";
 import { DockerMemoryFolders } from "./agent/memory-folder.js";
-import { HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
+import { CLOT_SYSTEM_PROMPT, composioNote, HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
 import { SdkRunner } from "./agent/runner.js";
 import { DiscordChat } from "./chat/discord.js";
 import { Clot } from "./clot.js";
-import { HOME_CLOT, loadConfig, type AccountBase } from "./config.js";
+import { HOME_CLOT, isCalendar, loadConfig, type AccountBase, type NotionAccount } from "./config.js";
 import { githubCommentSender } from "./events/github-comment.js";
 import { isSelfCaused, repoSlug } from "./events/github.js";
 import { enricherBySource, type Enricher } from "./enrich.js";
@@ -20,7 +20,18 @@ import { readEnvFile } from "./env-file.js";
 import { recipeHandler } from "./webhook-recipe.js";
 import { StoredOAuth } from "./mcp/oauth.js";
 import { CalendarFeed } from "./sources/calendar.js";
-import { calendarScript } from "./sources/calendar-script.js";
+import { calendarOverComposio } from "./sources/calendar-composio.js";
+import { composioKind } from "./asks/composio.js";
+import { ComposioActions } from "./composio/actions.js";
+import { sdkComposioApi } from "./composio/api.js";
+import { Composio, WEBHOOK_SECRET_KEY } from "./composio/component.js";
+import { composioHandler } from "./composio/intake.js";
+import { Meter } from "./composio/meter.js";
+import { sdkWriteReviewer } from "./composio/reviewer.js";
+import { defFor } from "./composio/toolkits/index.js";
+import { ComposioUndo } from "./composio/undo.js";
+import { genericMapper } from "./sources/generic.js";
+import { posthogMapper } from "./sources/posthog.js";
 import { draftFates, imapflowClient, MailboxListener, saveDraft, saveSent } from "./sources/imap.js";
 import { Asks } from "./asks.js";
 import { askEmail, emailKind, type SendRequest } from "./asks/email.js";
@@ -32,10 +43,10 @@ import { migrateAsks } from "./asks-migration.js";
 import { CalendarUndo } from "./calendar-undo.js";
 import { Waiting } from "./waiting.js";
 import { DraftTracker } from "./drafts.js";
-import { linearCommentSender, linearEnricher, linearHandler, linearMember } from "./sources/linear.js";
-import { notionBot, notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
+import { linearCommentSender, linearEnricher, linearMapper } from "./sources/linear.js";
+import { notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
 import { emailReplySender, mailer, smtpTransport } from "./sources/smtp.js";
-import { stripeEnricher, stripeHandler } from "./sources/stripe.js";
+import { stripeEnricher, stripeMapper } from "./sources/stripe.js";
 import { GlobalMemory } from "./global-memory.js";
 import { handOver } from "./hand-over.js";
 import { Supervisor } from "./listeners.js";
@@ -81,6 +92,12 @@ let onPullRequest: (a: PullRequestChange) => Promise<void> = async () => undefin
 const handlers = new Map<string, Handler>([
   ["/webhooks/github", githubHandler({ secret: config.webhookSecret, insertEvent: (event) => store.insertEvent(event), now: () => Date.now(), onPullRequest: (a) => onPullRequest(a) })],
 ]);
+/**
+ * Composio's path answers from the start: 503 until the daemon has set it up, which tells Composio to deliver
+ * again, instead of 404, which says there is nothing here.
+ */
+let composioIntake: Handler = async () => ({ status: 503, text: "starting" });
+if (config.sources.composio.length > 0) handlers.set("/webhooks/composio", (req) => composioIntake(req));
 /** The webhook recipes' paths, /webhooks/r/<name>, set once the rulebook is read. */
 let recipeHandlers: (name: string) => Handler | undefined = () => undefined;
 const intake = startIntake({
@@ -224,6 +241,43 @@ const after = (ms: number, fn: () => void) => {
   const timer = setTimeout(fn, ms);
   return () => clearTimeout(timer);
 };
+const supervisor = new Supervisor({ schedule: (ms, fn) => after(ms, fn) });
+/** Tells the user about an account: in its Clot's channel, or in every Clot's channel when it is shared. */
+const tellAccount =
+  (account: { clot?: string }) =>
+  async (text: string): Promise<void> => {
+    for (const name of account.clot === undefined ? names : [account.clot]) await say(name, text);
+  };
+
+// Composio: the accounts, the one component that talks to it, and what the Clots may do through it. The
+// Composio key is read here and goes nowhere else: no container, no session, no log line.
+/** The home Clot's channel, or the first Clot's when there is no home Clot. */
+const tellHome = (text: string): Promise<void> => say(config.home ? HOME_CLOT : names[0]!, text);
+/** An account's own Clot's channel, or the home Clot's for a shared account. */
+const tellComposio = (account: { clot?: string }) => (text: string): Promise<void> => (account.clot === undefined ? tellHome(text) : say(account.clot, text));
+const composioMeter = new Meter({ store, now: () => Date.now(), tellHome });
+const composio =
+  config.sources.composio.length === 0
+    ? undefined
+    : new Composio({
+        api: sdkComposioApi(config.composioApiKey!),
+        store,
+        accounts: config.sources.composio,
+        publicUrl: config.publicUrl,
+        tell: (account, text) => tellComposio(account)(text),
+        tellHome,
+        now: () => Date.now(),
+        schedule: after,
+        supervisor,
+        meter: composioMeter,
+      });
+let composioActions: ComposioActions | undefined;
+const composioAsk = composio === undefined ? undefined : composioKind({ composio, actions: { executeWrite: (o) => composioActions!.executeWrite(o) } });
+/** The calendars, each over its own connection. */
+const calendars = new Map(config.sources.composio.filter(isCalendar).map((account) => [account.account, calendarOverComposio(composio!, account, config.timeZone)]));
+const calendarUndo = calendars.size === 0 ? undefined : new CalendarUndo({ store, call: (account, req) => calendars.get(account)!.call(req), timeZone: config.timeZone });
+const composioUndo = composio === undefined ? undefined : new ComposioUndo({ composio, store });
+
 /** The pinned list of everything waiting for the user, at the top of the server. */
 const waiting = new Waiting({ store, chat, after });
 const asks = new Asks({
@@ -234,11 +288,22 @@ const asks = new Asks({
   kick: (clot) => clots.get(clot)?.kick(),
   say,
   after,
-  kinds: [ruleAsk, memoryAsk, mergeAsk, choiceAsk, ...(emailAsk ? [emailAsk] : [])],
+  kinds: [ruleAsk, memoryAsk, mergeAsk, choiceAsk, ...(emailAsk ? [emailAsk] : []), ...(composioAsk ? [composioAsk] : [])],
   // Nothing posted in clots-waiting is an answer, or reaches a Clot.
   ignore: (channelId) => waiting.isChannel(channelId),
 });
 asks.onChange(() => waiting.refresh());
+if (composio !== undefined && composioAsk !== undefined) {
+  composioActions = new ComposioActions({
+    composio,
+    store,
+    // The reviewer's cost is booked to the Clot the write is for, as the triage calls are.
+    reviewer: sdkWriteReviewer((usd, clot) => bookCall("triage")(usd, clot)),
+    ask: (clot, payload, o) => asks.open(composioAsk, clot, payload, { summary: o.summary, dedupe: o.dedupe, max: 5, outsider: o.outsider }),
+    say,
+    now: () => Date.now(),
+  });
+}
 onPullRequest = async (a) => {
   await workers.onPullRequest(a);
   await withdrawMerges(asks, a);
@@ -291,9 +356,6 @@ await migrateAsks({ store, chat });
 for (const channelId of store.steeringAskChannels()) await chat.deleteChannel(channelId).catch(() => undefined);
 store.clearSteeringAsks();
 
-/** The calendars the Clots can change, each through its Apps Script, and the undo of their changes. */
-const scripts = new Map(config.sources.calendar.filter((account) => account.script !== undefined).map((account) => [account.account, calendarScript(account.script!)]));
-const calendarUndo = scripts.size === 0 ? undefined : new CalendarUndo({ store, call: (account, req) => scripts.get(account)!.call(req), timeZone: config.timeZone });
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check. */
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Set up with the email sources. */
 const drafts = config.sources.email.length === 0 ? undefined : new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
@@ -317,7 +379,7 @@ for (const c of definitions) {
     env: sessionEnv({ claudeToken: config.claudeToken, githubToken: config.githubToken, ownLogin }),
     testCommand: c.testCommand,
     // The home Clot has no clone to start in, and a system prompt that names no project.
-    ...(c.repoUrl === undefined ? { cwd: "/workspace", systemPrompt: HOME_SYSTEM_PROMPT } : {}),
+    ...(c.repoUrl === undefined ? { cwd: "/workspace", systemPrompt: HOME_SYSTEM_PROMPT + composioNote(config.sources.composio) } : config.sources.composio.length > 0 ? { systemPrompt: CLOT_SYSTEM_PROMPT + composioNote(config.sources.composio) } : {}),
     onRateLimit: (state) => meter.observe(state),
   });
   runners.set(c.name, runner);
@@ -350,6 +412,7 @@ for (const c of definitions) {
     },
     memory: { list: () => memory.list(), undo: () => memory.undo() },
     ...(calendarUndo ? { calendar: calendarUndo } : {}),
+    ...(composioUndo ? { composio: composioUndo } : {}),
     makeTools: (ctx) => makeTools(toolDeps, ctx),
     standingFor: (name, event) => matchStanding(rulebook.standingFor(name), event, event.kind === "batch" ? store.eventsMergedInto(event.id) : []),
     rules: {
@@ -385,23 +448,7 @@ else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
 
 // Sources. Each sets up its intake path, its enricher, its way of sending and its listeners here.
 const enrichers: Record<string, Enricher> = { github: inlineCommentReader(config.githubToken) };
-const supervisor = new Supervisor({
-  schedule: (ms, fn) => {
-    const timer = setTimeout(fn, ms);
-    return () => clearTimeout(timer);
-  },
-});
-/** Tells the user about an account: in its Clot's channel, or in every Clot's channel when it is shared. */
-const tellAccount =
-  (account: { clot?: string }) =>
-  async (text: string): Promise<void> => {
-    for (const name of account.clot === undefined ? names : [account.clot]) await say(name, text);
-  };
 const insertEvent = (event: ClotEvent) => store.insertEvent(event);
-
-// Stripe: one path per business, each with its own signing secret.
-for (const account of config.sources.stripe) handlers.set(`/webhooks/stripe/${account.account}`, stripeHandler(account, { insertEvent, now: () => Date.now() }));
-if (config.sources.stripe.length > 0) enrichers.stripe = stripeEnricher(config.sources.stripe);
 
 // Email: one connection per watched mailbox, held open and reopened when it drops.
 for (const account of config.sources.email) {
@@ -415,50 +462,54 @@ if (config.sources.email.length > 0) {
   toolDeps.senders.email_reply = emailReplySender({ accounts: config.sources.email, store, send: sendMail });
 }
 
-// Calendar: each feed polled for reminders, and read for calendar_list.
+// Composio: Stripe, Linear, Notion, the calendar, PostHog and any other toolkit. One path takes every delivery;
+// each source keeps its enricher and its way of sending, now over Composio's tools. Notion's events still come on
+// its own path, since Composio's Notion triggers need an OAuth app (spec section 9).
 const feeds = new Map<string, CalendarFeed>();
-for (const account of config.sources.calendar) {
-  const ownAddresses = [...config.sources.email.flatMap((a) => [a.address, ...a.addresses]), ...config.sources.calendar.map((a) => a.account).filter((name) => name.includes("@"))];
-  const feed = new CalendarFeed({ account, timeZone: config.timeZone, store, deliver: (event) => deliver(event), now: () => Date.now(), ownAddresses });
-  feeds.set(account.account, feed);
-  supervisor.start({ name: `calendar ${account.account}`, everyMs: account.pollMinutes * 60_000, tell: tellAccount(account), run: () => feed.poll() });
-}
-/**
- * Learns who the Clots are at a source, to drop what they did themselves. A lookup that fails is
- * tried again with a growing wait, up to an hour; until it works, that source's standing sends are refused.
- */
-function learnIdentity(what: string, lookup: () => Promise<string>, learnt: (id: string) => void, waitMs = 5_000): void {
-  lookup().then(learnt, (error) => {
-    console.warn(`[events] could not read ${what}; its standing sends wait until it is read. Trying again in ${Math.round(waitMs / 1000)} s:`, error);
-    setTimeout(() => learnIdentity(what, lookup, learnt, Math.min(waitMs * 2, 3_600_000)), waitMs).unref();
+if (composio !== undefined) {
+  composioIntake = composioHandler({
+    composio,
+    secret: () => store.getState(WEBHOOK_SECRET_KEY),
+    mappers: { linear: linearMapper, stripe: stripeMapper, posthog: posthogMapper, generic: genericMapper },
+    insertEvent,
+    now: () => Date.now(),
+    meter: composioMeter,
   });
-}
+  const has = (toolkit: string) => config.sources.composio.some((a) => a.toolkit === toolkit);
+  if (has("stripe")) enrichers.stripe = stripeEnricher(composio);
+  if (has("linear")) {
+    enrichers.linear = linearEnricher(composio);
+    toolDeps.senders.linear_comment = linearCommentSender(composio);
+  }
+  for (const account of config.sources.composio.filter((a): a is NotionAccount => a.toolkit === "notion")) {
+    handlers.set(`/webhooks/notion/${account.account}`, notionHandler(account, { store, now: () => Date.now(), botId: () => composio.identity(account), log: (text) => console.log(text) }));
+  }
+  if (has("notion")) {
+    enrichers.notion = notionEnricher(composio);
+    toolDeps.senders.notion_comment = notionCommentSender(composio);
+  }
 
-// Linear: one path per workspace. The Clots' member is learnt from its key, to drop what it did itself.
-const linearMembers = new Map<string, string>();
-const linearMemberOf = (account: string) => linearMembers.get(account) ?? "";
-for (const account of config.sources.linear) {
-  handlers.set(`/webhooks/linear/${account.account}`, linearHandler(account, { insertEvent, now: () => Date.now(), memberId: () => linearMemberOf(account.account) }));
-  learnIdentity(`the Clots' Linear member for ${account.account}`, () => linearMember(account.apiKey), (id) => {
-    linearMembers.set(account.account, id);
-    console.log(`[events] the Clots act on Linear (${account.account}) as member ${id}`);
-  });
-}
-if (config.sources.linear.length > 0) {
-  enrichers.linear = linearEnricher(config.sources.linear);
-  toolDeps.senders.linear_comment = linearCommentSender(config.sources.linear, linearMemberOf);
-}
-
-// Notion: one path per workspace. The integration's bot is learnt from its token, to drop what it did itself.
-const notionBots = new Map<string, string>();
-const notionBotOf = (account: string) => notionBots.get(account) ?? "";
-for (const account of config.sources.notion) {
-  handlers.set(`/webhooks/notion/${account.account}`, notionHandler(account, { store, now: () => Date.now(), botId: () => notionBotOf(account.account), log: (text) => console.log(text) }));
-  learnIdentity(`the Notion integration's bot for ${account.account}`, () => notionBot(account.token), (id) => notionBots.set(account.account, id));
-}
-if (config.sources.notion.length > 0) {
-  enrichers.notion = notionEnricher(config.sources.notion);
-  toolDeps.senders.notion_comment = notionCommentSender(config.sources.notion, notionBotOf);
+  // Calendar: each feed polled for reminders, and read for calendar_list. Nothing is polled until the account has signed in.
+  for (const account of config.sources.composio.filter(isCalendar)) {
+    const ownAddresses = config.sources.email.flatMap((a) => [a.address, ...a.addresses]);
+    const feed = new CalendarFeed({ account, timeZone: config.timeZone, store, deliver: (event) => deliver(event), now: () => Date.now(), ownAddresses, source: calendars.get(account.account)! });
+    feeds.set(account.account, feed);
+    const connected = () => store.composio.account(composio.userOf(account))?.status === "active";
+    supervisor.start({ name: `calendar ${account.account}`, everyMs: account.pollMinutes * 60_000, tell: tellComposio(account), run: async () => (connected() ? feed.poll() : undefined) });
+  }
+  if (feeds.size > 0) {
+    toolDeps.calendar = {
+      accounts: config.sources.composio.filter(isCalendar),
+      timeZone: config.timeZone,
+      now: () => Date.now(),
+      list: (account, from, to) => feeds.get(account)!.list(from, to),
+      call: (account, req) => calendars.get(account)!.call(req),
+      connected: (account) => store.composio.account(`googlecalendar:${account}`)?.status === "active",
+    };
+  }
+  toolDeps.composio = { find: (ctx, a) => composioActions!.find(ctx, a), run: (ctx, a) => composioActions!.run(ctx, a) };
+  // Last: the webhook, each account and the daily check start as jobs of their own, so nothing here holds up the daemon.
+  composio.start();
 }
 
 // The daemon's MCP servers. A server that needs a login gets a link in chat, at most once an hour.
@@ -542,21 +593,15 @@ recipeHandlers = recipeHandler({
   },
 });
 
-if (feeds.size > 0) {
-  toolDeps.calendar = {
-    accounts: config.sources.calendar,
-    timeZone: config.timeZone,
-    now: () => Date.now(),
-    list: (account, from, to) => feeds.get(account)!.list(from, to),
-    ...(scripts.size > 0 ? { call: (account: string, req: Parameters<ReturnType<typeof calendarScript>["call"]>[0]) => scripts.get(account)!.call(req) } : {}),
-  };
-}
 // End of sources.
 
 const eventRouter = new EventRouter({
   bindingOf: bindingResolver({
     repos: repoToClot,
-    accounts: (Object.entries(config.sources) as [string, AccountBase[]][]).flatMap(([source, accounts]) => accounts.map((account) => ({ ...account, source }))),
+    accounts: [
+      ...config.sources.email.map((account) => ({ ...account, source: "email" })),
+      ...config.sources.composio.map((account): AccountBase & { source: string } => ({ account: account.account, clot: account.clot, shared: account.shared, source: defFor(account.toolkit).source })),
+    ],
     recipes: (name) => rulebook.recipeBinding(name),
   }),
   rules: () => rulebook.routing(),

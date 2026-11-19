@@ -4,8 +4,8 @@ Date: 2026-10-10
 Status: approved in brainstorming. Stages 1, 2a, 2b and 2c (but for Sentry, Vercel
 and PostHog), global memory, and the main session and workers (section 4) are
 implemented, and so is autonomy (sections 3 and 7: the four axes, asks, choices,
-merges and `clots-waiting`), and stage 2d. Stage 2e (Composio) is specified and
-next to build.
+merges and `clots-waiting`), and stage 2d. Stage 2e (Composio) is built (code
+and unit tests); its live checks are reported in its plan's Implementation Notes.
 
 ## 1. What Clots is
 
@@ -859,7 +859,8 @@ passes a configured figure.
   Google account through Composio's managed sign-in, so there is no Google Cloud
   project. Every trigger is delivered to one path, `/webhooks/composio`, signed
   by Composio, and mapped to the common event; enrichment uses Composio's read
-  tools.
+  tools. Notion's events keep stage 2c's own webhook, since Composio's Notion
+  triggers need a Notion OAuth app.
 - **Watch recipes**: the daemon acts as an MCP client of servers set in its own
   configuration, logging in through OAuth with a link it posts in chat when a
   server needs it. On a timer it calls one read-only tool and diffs the result

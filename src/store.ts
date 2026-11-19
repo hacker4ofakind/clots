@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { ComposioStore } from "./composio/store.js";
 import type { ClotEvent } from "./events/types.js";
 import type { Effort, MainEffort, SeedReason, TailMessage, WorkerModel } from "./types.js";
 
@@ -505,11 +506,14 @@ function toEvent(r: any): EventRow {
 
 export class Store {
   private db: Database.Database;
+  /** What Composio keeps: accounts, trigger instances and the log of the Clots' writes. */
+  readonly composio: ComposioStore;
 
   constructor(path: string) {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     this.db.exec(SCHEMA);
+    this.composio = new ComposioStore(this.db);
     this.addColumn("sessions", "seed_reason", "TEXT NOT NULL DEFAULT 'context'");
     this.addColumn("clots", "next_effort", "TEXT");
     this.addColumn("inbox", "kind", "TEXT NOT NULL DEFAULT 'message'");
@@ -540,6 +544,11 @@ export class Store {
     // Events can no longer be asked about or fed into a running turn: one a question was open on runs from the start again; one fed into a turn is done.
     this.db.exec("UPDATE events SET status = 'received' WHERE status = 'asking'");
     this.db.exec("UPDATE events SET status = 'dropped', note = 'fed into a turn' WHERE status = 'steered'");
+    // Calendar changes logged before 2e hold iCal UIDs that the Composio calendar cannot address: one undo of them would fail, so there is nothing to put back.
+    if (this.getState("composio.migrated") === undefined) {
+      this.db.exec("DELETE FROM calendar_changes");
+      this.setState("composio.migrated", "1");
+    }
   }
 
   close(): void {

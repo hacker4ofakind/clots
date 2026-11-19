@@ -21,11 +21,14 @@
   "spend": { "weeklyWarnUsd": 50 },
   "clots": [{ "name": "graphite", "repoUrl": "https://github.com/OWNER/REPO.git", "testCommand": "npm test", "about": "One line on what this project is." }],
   "sources": {
-    "stripe": [{ "account": "graphite", "clot": "graphite", "webhookSecret": "STRIPE_GRAPHITE_WEBHOOK_SECRET", "apiKey": "STRIPE_GRAPHITE_KEY" }],
     "email": [{ "account": "gmail", "shared": true, "address": "you@gmail.com", "password": "EMAIL_GMAIL_PASSWORD", "mailboxes": ["Clots"] }],
-    "calendar": [{ "account": "personal", "shared": true, "icalUrl": "CALENDAR_PERSONAL_ICAL", "script": "CALENDAR_PERSONAL_SCRIPT", "scriptSecret": "CALENDAR_PERSONAL_SCRIPT_SECRET", "leadTimes": ["24h"] }],
-    "linear": [{ "account": "team", "shared": true, "webhookSecret": "LINEAR_TEAM_WEBHOOK_SECRET", "apiKey": "LINEAR_TEAM_KEY" }],
-    "notion": [{ "account": "workspace", "shared": true, "token": "NOTION_WORKSPACE_TOKEN" }]
+    "composio": [
+      { "toolkit": "linear", "account": "team", "shared": true, "audience": "team", "apiKey": "LINEAR_TEAM_KEY" },
+      { "toolkit": "notion", "account": "workspace", "shared": true, "audience": "private", "apiKey": "NOTION_WORKSPACE_KEY" },
+      { "toolkit": "stripe", "account": "graphite", "clot": "graphite", "audience": "public", "apiKey": "STRIPE_GRAPHITE_KEY" },
+      { "toolkit": "googlecalendar", "account": "personal", "shared": true, "audience": "private", "leadTimes": ["24h"], "pollMinutes": 5 },
+      { "toolkit": "posthog", "account": "graphite", "clot": "graphite", "audience": "public", "apiKey": "POSTHOG_GRAPHITE_KEY", "region": "us", "projectId": 123456, "events": ["signup"] }
+    ]
   },
   "mcpServers": { "notion": { "url": "https://mcp.notion.com/mcp", "oauth": true } }
 }

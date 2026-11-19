@@ -1,0 +1,86 @@
+{
+  "synthetic": "the object of a Stripe event recorded in stage 2c, wrapped as Composio delivers a trigger; Composio's Stripe account had no webhook permission to record a real one",
+  "path": "/webhooks/composio",
+  "headers": {},
+  "raw": "{\"id\":\"msg_synthetic_4\",\"timestamp\":\"2026-10-16T09:00:00.000Z\",\"type\":\"composio.trigger.message\",\"metadata\":{\"log_id\":\"log_4\",\"trigger_slug\":\"STRIPE_CHARGE_DISPUTE_CREATED\",\"toolkit_slug\":\"stripe\",\"trigger_id\":\"ti_stripe\",\"connected_account_id\":\"ca_stripe\",\"auth_config_id\":\"ac_stripe\",\"user_id\":\"stripe:shop\"},\"data\":{\"id\":\"du_1UQk7wRKNANwdhdDL2gvmMDs\",\"object\":\"dispute\",\"amount\":100,\"balance_transaction\":null,\"balance_transactions\":[],\"charge\":\"ch_3UQk7vRKNANwdhdD11EnIE7x\",\"created\":1792053304,\"currency\":\"usd\",\"enhanced_eligibility_types\":[],\"evidence\":{\"access_activity_log\":null,\"appeal\":null,\"billing_address\":null,\"cancellation_policy\":null,\"cancellation_policy_disclosure\":null,\"cancellation_rebuttal\":null,\"customer_communication\":null,\"customer_email_address\":null,\"customer_name\":null,\"customer_purchase_ip\":null,\"customer_signature\":null,\"duplicate_charge_documentation\":null,\"duplicate_charge_explanation\":null,\"duplicate_charge_id\":null,\"enhanced_evidence\":{},\"product_description\":null,\"receipt\":null,\"refund_policy\":null,\"refund_policy_disclosure\":null,\"refund_refusal_explanation\":null,\"service_date\":null,\"service_documentation\":null,\"shipping_address\":null,\"shipping_carrier\":null,\"shipping_date\":null,\"shipping_documentation\":null,\"shipping_tracking_number\":null,\"uncategorized_file\":null,\"uncategorized_text\":null},\"evidence_details\":{\"due_by\":1792799999,\"enhanced_eligibility\":{},\"has_evidence\":false,\"past_due\":false,\"submission_count\":0,\"submission_method\":\"not_submitted\"},\"intended_submission_method\":\"prefer_manual\",\"is_charge_refundable\":true,\"livemode\":false,\"metadata\":{},\"payment_intent\":\"pi_3UQk7vRKNANwdhdD1SY3mlWs\",\"payment_method_details\":{\"card\":{\"brand\":\"visa\",\"case_type\":\"inquiry\",\"network\":\"visa\",\"network_reason_code\":\"10\"},\"type\":\"card\"},\"reason\":\"fraudulent\",\"status\":\"warning_needs_response\"}}",
+  "body": {
+    "id": "msg_synthetic_4",
+    "timestamp": "2026-10-16T09:00:00.000Z",
+    "type": "composio.trigger.message",
+    "metadata": {
+      "log_id": "log_4",
+      "trigger_slug": "STRIPE_CHARGE_DISPUTE_CREATED",
+      "toolkit_slug": "stripe",
+      "trigger_id": "ti_stripe",
+      "connected_account_id": "ca_stripe",
+      "auth_config_id": "ac_stripe",
+      "user_id": "stripe:shop"
+    },
+    "data": {
+      "id": "du_1UQk7wRKNANwdhdDL2gvmMDs",
+      "object": "dispute",
+      "amount": 100,
+      "balance_transaction": null,
+      "balance_transactions": [],
+      "charge": "ch_3UQk7vRKNANwdhdD11EnIE7x",
+      "created": 1792053304,
+      "currency": "usd",
+      "enhanced_eligibility_types": [],
+      "evidence": {
+        "access_activity_log": null,
+        "appeal": null,
+        "billing_address": null,
+        "cancellation_policy": null,
+        "cancellation_policy_disclosure": null,
+        "cancellation_rebuttal": null,
+        "customer_communication": null,
+        "customer_email_address": null,
+        "customer_name": null,
+        "customer_purchase_ip": null,
+        "customer_signature": null,
+        "duplicate_charge_documentation": null,
+        "duplicate_charge_explanation": null,
+        "duplicate_charge_id": null,
+        "enhanced_evidence": {},
+        "product_description": null,
+        "receipt": null,
+        "refund_policy": null,
+        "refund_policy_disclosure": null,
+        "refund_refusal_explanation": null,
+        "service_date": null,
+        "service_documentation": null,
+        "shipping_address": null,
+        "shipping_carrier": null,
+        "shipping_date": null,
+        "shipping_documentation": null,
+        "shipping_tracking_number": null,
+        "uncategorized_file": null,
+        "uncategorized_text": null
+      },
+      "evidence_details": {
+        "due_by": 1792799999,
+        "enhanced_eligibility": {},
+        "has_evidence": false,
+        "past_due": false,
+        "submission_count": 0,
+        "submission_method": "not_submitted"
+      },
+      "intended_submission_method": "prefer_manual",
+      "is_charge_refundable": true,
+      "livemode": false,
+      "metadata": {},
+      "payment_intent": "pi_3UQk7vRKNANwdhdD1SY3mlWs",
+      "payment_method_details": {
+        "card": {
+          "brand": "visa",
+          "case_type": "inquiry",
+          "network": "visa",
+          "network_reason_code": "10"
+        },
+        "type": "card"
+      },
+      "reason": "fraudulent",
+      "status": "warning_needs_response"
+    }
+  }
+}

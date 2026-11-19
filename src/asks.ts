@@ -4,7 +4,7 @@ import type { AskRow, InboxInsert, Store } from "./store.js";
 
 export type { AskRow } from "./store.js";
 
-export type AskKindName = "rule" | "email" | "merge" | "choice" | "memory";
+export type AskKindName = "rule" | "email" | "merge" | "choice" | "memory" | "composio";
 
 /** The inbox row an ask's close hands to its Clot, stored in the same transaction as the close. */
 export interface HandOver {

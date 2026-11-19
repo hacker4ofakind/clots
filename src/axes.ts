@@ -41,6 +41,9 @@ export const TOOL_AXES: Record<RatedTool, Axes> = {
   calendarList: LOW,
   calendarWrite: LOW,
   calendarRemove: LOW,
+  composioFind: LOW,
+  // Rates each call itself, in code (see src/composio/rating.ts): a write that reaches people or moves money becomes an ask there, not here.
+  composioRun: LOW,
   mcpList: LOW,
   watchTry: LOW,
   watch: LOW,

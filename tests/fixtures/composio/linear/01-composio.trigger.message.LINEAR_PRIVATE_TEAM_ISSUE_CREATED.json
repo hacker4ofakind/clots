@@ -1,0 +1,60 @@
+{
+  "path": "/webhooks/composio",
+  "headers": {
+    "content-type": "application/json",
+    "webhook-id": "msg_9bdafeee-e359-411e-8d8a-f369c0a10d2a",
+    "webhook-signature": "v1,PbcX2bs4/uPEvv4u2wuZ+/k3gMty65e9mQLkBQwPFmk=",
+    "webhook-timestamp": "1795109854"
+  },
+  "raw": "{\"id\":\"msg_9bdafeee-e359-411e-8d8a-f369c0a10d2a\",\"timestamp\":\"2026-11-19T17:37:34.914Z\",\"type\":\"composio.trigger.message\",\"metadata\":{\"log_id\":\"log_Q2tM0FNmOBy0\",\"trigger_slug\":\"LINEAR_PRIVATE_TEAM_ISSUE_CREATED\",\"toolkit_slug\":\"linear\",\"trigger_id\":\"ti_EBEO52hwyzlI\",\"connected_account_id\":\"ca_h2E3Kq6UR05s\",\"auth_config_id\":\"ac_dlvnjjJCs6TY\",\"user_id\":\"spike:linear\"},\"data\":{\"assignee\":{\"email\":\"lukbicycles.com@gmail.com\",\"id\":\"59e9b055-8868-4fd1-a2eb-0a1ade3e436a\",\"name\":\"Luk Bicycle\"},\"created_at\":\"2026-11-19T17:37:08.302Z\",\"creator\":{\"email\":\"lukbicycles.com@gmail.com\",\"id\":\"59e9b055-8868-4fd1-a2eb-0a1ade3e436a\",\"name\":\"Luk Bicycle\"},\"description\":\"i mean it's clear who this is for and why\",\"estimate\":null,\"id\":\"efe2859b-4676-43d8-8910-fa6758ad9c37\",\"identifier\":\"CLO-16\",\"labels\":[],\"number\":16,\"priority\":3,\"priority_label\":\"Medium\",\"project\":null,\"state\":{\"color\":\"#e2e2e2\",\"id\":\"d54d58f2-c0c6-4e1d-8c3e-15ecb997df95\",\"name\":\"Todo\",\"type\":\"unstarted\"},\"team\":{\"id\":\"fe19bd1c-2beb-46cd-a611-f525465a8bad\",\"key\":\"CLO\",\"name\":\"Clots\"},\"title\":\"Test from the Clots guy\",\"updated_at\":\"2026-11-19T17:37:08.302Z\",\"url\":\"https://linear.app/clots/issue/CLO-16/test-from-the-clots-guy\"}}",
+  "body": {
+    "id": "msg_9bdafeee-e359-411e-8d8a-f369c0a10d2a",
+    "timestamp": "2026-11-19T17:37:34.914Z",
+    "type": "composio.trigger.message",
+    "metadata": {
+      "log_id": "log_Q2tM0FNmOBy0",
+      "trigger_slug": "LINEAR_PRIVATE_TEAM_ISSUE_CREATED",
+      "toolkit_slug": "linear",
+      "trigger_id": "ti_EBEO52hwyzlI",
+      "connected_account_id": "ca_h2E3Kq6UR05s",
+      "auth_config_id": "ac_dlvnjjJCs6TY",
+      "user_id": "spike:linear"
+    },
+    "data": {
+      "assignee": {
+        "email": "lukbicycles.com@gmail.com",
+        "id": "59e9b055-8868-4fd1-a2eb-0a1ade3e436a",
+        "name": "Luk Bicycle"
+      },
+      "created_at": "2026-11-19T17:37:08.302Z",
+      "creator": {
+        "email": "lukbicycles.com@gmail.com",
+        "id": "59e9b055-8868-4fd1-a2eb-0a1ade3e436a",
+        "name": "Luk Bicycle"
+      },
+      "description": "i mean it's clear who this is for and why",
+      "estimate": null,
+      "id": "efe2859b-4676-43d8-8910-fa6758ad9c37",
+      "identifier": "CLO-16",
+      "labels": [],
+      "number": 16,
+      "priority": 3,
+      "priority_label": "Medium",
+      "project": null,
+      "state": {
+        "color": "#e2e2e2",
+        "id": "d54d58f2-c0c6-4e1d-8c3e-15ecb997df95",
+        "name": "Todo",
+        "type": "unstarted"
+      },
+      "team": {
+        "id": "fe19bd1c-2beb-46cd-a611-f525465a8bad",
+        "key": "CLO",
+        "name": "Clots"
+      },
+      "title": "Test from the Clots guy",
+      "updated_at": "2026-11-19T17:37:08.302Z",
+      "url": "https://linear.app/clots/issue/CLO-16/test-from-the-clots-guy"
+    }
+  }
+}

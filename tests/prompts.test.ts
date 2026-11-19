@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AXES_NOTE, buildPrompt, CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT, workerSystemPrompt } from "../src/agent/prompts.js";
+import { AXES_NOTE, buildPrompt, CLOT_SYSTEM_PROMPT, composioNote, HOME_SYSTEM_PROMPT, workerSystemPrompt } from "../src/agent/prompts.js";
 
 const base = { text: "hello", seed: null, interrupted: false };
 
@@ -118,5 +118,28 @@ describe("stage 2d", () => {
       expect(prompt).toContain("ordinary events wait and reach you later together, as one digest turn");
       expect(prompt).toContain("When a turn starts with a line saying usage is tight, follow it for every worker you start in that turn.");
     }
+  });
+});
+
+describe("composioNote", () => {
+  it("is empty without accounts, and otherwise lists each account with its audience and says how a write is decided", () => {
+    expect(composioNote([])).toBe("");
+    const note = composioNote([
+      { toolkit: "linear", account: "proton", audience: "team" },
+      { toolkit: "stripe", account: "encryptify", audience: "public" },
+    ]);
+    expect(note).toContain("- linear:proton (team)\n- stripe:encryptify (public)");
+    expect(note).toContain("composio_find");
+    expect(note).toContain("composio_run");
+    expect(note).toContain("a destructive one in a team account may be reviewed first");
+    expect(note).toContain("A write in a public account");
+    expect(note).toContain("`&composio undo`");
+    expect(note).toContain("calendar_write");
+  });
+
+  it("is added after the shared prompt and never holds a key", () => {
+    const note = composioNote([{ toolkit: "linear", account: "proton", audience: "team" }]);
+    expect(CLOT_SYSTEM_PROMPT + note).toContain("Composio:");
+    expect(note).not.toMatch(/lin_api|rk_|ntn_|ck_|COMPOSIO_API_KEY/);
   });
 });
