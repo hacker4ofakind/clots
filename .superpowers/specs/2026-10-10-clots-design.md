@@ -302,7 +302,7 @@ The main session's daemon tools:
   with its latest step (a tool's name, or a command's program and, for a few
   known programs, its subcommand, never its arguments), and when it ends, followed by the turn summary.
 - **Limit**: 3 workers run at once per host, across all its Clots, or the number in
-  `CLOTS_MAX_WORKERS`. Others wait, urgent first, then in the order they were
+  `maxWorkers` in `clots.config.json`. Others wait, urgent first, then in the order they were
   started. One heavy job at a time per host still holds.
 - **Time limit**: a worker's turn is stopped after 90 minutes and reported to the
   main session like a failure, so a stuck worker never keeps its place.
@@ -367,7 +367,7 @@ The daemon decides whether an edit is applied or put to the user, by the axes
   front of the main session's next turn. A note starts no turn.
 - **Limits:** an ask about a rule stays open until the user answers it, across
   rollovers: the rule does not depend on the session. A Clot may have three open,
-  or the number in `CLOTS_MAX_PROPOSALS`.
+  or the number in `maxProposals` in `clots.config.json`.
 - **When a Clot adds a rule unasked:** only on a clear pattern (the same kind of
   event dismissed more than once, or a stated standing preference), with the
   reason in one line, and never again once undone.
@@ -644,7 +644,7 @@ naming its own pick.
 
 - The daemon opens a choice ask, which lists the deadline in `clots-waiting`. The
   main session's turn ends, so it stays free for other events.
-- **No reply within 10 minutes** (or `CLOTS_CHOICE_TIMEOUT_MINUTES`): the daemon
+- **No reply within 10 minutes** (or `choiceTimeoutMinutes` in `clots.config.json`): the daemon
   starts a turn telling the main session the user appears to be busy, and to go
   with its pick. The Clot posts which option it took and that a reply switches it.
 - **The daemon rates no option.** An option is a sentence the model wrote, so

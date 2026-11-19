@@ -114,7 +114,7 @@ Rules:
   user has answered, the daemon posts the new text in the same channel, and once
   that post has gone out the answer applies to that text. Until then it applies to
   the text the user was shown, and the next check posts the new one again.
-- **At most three open questions**, or the number in `CLOTS_MAX_PROPOSALS`. These
+- **At most three open questions**, or the number in `maxProposals` in `clots.config.json`. These
   are counted apart from rule proposals. A changed file that finds the limit
   reached is asked about when an earlier question closes: the check that follows
   the answer asks it.

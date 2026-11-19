@@ -85,7 +85,7 @@ Whatever needs your yes is asked in a temporary channel in the Clot's category, 
 | A choice, from `ask_choice` | `<clot>-choice` | `1`/`one`/`first`, `2`/`two`/`second`, or `your pick`/`go ahead` decide it; anything else goes to the Clot as your answer. |
 | A global memory the home Clot wrote in a turn an outsider's text started | `<clot>-memory` | yes gives it to every Clot; no puts the home Clot's copy back. |
 
-A choice not answered within 10 minutes (`CLOTS_CHOICE_TIMEOUT_MINUTES`, 1 to 1440) is decided by the Clot's pick: it says which it took, and an answer in its live channel switches it. Every open ask and choice is listed in one pinned message in `clots-waiting`, at the top of the server, with a link to where it is answered and, for a choice, when it decides. The bot needs the Pin Messages permission to pin it.
+A choice not answered within 10 minutes (`choiceTimeoutMinutes` in `clots.config.json`, 1 to 1440) is decided by the Clot's pick: it says which it took, and an answer in its live channel switches it. Every open ask and choice is listed in one pinned message in `clots-waiting`, at the top of the server, with a link to where it is answered and, for a choice, when it decides. The bot needs the Pin Messages permission to pin it.
 
 Global memories the home Clot writes apply to every Clot at once and are posted with `&memory undo`; only one written in a turn an outsider's text started is asked first.
 
