@@ -317,6 +317,10 @@ One Haiku 5.5 call at medium effort, with no tools and a fixed output schema:
 the arguments, the account, its audience, whether an outsider's text started
 the turn, and facts the daemon checked itself: whether a Clot's own write
 created the target, and, where it can be read, who created and last edited it.
+In a turn the user's own chat message started, it also sees that message, the
+one trusted text in the system, so a deletion the user asked for is not put
+back to them as an ask. It never sees an event, an email, a worker's report, or
+the Clot's own reasoning.
 Its reason is shown to the user as the reviewer's words, never as the daemon's. The arguments are wrapped and labelled as untrusted, as an event is, and
 its system prompt tells it to treat them as data.
 
