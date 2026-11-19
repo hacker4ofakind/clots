@@ -117,6 +117,14 @@ const FileSchema = z.object({
     .min(1),
   // A Clot with no repository of its own, for events no project Clot is bound to.
   home: z.boolean().default(false),
+  // The share of the context window at which a session rolls over to a fresh one.
+  rolloverPercent: z.number().min(1).max(100).default(65),
+  // How many rule proposals a Clot may have waiting for the user at once.
+  maxProposals: z.number().int().min(1).default(3),
+  // How many worker turns run at once across the daemon.
+  maxWorkers: z.number().int().min(1).max(20).default(3),
+  // How long a choice waits for the user before the Clot goes with its pick.
+  choiceTimeoutMinutes: z.number().int().min(1).max(1440).default(10),
   // The address the tunnel gives the intake port, for webhooks and OAuth logins.
   publicUrl: z.url().optional(),
   // Whether a Clot may ask to send an email, which the daemon sends on the user's yes in a review channel; and how many days a request waits for that answer.
@@ -227,12 +235,6 @@ const values = (env: Record<string, string | undefined>, keys: Record<string, st
 
 export function loadConfig(json: unknown, env: Record<string, string | undefined>): Config {
   const file = FileSchema.parse(json);
-  const maxProposals = Number(env.CLOTS_MAX_PROPOSALS || "3");
-  if (!Number.isInteger(maxProposals) || maxProposals < 1) throw new Error("CLOTS_MAX_PROPOSALS must be a whole number of at least 1");
-  const maxWorkers = Number(env.CLOTS_MAX_WORKERS || "3");
-  if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 20) throw new Error("CLOTS_MAX_WORKERS must be a whole number from 1 to 20");
-  const choiceTimeoutMinutes = Number(env.CLOTS_CHOICE_TIMEOUT_MINUTES || "10");
-  if (!Number.isInteger(choiceTimeoutMinutes) || choiceTimeoutMinutes < 1 || choiceTimeoutMinutes > 1440) throw new Error("CLOTS_CHOICE_TIMEOUT_MINUTES must be a whole number from 1 to 1440");
 
   const clotNames = new Set([...file.clots.map((c) => c.name), ...(file.home ? [HOME_CLOT] : [])]);
   const base = (source: string, a: { account: string; clot?: string; shared?: true }): AccountBase => {
@@ -290,11 +292,11 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     claudeToken: secret(env, "CLAUDE_CODE_OAUTH_TOKEN"),
     githubToken: secret(env, "CLOT_GITHUB_TOKEN"),
     webhookSecret: secret(env, "GITHUB_WEBHOOK_SECRET"),
-    rolloverPercent: Number(env.CLOTS_ROLLOVER_PERCENT ?? "65"),
+    rolloverPercent: file.rolloverPercent,
     home: file.home,
-    maxProposals,
-    choiceTimeoutMinutes,
-    maxWorkers,
+    maxProposals: file.maxProposals,
+    choiceTimeoutMinutes: file.choiceTimeoutMinutes,
+    maxWorkers: file.maxWorkers,
     publicUrl,
     sendReview: { enabled: file.sendReview.enabled, maxMs: file.sendReview.days * 86_400_000 },
     gates: file.gates,

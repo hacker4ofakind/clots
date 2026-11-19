@@ -45,19 +45,22 @@ it("reads the send review switch and how many days a review waits", () => {
 });
 
 it("reads the home Clot and the limit on open proposals", () => {
-  expect(loadConfig({ ...json, home: true }, { ...env, CLOTS_MAX_PROPOSALS: "5" })).toMatchObject({ home: true, maxProposals: 5 });
+  expect(loadConfig({ ...json, home: true, maxProposals: 5 }, env)).toMatchObject({ home: true, maxProposals: 5 });
+  expect(loadConfig(json, env).maxProposals).toBe(3);
 });
 
 it("rejects a limit on open proposals that is not a whole number of at least one", () => {
-  for (const bad of ["0", "-1", "2.5", "many"]) expect(() => loadConfig(json, { ...env, CLOTS_MAX_PROPOSALS: bad })).toThrow("CLOTS_MAX_PROPOSALS");
+  for (const bad of [0, -1, 2.5, "many"]) expect(() => loadConfig({ ...json, maxProposals: bad }, env)).toThrow("maxProposals");
 });
 
 it("keeps the names home and global for the daemon's own use", () => {
   for (const name of ["home", "global"]) expect(() => loadConfig({ ...json, clots: [{ name, repoUrl: "https://github.com/o/r.git" }] }, env)).toThrow();
 });
 
-it("reads the rollover override", () => {
-  expect(loadConfig(json, { ...env, CLOTS_ROLLOVER_PERCENT: "1" }).rolloverPercent).toBe(1);
+it("reads the rollover percent, from 1 to 100, and names rolloverPercent when it is wrong", () => {
+  expect(loadConfig(json, env).rolloverPercent).toBe(65);
+  expect(loadConfig({ ...json, rolloverPercent: 1 }, env).rolloverPercent).toBe(1);
+  for (const bad of [0, 101, "high"]) expect(() => loadConfig({ ...json, rolloverPercent: bad }, env)).toThrow("rolloverPercent");
 });
 
 it("names the missing secret", () => {
@@ -169,16 +172,18 @@ it("refuses a credential written into the file instead of the name of its .env k
   expect(() => loadConfig(withSources({ linear: [{ account: "team", shared: true, webhookSecret: "lin_wh_abc123", apiKey: "K" }] }), { ...env, K: "k" })).toThrow();
 });
 
-it("reads the worker limit, from 1 to 20, and names CLOTS_MAX_WORKERS when it is wrong", () => {
-  expect(loadConfig(json, { ...env, CLOTS_MAX_WORKERS: "1" }).maxWorkers).toBe(1);
-  expect(loadConfig(json, { ...env, CLOTS_MAX_WORKERS: "20" }).maxWorkers).toBe(20);
-  for (const bad of ["0", "21", "2.5", "many"]) expect(() => loadConfig(json, { ...env, CLOTS_MAX_WORKERS: bad })).toThrow("CLOTS_MAX_WORKERS");
+it("reads the worker limit, from 1 to 20, and names maxWorkers when it is wrong", () => {
+  expect(loadConfig(json, env).maxWorkers).toBe(3);
+  expect(loadConfig({ ...json, maxWorkers: 1 }, env).maxWorkers).toBe(1);
+  expect(loadConfig({ ...json, maxWorkers: 20 }, env).maxWorkers).toBe(20);
+  for (const bad of [0, 21, 2.5, "many"]) expect(() => loadConfig({ ...json, maxWorkers: bad }, env)).toThrow("maxWorkers");
 });
 
-it("reads the choice timeout, from 1 to 1440 minutes, and names CLOTS_CHOICE_TIMEOUT_MINUTES when it is wrong", () => {
-  expect(loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: "1" }).choiceTimeoutMinutes).toBe(1);
-  expect(loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: "1440" }).choiceTimeoutMinutes).toBe(1440);
-  for (const bad of ["0", "1441", "2.5", "soon"]) expect(() => loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: bad })).toThrow("CLOTS_CHOICE_TIMEOUT_MINUTES");
+it("reads the choice timeout, from 1 to 1440 minutes, and names choiceTimeoutMinutes when it is wrong", () => {
+  expect(loadConfig(json, env).choiceTimeoutMinutes).toBe(10);
+  expect(loadConfig({ ...json, choiceTimeoutMinutes: 1 }, env).choiceTimeoutMinutes).toBe(1);
+  expect(loadConfig({ ...json, choiceTimeoutMinutes: 1440 }, env).choiceTimeoutMinutes).toBe(1440);
+  for (const bad of [0, 1441, 2.5, "soon"]) expect(() => loadConfig({ ...json, choiceTimeoutMinutes: bad }, env)).toThrow("choiceTimeoutMinutes");
 });
 
 const defaultWindows = (window: { start: number; end: number }) => Object.fromEntries(["mon", "tue", "wed", "thu", "fri"].map((day) => [day, window]));

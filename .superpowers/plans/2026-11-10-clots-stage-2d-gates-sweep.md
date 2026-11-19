@@ -513,7 +513,7 @@ To force a sweep, use either:
 - **How the executor runs it:** Discord in the built-in browser.
 
 #### MV-5: A worker asked for outside the user's turn waits
-- **Setup:** `CLOTS_MAX_WORKERS=1` in `.env`; a scarce window starting 5 minutes from now and lasting 10.
+- **Setup:** `"maxWorkers": 1` in `clots.config.json`; a scarce window starting 5 minutes from now and lasting 10.
 - **Steps:**
   1. Before the window, ask in chat for a worker on a long task (`Start a worker to add unit tests for every module`).
   2. Open an issue with a clear one-line bug, so that its investigation asks for a second worker, which queues behind the first.

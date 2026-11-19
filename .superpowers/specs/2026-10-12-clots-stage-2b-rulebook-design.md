@@ -199,7 +199,7 @@ Rules:
   unanswered instead of answering it. A session started with nothing carried over gets no note,
   also when the user discards the recap of a session that has not started.
 - **A limit on open proposals per Clot.** It is three unless
-  `CLOTS_MAX_PROPOSALS` in `.env` sets another number. One more is refused, and
+  `maxProposals` in `clots.config.json` sets another number. One more is refused, and
   the Clot puts the suggestion in its reply instead.
 - **Not asked twice.** A proposal identical to an open one is not opened again;
   the tool says it is already with the user.
