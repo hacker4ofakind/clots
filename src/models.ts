@@ -13,3 +13,11 @@ const NAMES: Record<WorkerModel, string> = { opus: "Opus 5.5", sonnet: "Sonnet 5
 export function modelLabel(model: WorkerModel, effort: Effort): string {
   return `${NAMES[model]} ${effort}`;
 }
+
+/** One step cheaper, for a worker's model and effort while usage is tight. Haiku stays as it is. */
+export const CHEAPER_WORKERS: [string, string][] = [
+  ["Opus xhigh", "Opus high"],
+  ["Opus high", "Opus medium"],
+  ["Opus medium", "Sonnet high"],
+  ["Sonnet high", "Sonnet medium"],
+];

@@ -1,14 +1,17 @@
-import { query, type Options, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import { randomUUID } from "node:crypto";
+import { query, type Options, type SDKMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Effort, LimitInfo, TurnActivity } from "../types.js";
 import { ActivityCollector } from "./activity.js";
 import type { DaemonTools, WorkerTools } from "../tools.js";
-import { DAEMON_TOOL_SERVER, LOCK_REMOVED_TOOLS, lockDecision, lockHookAnswer } from "./command-check.js";
+import { DAEMON_TOOL_SERVER, hookAnswer, LOCK_REMOVED_TOOLS, lockDecision, lockHookAnswer, regroundDecision, sweepDecision, type Verdict } from "./command-check.js";
+import { connectorTools, settledStatus, type Connectors } from "./connectors.js";
 import { toolServer, WORKER_TOOL_PREFIX, WORKER_TOOL_SERVER, workerToolServer } from "./tool-server.js";
-import { containerName, makeSpawn, sessionExists } from "./container.js";
+import { containerName, deleteSession, killSession, makeSpawn, sessionExists } from "./container.js";
 import { CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "./prompts.js";
 import { InputQueue } from "./input-queue.js";
 import { isSuccessfulResult, isTurnActivity, TurnTracker } from "./turn-tracker.js";
-import { parseRateLimit } from "./usage.js";
+import { parseRateLimit, type RateLimitState } from "./usage.js";
+import type { Reading, UsageSnapshot } from "../gates.js";
 import { guardCommand, type GuardContext } from "./worker-guard.js";
 
 interface TurnBase {
@@ -58,6 +61,8 @@ export interface TurnResult {
   activity?: TurnActivity;
   /** Whether any model response came back. A turn that failed before one did is worth trying again. */
   responded?: boolean;
+  /** The session's running cost in USD, as its last result reported it. Undefined when the turn failed before one. */
+  totalCostUsd?: number;
 }
 
 export interface TurnHandle {
@@ -74,6 +79,35 @@ export interface TurnHandle {
 export interface AgentRunner {
   startTurn(req: TurnRequest): TurnHandle;
 }
+
+/**
+ * A session that is not a turn of a Clot: it answers once, with JSON that fits a schema, and leaves nothing
+ * behind. The sweep reads the claude.ai connectors; re-grounding checks a recap. Both read what strangers wrote.
+ */
+export interface OneOffRequest {
+  kind: "sweep" | "reground";
+  /** Built once the connectors are known: their names, as the MCP status gives them. */
+  prompt: string | ((connectors: string[]) => string);
+  systemPrompt: string;
+  model: string;
+  effort: Effort;
+  cwd?: string;
+  schema: Record<string, unknown>;
+  timeoutMs: number;
+}
+
+export interface OneOffResult {
+  ok: boolean;
+  /** The structured output of a successful run. */
+  output?: unknown;
+  totalCostUsd?: number;
+  limit?: LimitInfo;
+  error?: string;
+  /** The connectors the session could read from, by the names the MCP status gave. */
+  connectors?: string[];
+}
+
+export const ONE_OFF_MAX_TURNS = 30;
 
 const CWD = "/workspace/repo";
 const MAX_STEP = 120;
@@ -143,6 +177,8 @@ export interface RunnerOptions {
   cwd?: string;
   /** What is added to Claude Code's own system prompt. */
   systemPrompt?: string;
+  /** Called for every rate-limit event of every turn, whatever its status. */
+  onRateLimit?: (state: RateLimitState) => void;
 }
 
 /** The SDK options for a turn, apart from its input and session ID. */
@@ -226,10 +262,7 @@ export class SdkRunner implements AgentRunner {
             grace = undefined;
           }
           collector.observe(message);
-          const limit = parseRateLimit(message);
-          if (limit?.status === "rejected") {
-            result.limit = { resetsAt: limit.resetsAt ?? Math.floor(Date.now() / 1000) + 5 * 3600 };
-          }
+          this.observe(message, result);
           if (message.type === "assistant") result.responded = true;
           if (message.type === "assistant" && message.parent_tool_use_id === null) {
             for (const block of message.message.content) {
@@ -277,4 +310,174 @@ export class SdkRunner implements AgentRunner {
       done,
     };
   }
+
+  /** What every session's messages tell the runner: rate-limit events (to the meter, and the limit when rejected) and the cost so far. */
+  private observe(message: SDKMessage, result: { limit?: LimitInfo; totalCostUsd?: number }): void {
+    const limit = parseRateLimit(message);
+    if (limit) {
+      try {
+        this.o.onRateLimit?.(limit);
+      } catch (error) {
+        console.error(`[${this.o.clot}] rate-limit hook failed:`, error);
+      }
+      if (limit.status === "rejected") result.limit = { resetsAt: limit.resetsAt ?? Math.floor(Date.now() / 1000) + 5 * 3600 };
+    }
+    if (message.type === "result" && typeof message.total_cost_usd === "number") result.totalCostUsd = message.total_cost_usd;
+  }
+
+  /**
+   * Runs a one-off session in this Clot's container: a fresh session, no daemon tools, only the tools its lock
+   * approves (the sweep: read-only connector tools and nothing else), at most 30 turns and `timeoutMs`. A run
+   * that times out has its process stopped inside the container. Its transcript is deleted when it ends.
+   */
+  async runOneOff(req: OneOffRequest): Promise<OneOffResult> {
+    const container = containerName(this.o.clot);
+    const sessionId = randomUUID();
+    const cwd = req.cwd ?? this.o.cwd ?? CWD;
+    const abort = new AbortController();
+    const input = new InputQueue<SDKUserMessage>([]);
+    // The sweep has no use for GitHub, and reads text strangers wrote: it does not get the token.
+    const env: Record<string, string> = { ...this.o.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
+    if (req.kind === "sweep") delete env.GH_TOKEN;
+    let allowed: ReadonlySet<string> = new Set();
+    let ready: Promise<Connectors> = Promise.resolve({ tools: new Set<string>(), servers: [] });
+    const decide = (name: string, args: Record<string, unknown>): Verdict => (req.kind === "sweep" ? sweepDecision(name, allowed) : regroundDecision(name, args, this.o.testCommand, allowed));
+    const record = (args: unknown) => (typeof args === "object" && args !== null ? (args as Record<string, unknown>) : {});
+
+    const session = query({
+      prompt: input,
+      options: {
+        model: req.model,
+        effort: req.effort,
+        cwd,
+        sessionId,
+        abortController: abort,
+        maxTurns: ONE_OFF_MAX_TURNS,
+        allowDangerouslySkipPermissions: true,
+        systemPrompt: { type: "preset", preset: "claude_code", append: req.systemPrompt },
+        outputFormat: { type: "json_schema", schema: req.schema },
+        permissionMode: "default",
+        settings: { autoMemoryEnabled: false } as Options["settings"],
+        // The sweep has no built-in tool at all; re-grounding has the lock's.
+        ...(req.kind === "sweep" ? { tools: [] } : {}),
+        disallowedTools: ["AskUserQuestion", ...LOCK_REMOVED_TOOLS],
+        hooks: {
+          PreToolUse: [
+            {
+              hooks: [
+                async (hook) => {
+                  if (hook.hook_event_name !== "PreToolUse") return {};
+                  await ready;
+                  return hookAnswer(decide(hook.tool_name, record(hook.tool_input)));
+                },
+              ],
+            },
+          ],
+        },
+        canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
+          await ready;
+          const verdict = decide(toolName, toolInput);
+          return verdict.ok ? { behavior: "allow" as const, updatedInput: toolInput } : { behavior: "deny" as const, message: verdict.reason };
+        },
+        spawnClaudeCodeProcess: makeSpawn({ container, cwd, env }),
+      },
+    });
+    // Read at once, waiting for connectors that are still connecting: the hook waits for it before the first tool call.
+    // A container logged in with claude /login has connectors to wait for; one using the token has none.
+    ready = settledStatus(() => session.mcpServerStatus(), { expectServers: env.CLAUDE_CODE_OAUTH_TOKEN === undefined })
+      .then(connectorTools)
+      .catch(() => ({ tools: new Set<string>(), servers: [] }));
+
+    let timedOut = false;
+    const stop = () => {
+      abort.abort();
+      void killSession(container, sessionId);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
+    }, req.timeoutMs);
+    const result: OneOffResult = { ok: false };
+    try {
+      const connectors = await ready;
+      allowed = connectors.tools;
+      result.connectors = connectors.servers;
+      if (req.kind === "sweep" && connectors.tools.size === 0) {
+        // Nothing was sent, so closing its input ends the session without a model call.
+        result.error = "no connector available";
+        return result;
+      }
+      input.push(userMessage(typeof req.prompt === "string" ? req.prompt : req.prompt(connectors.servers)));
+      for await (const message of session) {
+        this.observe(message, result);
+        if (message.type !== "result") continue;
+        if (isSuccessfulResult(message) && message.subtype === "success" && message.structured_output !== undefined) {
+          result.ok = true;
+          result.output = message.structured_output;
+        } else {
+          result.error = message.subtype === "success" ? "no structured output" : message.subtype;
+        }
+        input.close();
+      }
+      if (result.limit) result.ok = false;
+    } catch (error) {
+      result.ok = false;
+      result.error = timedOut ? "timed out" : error instanceof Error ? error.message : String(error);
+    } finally {
+      clearTimeout(timer);
+      input.close();
+      if (timedOut) result.error = "timed out";
+      await deleteSession(container, sessionId);
+    }
+    return result;
+  }
+
+  /**
+   * Reads the account's five-hour and seven-day utilization with the SDK's experimental usage call, in
+   * this Clot's container, without sending a prompt. Undefined on any failure, after 20 seconds at most.
+   * Only a session logged in with `claude /login` has plan limits to read.
+   */
+  async readUsage(): Promise<UsageSnapshot | undefined> {
+    const container = containerName(this.o.clot);
+    const sessionId = randomUUID();
+    const abort = new AbortController();
+    const input = new InputQueue<SDKUserMessage>([]);
+    const session = query({
+      prompt: input,
+      options: { cwd: "/workspace", sessionId, abortController: abort, spawnClaudeCodeProcess: makeSpawn({ container, cwd: "/workspace", env: this.o.env }) },
+    });
+    const timer = setTimeout(() => {
+      abort.abort();
+      void killSession(container, sessionId);
+    }, 20_000);
+    try {
+      return parseUsageAnswer(await session.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }), Date.now());
+    } catch {
+      void killSession(container, sessionId);
+      return undefined;
+    } finally {
+      clearTimeout(timer);
+      input.close();
+    }
+  }
+}
+
+interface UsageWindow {
+  utilization: number | null;
+  resets_at: string | null;
+}
+
+/** The five-hour and seven-day windows of a usage answer, in percent and milliseconds. A window with no utilization or no reset time is left out. */
+export function parseUsageAnswer(answer: { rate_limits_available?: boolean; rate_limits?: { five_hour?: UsageWindow | null; seven_day?: UsageWindow | null } | null }, readAt: number): UsageSnapshot | undefined {
+  const limits = answer.rate_limits;
+  if (!answer.rate_limits_available || !limits) return undefined;
+  const reading = (w: UsageWindow | null | undefined): Reading | undefined => {
+    if (!w || typeof w.utilization !== "number" || typeof w.resets_at !== "string") return undefined;
+    const resetsAt = Date.parse(w.resets_at);
+    return Number.isNaN(resetsAt) ? undefined : { percent: w.utilization, resetsAt, readAt };
+  };
+  const fiveHour = reading(limits.five_hour);
+  const sevenDay = reading(limits.seven_day);
+  if (!fiveHour && !sevenDay) return undefined;
+  return { ...(fiveHour ? { fiveHour } : {}), ...(sevenDay ? { sevenDay } : {}) };
 }

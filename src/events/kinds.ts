@@ -12,6 +12,8 @@ export const SOURCE_KINDS = {
   sentry: ["error_alert", "error_new"],
   vercel: ["deploy_failed"],
   posthog: ["analytics_event"],
+  // What the periodic read of the claude.ai connectors found.
+  sweep: ["finding"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type BuiltinSource = keyof typeof SOURCE_KINDS;

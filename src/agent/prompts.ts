@@ -1,3 +1,4 @@
+import { CHEAPER_WORKERS } from "../models.js";
 import type { SeedReason } from "../types.js";
 
 const CLOT_OPENING = "You are a Clot: an always-on agent for this project.";
@@ -40,6 +41,9 @@ Workers:
 - stop_worker stops a worker; its branch and pull request stay.
 
 Messages that arrive while you are working are marked "[sent while you were working]".
+
+- During scarce hours, or when the account's five-hour usage runs high in the hours before, ordinary events wait and reach you later together, as one digest turn. Deal with each event in it; send_from_template then needs the event's ID.
+- When a turn starts with a line saying usage is tight, follow it for every worker you start in that turn.
 
 The rulebook decides which outside events reach you. Pre-filters drop events, triage guidance says what needs attention, and a standing rule approves in advance one exact message for one kind of event. You change it only through the rulebook tools; its files are not in your workspace.
 - When the user asks for a rule ("ignore Dependabot PRs"), call the tool. The daemon applies the change, or puts it to the user in a separate channel (a standing rule, or any edit in a turn an outsider's text started), and it tells the user itself. Say that a rule is in force only when the tool's result said it was applied. When it was put to the user, carry on with other work.
@@ -142,6 +146,11 @@ function workersBlock(lines: string[]): string | undefined {
   return lines.length === 0 ? undefined : `[Your workers:\n${lines.join("\n")}]`;
 }
 
+/** The line that opens every main session turn while a gate holds: what is tight, and how to choose workers meanwhile. */
+export function tightLine(reason: string): string {
+  return `[Usage is tight right now (${reason}). When you start a worker, choose one step cheaper than you otherwise would: ${CHEAPER_WORKERS.map(([from, to]) => `${from} → ${to}`).join(", ")}. Haiku stays as it is.]`;
+}
+
 export function buildPrompt(p: {
   text: string;
   seed: string | null;
@@ -157,8 +166,11 @@ export function buildPrompt(p: {
   standing?: { name: string; text: string }[];
   /** One line per listed worker. */
   workers?: string[];
+  /** What makes usage tight, while a gate holds: the turn then opens with the line about cheaper workers. */
+  tight?: string;
 }): string {
   const parts: string[] = [];
+  if (p.tight) parts.push(tightLine(p.tight));
   if (p.seed) parts.push(seedBlock(p.seed, p.seedReason ?? "context"));
   if (p.interrupted) parts.push(INTERRUPTED_NOTE);
   if (p.notes && p.notes.length > 0) parts.push(`[Since your last turn:\n${p.notes.map((note) => `- ${note}`).join("\n")}]`);
@@ -173,6 +185,6 @@ export function buildPrompt(p: {
   return parts.join("\n\n");
 }
 
-function standingNote(rules: { name: string; text: string }[]): string {
+export function standingNote(rules: { name: string; text: string }[]): string {
   return `[Standing rules that apply to this event. For each, you may call send_from_template once, with the text as it is or with at most five words changed, or leave it unsent when it does not fit:\n${rules.map((rule) => `- ${rule.name}: ${rule.text}`).join("\n")}]`;
 }

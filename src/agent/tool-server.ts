@@ -156,9 +156,13 @@ export function toolServer(tools: DaemonTools) {
       ),
       tool(
         "send_from_template",
-        "Sends the message of a standing rule that applies to the event you are looking into. Works only in the turn that looks into that event, once per rule. Leave text out to send the template as filled in. To adjust the wording, give the whole text: at most five words may be added, removed or replaced.",
-        { rule: z.string().min(1).describe("The standing rule's name."), text: z.string().optional().describe("The whole text to send, if you changed the wording.") },
-        (a) => reply(() => tools.send({ rule: a.rule, text: a.text })),
+        "Sends the message of a standing rule that applies to the event you are looking into. Works only in the turn that looks into that event, once per rule. In a digest turn, name the event with its ID. Leave text out to send the template as filled in. To adjust the wording, give the whole text: at most five words may be added, removed or replaced.",
+        {
+          rule: z.string().min(1).describe("The standing rule's name."),
+          text: z.string().optional().describe("The whole text to send, if you changed the wording."),
+          event: z.string().optional().describe("The event's ID; required in a digest."),
+        },
+        (a) => reply(() => tools.send({ rule: a.rule, text: a.text, event: a.event })),
         always,
       ),
       tool(

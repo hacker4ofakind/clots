@@ -1,9 +1,10 @@
-import os from "node:os";
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { HAIKU } from "./models.js";
+import { structuredQuery, type OnCost } from "./structured-query.js";
 import type { MainEffort, RouterDecision, TailMessage } from "./types.js";
 
 export interface RouterInput {
+  /** The Clot the call is for, so that its cost is booked to it. */
+  clot?: string;
   text: string;
   tail: TailMessage[];
 }
@@ -42,30 +43,12 @@ export function buildRouterPrompt(input: RouterInput): string {
 }
 
 export class SdkRouter implements Router {
+  constructor(private o: { onCost?: OnCost } = {}) {}
+
   async decide(input: RouterInput): Promise<RouterDecision> {
-    try {
-      const run = query({
-        prompt: buildRouterPrompt(input),
-        options: {
-          model: HAIKU,
-          effort: "medium",
-          cwd: os.tmpdir(),
-          systemPrompt: ROUTER_SYSTEM_PROMPT,
-          settingSources: [],
-          strictMcpConfig: true,
-          tools: [],
-          maxTurns: 3,
-          outputFormat: { type: "json_schema", schema: ROUTER_SCHEMA },
-        },
-      });
-      for await (const message of run) {
-        if (message.type === "result" && message.subtype === "success") {
-          return parseDecision(message.structured_output);
-        }
-      }
-    } catch {
-      // Routing must never block a turn; fall through to the default.
-    }
-    return FALLBACK;
+    const { output, costUsd } = await structuredQuery({ prompt: buildRouterPrompt(input), model: HAIKU, effort: "medium", systemPrompt: ROUTER_SYSTEM_PROMPT, schema: ROUTER_SCHEMA });
+    if (costUsd !== undefined) this.o.onCost?.(costUsd, input.clot ?? null);
+    // Routing must never block a turn; a failed call gives the default.
+    return output === undefined ? FALLBACK : parseDecision(output);
   }
 }

@@ -3,6 +3,7 @@ import type { CalendarAccount } from "../config.js";
 import { clip } from "../events/body.js";
 import type { ClotEvent } from "../events/types.js";
 import type { Store } from "../store.js";
+import { dayKey, hhmm, longDay, shortDay, wallClock } from "../time.js";
 
 type IcalTime = InstanceType<typeof ICAL.Time>;
 type IcalEvent = InstanceType<typeof ICAL.Event>;
@@ -22,22 +23,6 @@ export interface Occurrence {
   /** Guests other than the organiser. */
   guests: string[];
   repeats: boolean;
-}
-
-/** A zone's offset from UTC at an instant, in minutes. */
-function offsetMinutes(at: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(at));
-  const get = (type: string) => Number(parts.find((part) => part.type === type)!.value);
-  return (Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second")) - at) / 60_000;
-}
-
-/** The instant at which a wall-clock time happens in a zone. */
-export function wallClock(year: number, month: number, day: number, hour: number, minute: number, second: number, timeZone: string): Date {
-  const guess = Date.UTC(year, month - 1, day, hour, minute, second);
-  // Twice: the offset at the guess may differ from the offset at the answer, across a change of offset.
-  let at = guess - offsetMinutes(guess, timeZone) * 60_000;
-  at = guess - offsetMinutes(at, timeZone) * 60_000;
-  return new Date(at);
 }
 
 function isZone(name: string): boolean {
@@ -157,10 +142,6 @@ export function dueReminders(occurrences: Occurrence[], leadMinutes: number[], n
   return occurrences.flatMap((occurrence) => leadMinutes.filter((lead) => occurrence.start.getTime() > at && occurrence.start.getTime() - lead * 60_000 <= at).map((lead) => ({ occurrence, lead })));
 }
 
-const dayKey = (date: Date, timeZone: string) => new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
-const hhmm = (date: Date, timeZone: string) => new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit" }).format(date);
-const shortDay = (date: Date, timeZone: string) => new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short" }).format(date).replace(",", "");
-const longDay = (date: Date, timeZone: string) => new Intl.DateTimeFormat("en-GB", { timeZone, weekday: "short", day: "numeric", month: "short", year: "numeric" }).format(date).replace(",", "");
 
 /** "in 30 minutes", "today at 14:00", "tomorrow at 14:00", "on Fri 16 Oct at 14:00", or "... (all day)". */
 export function describeWhen(o: Occurrence, timeZone: string, now: Date): string {

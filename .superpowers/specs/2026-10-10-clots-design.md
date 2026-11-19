@@ -4,7 +4,7 @@ Date: 2026-10-10
 Status: approved in brainstorming. Stages 1, 2a, 2b and 2c (but for Sentry, Vercel
 and PostHog), global memory, and the main session and workers (section 4) are
 implemented, and so is autonomy (sections 3 and 7: the four axes, asks, choices,
-merges and `clots-waiting`). Stage 2d is next.
+merges and `clots-waiting`). Stage 2d is specified and next to build.
 
 ## 1. What Clots is
 
@@ -75,7 +75,10 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container, and are made for each turn, so each call knows what kind of turn it is in. | Rulebook, chat adapter |
 | Global memory | Notices the global memories the home Clot writes, posts each, and copies them into every Clot's memory before its turns. | Chat adapter, Docker |
 | Chat adapter | One interface for all chat platforms. Discord is the default and the first built. | Platform bot credentials |
-| Sweep | A throwaway session every 90 minutes that reports only what changed. | Recap, rulebook |
+| Usage meter | Keeps the account's five-hour and seven-day utilization, from turns' rate-limit events and the SDK's usage call. | Agent SDK |
+| Spend log | Books every model call's estimated cost to its Clot, worker, the daemon or the sweep; answers `&spend`; warns once a week per Clot past a set figure. | Store, chat |
+| Sweep | One throwaway session for the whole daemon every 90 minutes: reads the connectors of the claude.ai login and turns what changed into events, routed like a shared source's. | Connectors, routing |
+| Re-grounder | A throwaway session at each rollover that checks the recap against the current state. | Recap |
 | `clots` CLI | `clots add`, secret entry, status. Runs on the PC and talks to the daemon. | Network path to the Pi |
 
 ## 3. Event pipeline
@@ -134,8 +137,9 @@ Entry points other than events:
 - **User messages** enter at step 10. Triage does not run on them. A message that
   is a command (section 6) is handled by the daemon and goes no further. A message
   sent while the main session is in a turn is fed into that turn.
-- **The 90-minute tick** starts a sweep (section 9). It is skipped while the main
-  session is in a turn. Sweep findings enter at step 3 as ordinary events.
+- **The 90-minute tick** starts the sweep (section 9). It is skipped while a gate
+  holds or the last sweep is still running. Its findings enter at step 3 as
+  events from a shared source: pre-filtered, routed and triaged like any other.
 
 Whenever several queued events are delivered together, each is shown with its
 arrival time in the user's configured timezone.
@@ -192,7 +196,7 @@ several times over.
 | Triage | Haiku 5.5 | Medium |
 | Routing call (shared sources) | Haiku 5.5 | Medium |
 | Router | Haiku 5.5 | Medium |
-| Sweep | Opus 5.5 | Low |
+| Sweep, re-grounding | Opus 5.5 | Low |
 
 The main session's effort level is re-evaluated on every prompt, whether it comes
 from the user, an event or a worker. It is applied with
@@ -407,8 +411,10 @@ named trigger, an exact template and a way of sending.
   an error counts as a failed turn even when its subtype is success.
 - After every main session turn the daemon calls `getContextUsage()`. At 65% or
   more it tells the user at once that the session is being closed, asks the session for a recap,
-  starts a new session seeded with the recap, and runs a sweep so the new session
-  re-grounds itself before continuing. The new session is saved, with its recap,
+  starts a new session seeded with the recap, and re-grounds it before its first
+  turn: a throwaway session checks, under the lock, everything the recap names as
+  open, and what changed is posted under the recap and placed as a note in front
+  of the first turn. The new session is saved, with its recap,
   before anything about it is announced, so a failed chat call or a restart
   mid-handoff loses nothing.
 - The new session is told why it was started: the context limit, or the user's
@@ -516,6 +522,7 @@ it; it never reaches the model. A mistyped or unknown command gets a usage reply
 | `&rules undo` | Reverts the most recent rulebook edit made from chat through this Clot and shows what it reverted. Sent again, it steps one edit further back. It needs no further yes. |
 | `&memory` | Lists the global memories in force. Works in every Clot's channel, also during a turn. |
 | `&memory undo` | Reverts the most recent global memory change: an addition, a change or a deletion. Sent again, it steps one further back. |
+| `&spend` | Shows this week's estimated spend for this Clot (main session, each worker, triage) and for all Clots, the gate in force and the account's utilization. Answered at once, also during a turn. |
 | `&calendar undo` | Reverses this Clot's most recent calendar change: removes an event it added, puts back what it changed, or recreates one it removed from the copy the daemon kept. Sent again, it steps one further back. |
 
 A `&close` sent during a turn waits for the turn to end. On a session with no turns
@@ -771,29 +778,36 @@ instruction hidden in that text can do.
 
 ## 8. Gates
 
-An event that needs action passes these checks in order.
+The full design is in `.superpowers/specs/2026-11-10-clots-stage-2d-gates-sweep-design.md`.
+Before each main session turn and each worker start, these checks run in order:
 
 1. **Usage limit reached**: queue. The Clot tells the user once, with the reset
    time. Work resumes when the limit resets.
 2. **Scarce mode** (15:00–18:00, Monday to Friday by default, configurable per
-   weekday): urgent events and the user's direct messages run normally. Other events
-   get their one-line notice and are queued until the window ends. Sweeps are
-   skipped.
-3. **Lead-in** (10:00–15:00 on the same days): Clots are held to 50% of the
-   five-hour usage window, configurable.
+   weekday): urgent events, the user's messages, workers' reports and choice
+   timeouts run normally. Other events get their one-line notice, with the time
+   they will wait until, and are queued. Sweeps are skipped.
+3. **Lead-in** (10:00–15:00 on the same days): once the account's five-hour
+   utilization reaches 50% (configurable), the Clots act as in scarce mode until
+   the five-hour window resets or the lead-in ends. Utilization is the whole
+   account's, the user's own use included. Without a reading, this gate is off.
 4. **Otherwise**: first come, first served.
 
-The same gates apply to starting a worker: in scarce mode only work for an urgent
-event or a direct request from the user starts; other workers wait until the window
-ends. A worker already running is not stopped by a gate.
+The same gates apply to starting a worker: under gate 2 or 3 only a worker asked
+for in a turn of the user's own, or in the investigation of an urgent event,
+starts; the others wait in the worker queue until the gate lifts. A worker already
+running is not stopped by a gate. While gate 2 or 3 holds, the main session is
+told to choose a worker one step cheaper than it otherwise would (Opus high →
+medium, Opus medium → Sonnet high, Sonnet high → Sonnet medium).
 
-When usage is running low, the order of priority is: urgent events, the user's
-direct messages, ordinary events, sweeps. Several low-priority events for one Clot
-are delivered as a single digest turn.
+When the gate lifts, the events that waited on it are delivered to their Clot
+together, as a single digest turn when there are two or more.
 
-Usage is read from the SDK's rate-limit events (fraction used, reset time). The
-daemon keeps a spend log per Clot, with each worker's spend on its own line, and
-warns the user when a Clot's weekly spend passes a configured threshold.
+Usage is read from the SDK's rate-limit events and its usage call (five-hour and
+seven-day utilization, with their reset times). The daemon keeps a spend log of
+every model call's estimated cost, per Clot with each worker on its own line;
+`&spend` shows the week, and the user is warned once when a Clot's weekly spend
+passes a configured figure.
 
 ## 9. Intake
 
@@ -831,10 +845,15 @@ warns the user when a Clot's weekly spend passes a configured threshold.
   rulebook: how its signature is checked, which payloads are kept and which fields
   give the event. The Clot adds one with its undo (section 5); the user sets up
   the webhook and puts its secret in `.env`.
-- **Sweep**: every 90 minutes the daemon starts a fresh Opus 5.5 low session
-  with the current recap, the rulebook and a record of what was last seen. It checks
-  the connectors and reports only changes. Its transcript is deleted once the
-  findings are handed over. A quiet sweep posts nothing.
+- **Sweep**: every 90 minutes the daemon starts one fresh Opus 5.5 low session for
+  all Clots, in the home Clot's container (or the first Clot's) that has its own
+  claude.ai login, with the record
+  it returned last time, each Clot's one-line description, and the sources the
+  daemon already hears from, which it skips. Under the lock, it may call the
+  connector tools that declare themselves read-only. It returns its findings and
+  a new record in a fixed schema; each finding becomes an event, routed like one
+  from a shared source. The first sweep only records. Its transcript is deleted
+  once the findings are stored. A quiet sweep posts nothing.
 
 The mechanisms for individual sources are to be confirmed against current
 documentation when stage 2 is specified. Vercel webhooks may require a paid plan.
@@ -1028,8 +1047,9 @@ Each stage gets its own specification and plan.
      component for every ask (replacing the separate proposal, send review and
      memory question channels), `merge_pull_request`, choices with their timeout,
      and `clots-waiting`.
-   - **2d. Gates and sweep**, with the spend log and rollover re-grounding. The
-     gates also hold back worker starts.
+   - **2d. Gates and sweep**, with digests, the spend log and `&spend`, and
+     rollover re-grounding. The gates also hold back worker starts
+     (`.superpowers/specs/2026-11-10-clots-stage-2d-gates-sweep-design.md`).
 3. **Pi deployment and onboarding.**
 4. **Browser and live view.**
 5. **Slack adapter.**

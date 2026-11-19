@@ -1,8 +1,7 @@
-import os from "node:os";
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import { formatEvent } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
 import { HAIKU } from "./models.js";
+import { structuredQuery, type OnCost } from "./structured-query.js";
 
 export interface RoutingInput {
   event: ClotEvent;
@@ -57,28 +56,13 @@ export function buildRoutingPrompt(input: RoutingInput): string {
 }
 
 export class SdkRoutingCall implements RoutingCall {
+  constructor(private o: { onCost?: OnCost } = {}) {}
+
   async decide(input: RoutingInput): Promise<RoutingAnswer> {
-    try {
-      const run = query({
-        prompt: buildRoutingPrompt(input),
-        options: {
-          model: ROUTING_MODEL,
-          effort: ROUTING_EFFORT,
-          cwd: os.tmpdir(),
-          systemPrompt: ROUTING_SYSTEM_PROMPT,
-          settingSources: [],
-          strictMcpConfig: true,
-          tools: [],
-          maxTurns: 3,
-          outputFormat: { type: "json_schema", schema: ROUTING_SCHEMA },
-        },
-      });
-      for await (const message of run) {
-        if (message.type === "result" && message.subtype === "success") return parseRoutingAnswer(message.structured_output, input);
-      }
-    } catch {
-      // A failed call is "not sure": the event goes to the home Clot.
-    }
-    return NOT_SURE;
+    const { output, costUsd } = await structuredQuery({ prompt: buildRoutingPrompt(input), model: ROUTING_MODEL, effort: ROUTING_EFFORT, systemPrompt: ROUTING_SYSTEM_PROMPT, schema: ROUTING_SCHEMA });
+    // The routing call belongs to no Clot: it is the daemon's.
+    if (costUsd !== undefined) this.o.onCost?.(costUsd, null);
+    // A failed call is "not sure": the event goes to the home Clot.
+    return output === undefined ? NOT_SURE : parseRoutingAnswer(output, input);
   }
 }

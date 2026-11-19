@@ -104,3 +104,19 @@ describe("the system prompts", () => {
     expect(HOME_SYSTEM_PROMPT).not.toContain("Never edit, rename or remove a global-clot- file");
   });
 });
+
+describe("stage 2d", () => {
+  it("opens a turn with the line about cheaper workers while usage is tight, before everything else", () => {
+    const prompt = buildPrompt({ ...base, seed: "RECAP", notes: ["N"], tight: "scarce mode until 18:00" });
+    expect(prompt.startsWith("[Usage is tight right now (scarce mode until 18:00). When you start a worker, choose one step cheaper than you otherwise would: Opus xhigh → Opus high, Opus high → Opus medium, Opus medium → Sonnet high, Sonnet high → Sonnet medium. Haiku stays as it is.]")).toBe(true);
+    expect(prompt.indexOf("Usage is tight")).toBeLessThan(prompt.indexOf("RECAP"));
+    expect(buildPrompt(base)).toBe("hello");
+  });
+
+  it("tells the main session about digests and the cheaper-workers line, home included", () => {
+    for (const prompt of [CLOT_SYSTEM_PROMPT, HOME_SYSTEM_PROMPT]) {
+      expect(prompt).toContain("ordinary events wait and reach you later together, as one digest turn");
+      expect(prompt).toContain("When a turn starts with a line saying usage is tight, follow it for every worker you start in that turn.");
+    }
+  });
+});

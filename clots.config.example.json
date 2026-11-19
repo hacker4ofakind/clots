@@ -8,6 +8,13 @@
   "publicUrl": "https://YOUR-MACHINE.YOUR-TAILNET.ts.net",
   "home": true,
   "sendReview": { "enabled": true, "days": 3 },
+  "gates": {
+    "scarce": { "mon": "15:00-18:00", "tue": "15:00-18:00", "wed": "15:00-18:00", "thu": "15:00-18:00", "fri": "15:00-18:00" },
+    "leadIn": { "mon": "10:00-15:00", "tue": "10:00-15:00", "wed": "10:00-15:00", "thu": "10:00-15:00", "fri": "10:00-15:00" },
+    "leadInPercent": 50
+  },
+  "sweep": { "enabled": true, "everyMinutes": 90 },
+  "spend": { "weeklyWarnUsd": 50 },
   "clots": [{ "name": "graphite", "repoUrl": "https://github.com/OWNER/REPO.git", "testCommand": "npm test", "about": "One line on what this project is." }],
   "sources": {
     "stripe": [{ "account": "graphite", "clot": "graphite", "webhookSecret": "STRIPE_GRAPHITE_WEBHOOK_SECRET", "apiKey": "STRIPE_GRAPHITE_KEY" }],

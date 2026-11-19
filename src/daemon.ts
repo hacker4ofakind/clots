@@ -49,6 +49,12 @@ import { Store } from "./store.js";
 import { makeTools, showRules, type ToolDeps } from "./tools.js";
 import { SdkTriage } from "./triage.js";
 import { Workers } from "./workers.js";
+import { GateTicker } from "./gate-ticker.js";
+import { gateAt } from "./gates.js";
+import { UsageMeter } from "./usage-meter.js";
+import { SpendLog } from "./spend.js";
+import { skipList, Sweeper } from "./sweep.js";
+import { makeReground } from "./reground.js";
 
 const config = loadConfig(JSON.parse(fs.readFileSync("clots.config.json", "utf8")), process.env);
 
@@ -102,15 +108,51 @@ const definitions: { name: string; repoUrl?: string; testCommand?: string }[] = 
 const names = definitions.map((c) => c.name);
 
 const chat = new DiscordChat(config.discordToken, config.guildId);
-const router = new SdkRouter();
+/** What the router, triage and the routing call cost, booked to the Clot they were for; the routing call belongs to the daemon. */
+const bookCall = (who: "triage" | "routing") => (usd: number, clot: string | null) => void spend.book({ clot: clot ?? "daemon", who, total: usd }).catch((error) => console.error("booking a call's cost failed:", error));
+const router = new SdkRouter({ onCost: bookCall("triage") });
 const clots = new Map<string, Clot>();
 const runners = new Map<string, SdkRunner>();
 const repoOf = new Map(definitions.map((c) => [c.name, c.repoUrl === undefined ? null : (repoSlug(c.repoUrl) ?? null)]));
+
+/** The Clots whose container has a login of its own (made with `claude /login`), which is what brings plan limits and connectors. */
+const ownLogins = new Set<string>();
+/** The account's container: the home Clot's when it has its own login, else the first Clot's that has one. */
+const accountClot = (): string | undefined => (ownLogins.has(HOME_CLOT) ? HOME_CLOT : names.find((name) => ownLogins.has(name)));
+
+// Readings of the account's usage. Kept across restarts, and decided from before any Clot drains its queue.
+const meter = new UsageMeter({
+  store,
+  now: () => Date.now(),
+  read: async () => runners.get(accountClot() ?? (config.home ? HOME_CLOT : names[0]!))?.readUsage(),
+});
+/** What the scarce and lead-in gates say now. The usage-limit pause is each Clot's own, and is not part of it. */
+const gate = () => gateAt(Date.now(), config.gates, config.timeZone, meter.snapshot());
+let sweepTick: () => Promise<void> = async () => undefined;
+const ticker = new GateTicker({
+  meter,
+  gates: config.gates,
+  timeZone: config.timeZone,
+  now: () => Date.now(),
+  kickAll: () => {
+    for (const clot of clots.values()) clot.kick();
+  },
+  wakeWorkers: () => workers.wake(),
+  sweep: () => sweepTick(),
+});
+meter.onChange(() => ticker.recheck());
+
+const spend = new SpendLog({ store, now: () => Date.now(), timeZone: config.timeZone, weeklyWarnUsd: config.spend.weeklyWarnUsd, post: (clot, text) => postLive(clot, text), gate, meter });
 
 /** Posts in a Clot's live channel. What the daemon says there never enters the Clot's session. */
 const say = async (clot: string, text: string): Promise<void> => {
   const session = store.activeSession(clot);
   if (session) await chat.post(session.channelId, text).catch(() => undefined);
+};
+/** Like say, but a failed post throws: the spend warning is tried again when it fails. */
+const postLive = async (clot: string, text: string): Promise<void> => {
+  const session = store.activeSession(clot);
+  if (session) await chat.post(session.channelId, text);
 };
 
 const rulebook = new Rulebook(config.rulebookDir, names, (file, problem) => {
@@ -155,6 +197,9 @@ const workers = new Workers({
     const session = store.activeSession(clot);
     if (session) await chat.postActivity(session.channelId, activity);
   },
+  gate,
+  timeZone: config.timeZone,
+  book: (a) => spend.book(a),
 });
 onPullRequest = (a) => workers.onPullRequest(a);
 // Database only, and before any Clot starts: their first turns can start workers.
@@ -265,6 +310,7 @@ for (const c of definitions) {
   // A session a `docker exec` kept alive past the last daemon must not run beside the one resumed now.
   await killStrayClaude(containerName(c.name));
   const ownLogin = hasOwnLogin(containerName(c.name));
+  if (ownLogin) ownLogins.add(c.name);
   console.log(`[${c.name}] signing in with ${ownLogin ? "the container's own login" : "the token from .env"}`);
   const runner = new SdkRunner({
     clot: c.name,
@@ -272,6 +318,7 @@ for (const c of definitions) {
     testCommand: c.testCommand,
     // The home Clot has no clone to start in, and a system prompt that names no project.
     ...(c.repoUrl === undefined ? { cwd: "/workspace", systemPrompt: HOME_SYSTEM_PROMPT } : {}),
+    onRateLimit: (state) => meter.observe(state),
   });
   runners.set(c.name, runner);
   const clot = new Clot({
@@ -284,6 +331,9 @@ for (const c of definitions) {
     onLimit: (resetsAt) => workers.onLimit(resetsAt),
     timeZone: config.timeZone,
     userId: config.userId,
+    gate,
+    spend: { book: (a) => spend.book(a), report: (name) => spend.report(name) },
+    reground: makeReground({ run: (name, req) => runners.get(name)!.runOneOff(req), workerLines: (name) => workers.lines(name), book: (a) => spend.book(a) }),
     rolloverPercent: config.rolloverPercent,
     now: () => new Date(),
     newId: randomUUID,
@@ -317,6 +367,11 @@ for (const c of definitions) {
 
 // Every Clot is ready: the workers' queue starts, after a check of their worktrees and pull requests.
 await workers.startUp();
+
+// The gate's clock: once now, then every minute.
+if (ownLogins.size === 0) console.log("[usage] no container has a claude.ai login, so the five-hour usage is read from turns only, and there are no connectors to sweep");
+await ticker.tick();
+setInterval(() => void ticker.tick(), 60_000);
 
 // What a stop caught half-way is closed, and asks that can no longer be answered are withdrawn: now,
 // then every hour. Deadlines are scheduled once the Clots can take what they hand over.
@@ -505,7 +560,7 @@ const eventRouter = new EventRouter({
     recipes: (name) => rulebook.recipeBinding(name),
   }),
   rules: () => rulebook.routing(),
-  call: new SdkRoutingCall(),
+  call: new SdkRoutingCall({ onCost: bookCall("routing") }),
   clots: () => config.clots.map((c) => ({ name: c.name, about: c.about ?? `the project in the repository ${repoSlug(c.repoUrl)}` })),
   guidance: () => rulebook.guidance("global"),
   home: config.home ? HOME_CLOT : undefined,
@@ -515,7 +570,7 @@ const pipeline = new Pipeline({
   store,
   chat,
   rulebook,
-  triage: new SdkTriage(),
+  triage: new SdkTriage({ onCost: bookCall("triage") }),
   clots,
   route: (event) => eventRouter.route(event),
   selfCaused: (event) => event.source === "github" && isSelfCaused(event, clotLogin),
@@ -531,5 +586,30 @@ const pipeline = new Pipeline({
 // From here on an event is handled as it arrives. Then the ones that were waiting: stored or held
 // before a restart, or delivered while this daemon was starting.
 onEvent = (event) => void pipeline.handle(event);
+
+// The sweep: one for the whole daemon, in the container that has a claude.ai login. Its first run is the ticker's next minute.
+const sweepAccount = accountClot();
+const sweeper = new Sweeper({
+  store,
+  now: () => Date.now(),
+  enabled: config.sweep.enabled,
+  everyMinutes: config.sweep.everyMinutes,
+  ...(sweepAccount === undefined ? {} : { run: (req) => runners.get(sweepAccount)!.runOneOff(req) }),
+  clots: () => [...config.clots.map((c) => ({ name: c.name, about: c.about ?? `the project in the repository ${repoSlug(c.repoUrl)}` })), ...(config.home ? [{ name: HOME_CLOT, about: "anything that belongs to no project" }] : [])],
+  skip: () => skipList(config),
+  // A gate, or the usage limit for any Clot or the workers: the sweep waits.
+  held: () => gate().holds !== null || workers.isPaused() || names.some((name) => (store.getClot(name)?.pausedUntil ?? 0) * 1000 > Date.now()),
+  deliver: (event) => pipeline.handle(event),
+  tell: async (text) => {
+    for (const name of config.home ? [HOME_CLOT] : names) await say(name, text);
+  },
+  book: (a) => spend.book(a),
+  onLimit: (resetsAt) => {
+    workers.onLimit(resetsAt);
+    if (sweepAccount !== undefined) void clots.get(sweepAccount)?.pauseFor(resetsAt);
+  },
+  log: (text) => console.log(text),
+});
+sweepTick = () => sweeper.tick();
 await pipeline.resume();
 console.log("[events] ready");

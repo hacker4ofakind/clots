@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isTurnActivity, TurnTracker } from "../src/agent/turn-tracker.js";
 import { parseRateLimit } from "../src/agent/usage.js";
+import { parseUsageAnswer } from "../src/agent/runner.js";
 import { buildPrompt, CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "../src/agent/prompts.js";
 import { stepOf, turnOptions, workerHookAnswer } from "../src/agent/runner.js";
 import { workerExec, worktreePath } from "../src/agent/container.js";
@@ -57,12 +58,26 @@ describe("isTurnActivity", () => {
 describe("parseRateLimit", () => {
   it("reads a rejected event with camelCase fields", () => {
     const message = { type: "rate_limit_event", rate_limit_info: { status: "rejected", resetsAt: 1760100000, utilization: 1 } };
-    expect(parseRateLimit(message)).toEqual({ status: "rejected", resetsAt: 1760100000, utilization: 1 });
+    expect(parseRateLimit(message)).toEqual({ status: "rejected", resetsAt: 1760100000, utilization: 100 });
   });
 
   it("reads snake_case fields", () => {
     const message = { type: "rate_limit_event", rate_limit_info: { status: "allowed_warning", resets_at: 5, utilization: 0.9 } };
-    expect(parseRateLimit(message)).toEqual({ status: "allowed_warning", resetsAt: 5, utilization: 0.9 });
+    expect(parseRateLimit(message)).toEqual({ status: "allowed_warning", resetsAt: 5, utilization: 90 });
+  });
+
+  it("returns the window type and both windows as percentages", () => {
+    const message = {
+      type: "rate_limit_event",
+      rate_limit_info: { status: "allowed", resetsAt: 1795097400, rateLimitType: "five_hour", utilization: 0.02, unifiedWindows: { five_hour: { utilization: 0.02, resetsAt: 1795097400 }, seven_day: { utilization: 0.59, resetsAt: 1795273200 } } },
+    };
+    expect(parseRateLimit(message)).toEqual({
+      status: "allowed",
+      resetsAt: 1795097400,
+      utilization: 2,
+      type: "five_hour",
+      windows: { five_hour: { utilization: 2, resetsAt: 1795097400 }, seven_day: { utilization: 59, resetsAt: 1795273200 } },
+    });
   });
 
   it("ignores other messages", () => {
@@ -305,5 +320,19 @@ describe("worker turn helpers", () => {
     expect(workerPrompt({ interrupted: false, brief: "Do X.", messages: ["Also Y."] })).toBe("Do X.\n\n[From the main session]\nAlso Y.");
     expect(workerPrompt({ interrupted: true, messages: [], continueText: "Continue." }).endsWith("Continue.")).toBe(true);
     expect(workerPrompt({ interrupted: true, messages: [] }).startsWith("[Your previous turn was cut off")).toBe(true);
+  });
+});
+
+describe("parseUsageAnswer", () => {
+  const answer = (limits: unknown, available = true) => ({ rate_limits_available: available, rate_limits: limits as never });
+  it("reads percentages and ISO reset times", () => {
+    const got = parseUsageAnswer(answer({ five_hour: { utilization: 54, resets_at: "2026-11-19T13:30:00Z" }, seven_day: { utilization: 31, resets_at: "2026-11-21T09:00:00Z" } }), 5);
+    expect(got).toEqual({ fiveHour: { percent: 54, resetsAt: Date.UTC(2026, 10, 19, 13, 30), readAt: 5 }, sevenDay: { percent: 31, resetsAt: Date.UTC(2026, 10, 21, 9, 0), readAt: 5 } });
+  });
+  it("leaves out a window with null values, and answers nothing when none is usable", () => {
+    expect(parseUsageAnswer(answer({ five_hour: { utilization: null, resets_at: null }, seven_day: { utilization: 3, resets_at: "2026-11-21T09:00:00Z" } }), 0)?.fiveHour).toBeUndefined();
+    expect(parseUsageAnswer(answer({ five_hour: null }), 0)).toBeUndefined();
+    expect(parseUsageAnswer(answer(null), 0)).toBeUndefined();
+    expect(parseUsageAnswer(answer({ five_hour: { utilization: 1, resets_at: "2026-11-19T13:30:00Z" } }, false), 0)).toBeUndefined();
   });
 });

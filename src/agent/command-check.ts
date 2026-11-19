@@ -213,8 +213,18 @@ export const DAEMON_TOOL_SERVER = "clots";
  */
 export const DAEMON_TOOL_PREFIX = `mcp__${DAEMON_TOOL_SERVER}__`;
 
-/** The daemon's answer to a tool request made during a locked turn. */
-export function lockDecision(toolName: string, input: Record<string, unknown>, testCommand?: string): Verdict {
+/** The tools of one session's connectors that only read, by the name a hook sees: mcp__<server>__<tool>. */
+export type ConnectorTools = ReadonlySet<string>;
+
+/** Claude Code names a tool mcp__<server>__<tool>, with every character outside letters, digits, _ and - in either name replaced by _. */
+export function mcpToolName(server: string, tool: string): string {
+  const clean = (name: string) => name.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `mcp__${clean(server)}__${clean(tool)}`;
+}
+
+/** The daemon's answer to a tool request made during a locked turn. A connector tool the session's MCP status listed as read-only is approved too. */
+export function lockDecision(toolName: string, input: Record<string, unknown>, testCommand?: string, connectorTools?: ConnectorTools): Verdict {
+  if (connectorTools?.has(toolName)) return OK;
   if (toolName === "Bash") {
     if (typeof input.command !== "string") return no("Refused: the command could not be read.");
     const verdict = checkCommand(input.command, testCommand);
@@ -226,13 +236,40 @@ export function lockDecision(toolName: string, input: Record<string, unknown>, t
   return no(`Refused: ${toolName} is not available while locked. Nothing can be changed or sent until the lock is off.`);
 }
 
+/** The tool Claude Code gives a session to hand in its structured answer. A one-off session needs it to answer at all. */
+const ANSWER_TOOL = "StructuredOutput";
+
+/** The sweep may call a connector tool that reads, and nothing else: no shell, no files, no web, no subagents, no skills, no memory. */
+export function sweepDecision(toolName: string, connectorTools: ConnectorTools): Verdict {
+  return toolName === ANSWER_TOOL || connectorTools.has(toolName) ? OK : no(`Refused: ${toolName} is not available. Only read-only connector tools may be called.`);
+}
+
+/** Tools the re-grounding session may not use on top of the lock: it has no subagents or skills, and writes nothing, not even its memory. */
+const REGROUND_REFUSED = new Set(["Task", "Agent", "Skill", "Edit", "Write"]);
+
+/** Re-grounding is the lock without memory writes, subagents and skills, plus the read-only connector tools. It only reads and looks things up. */
+export function regroundDecision(toolName: string, input: Record<string, unknown>, testCommand?: string, connectorTools?: ConnectorTools): Verdict {
+  if (toolName === ANSWER_TOOL || connectorTools?.has(toolName)) return OK;
+  // No MCP tool but the validated connector ones: a server a project or the user configured may be named like the daemon's (mcp__clots__).
+  if (toolName.startsWith("mcp__")) return no(`Refused: ${toolName} is not available while checking a recap.`);
+  if (REGROUND_REFUSED.has(toolName)) return no(`Refused: ${toolName} is not available while checking a recap. This session only reads and looks things up.`);
+  return lockDecision(toolName, input, testCommand, connectorTools);
+}
+
 /**
  * The answer of the hook that runs before every tool call of a locked turn. A hook is asked
  * before Claude Code looks at its permission rules, so nothing a settings file allows, and
  * nothing Claude Code would approve by itself, gets past the lock. An empty answer lets the
  * call go on to the usual permission check.
  */
-export function lockHookAnswer(toolName: string, input: unknown, testCommand?: string): { hookSpecificOutput?: { hookEventName: "PreToolUse"; permissionDecision: "deny"; permissionDecisionReason: string } } {
-  const verdict = lockDecision(toolName, typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {}, testCommand);
+export function lockHookAnswer(toolName: string, input: unknown, testCommand?: string, connectorTools?: ConnectorTools): HookDeny {
+  return hookAnswer(lockDecision(toolName, asRecord(input), testCommand, connectorTools));
+}
+
+type HookDeny = { hookSpecificOutput?: { hookEventName: "PreToolUse"; permissionDecision: "deny"; permissionDecisionReason: string } };
+const asRecord = (input: unknown): Record<string, unknown> => (typeof input === "object" && input !== null ? (input as Record<string, unknown>) : {});
+
+/** A verdict as a hook's answer: empty to let the call go on, a denial otherwise. */
+export function hookAnswer(verdict: Verdict): HookDeny {
   return verdict.ok ? {} : { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: verdict.reason } };
 }

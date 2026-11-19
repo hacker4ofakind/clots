@@ -26,13 +26,15 @@ export interface SessionRow {
   active: boolean;
 }
 
-export type InboxStatus = "pending" | "running" | "done";
+/** "digested": an event gathered into a digest row, which carries it from there. */
+export type InboxStatus = "pending" | "running" | "done" | "digested";
 
 /**
  * A message from the user, an event waiting for its own turn, a worker's report, question or
  * failure, or a choice the user did not answer in time, which runs as a worker's turn does.
+ * A digest is several events that waited behind a gate, looked into in one turn.
  */
-export type InboxKind = "message" | "event" | "worker" | "choice";
+export type InboxKind = "message" | "event" | "worker" | "choice" | "digest";
 
 export type WorkerStatus = "queued" | "running" | "idle" | "stopped" | "closed" | "failed";
 
@@ -51,6 +53,8 @@ export interface WorkerRow {
   worktree: string;
   status: WorkerStatus;
   urgent: boolean;
+  /** It may start while a gate holds: it was asked for in a turn of the user's own or in the investigation of an urgent event. */
+  gateOk: boolean;
   queuedSeq: number | null;
   /** Its session exists on disk. */
   started: boolean;
@@ -103,6 +107,7 @@ function toWorker(r: any): WorkerRow {
     worktree: r.worktree,
     status: r.status,
     urgent: r.urgent === 1,
+    gateOk: r.gate_ok === 1,
     queuedSeq: r.queued_seq,
     started: r.started === 1,
     interrupted: r.interrupted === 1,
@@ -130,6 +135,8 @@ export interface InboxInsert {
   eventId?: string | null;
   workerId?: string | null;
   outsider?: boolean;
+  /** An event held back by a gate: it waits for the gate to lift, and is then delivered with the others as a digest. */
+  gated?: boolean;
 }
 
 export interface InboxRow {
@@ -146,6 +153,10 @@ export interface InboxRow {
   workerId: string | null;
   /** The row carries an outsider's text, or comes from a turn that did: rulebook edits from its turn are asked. */
   outsider: boolean;
+  /** Held back by a gate. */
+  gated: boolean;
+  /** Triage marked the row's event urgent. Only filled in by pendingRows. */
+  urgent: boolean;
 }
 
 /** Thrown inside a transaction to roll it back when an inbox row is there already. */
@@ -403,6 +414,24 @@ CREATE TABLE IF NOT EXISTS calendar_changes (
   at INTEGER NOT NULL,
   restoring INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS spend (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  clot TEXT NOT NULL,
+  who TEXT NOT NULL,
+  usd REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS spend_at ON spend (at);
+CREATE TABLE IF NOT EXISTS session_costs (
+  session_id TEXT PRIMARY KEY,
+  total REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS digests (
+  digest_id TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (digest_id, event_id)
+);
 CREATE TABLE IF NOT EXISTS state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -426,7 +455,7 @@ function toSession(r: any): SessionRow {
 }
 
 function toInbox(r: any): InboxRow {
-  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind, eventId: r.event_id ?? null, workerId: r.worker_id ?? null, outsider: r.outsider === 1 };
+  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind, eventId: r.event_id ?? null, workerId: r.worker_id ?? null, outsider: r.outsider === 1, gated: r.gated === 1, urgent: r.ev_urgent === 1 };
 }
 
 function toAsk(r: any): AskRow {
@@ -497,6 +526,9 @@ export class Store {
     this.addColumn("events", "outsider", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("inbox", "worker_id", "TEXT");
     this.addColumn("inbox", "outsider", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("inbox", "gated", "INTEGER NOT NULL DEFAULT 0");
+    // Workers an earlier version started were never held by a gate.
+    this.addColumn("workers", "gate_ok", "INTEGER NOT NULL DEFAULT 1");
     this.addColumn("sessions", "interrupted_outsider", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("workers", "outsider", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("rule_edits", "edit", "TEXT");
@@ -519,10 +551,10 @@ export class Store {
     return this.db.transaction(fn)();
   }
 
-  createWorker(w: Pick<WorkerRow, "id" | "clot" | "title" | "brief" | "model" | "effort" | "branch" | "base" | "worktree" | "urgent"> & { outsider?: boolean }): void {
+  createWorker(w: Pick<WorkerRow, "id" | "clot" | "title" | "brief" | "model" | "effort" | "branch" | "base" | "worktree" | "urgent"> & { outsider?: boolean; gateOk?: boolean }): void {
     this.db
-      .prepare("INSERT INTO workers (id, clot, title, brief, model, effort, branch, base, worktree, urgent, outsider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(w.id, w.clot, w.title, w.brief, w.model, w.effort, w.branch, w.base, w.worktree, w.urgent ? 1 : 0, w.outsider ? 1 : 0);
+      .prepare("INSERT INTO workers (id, clot, title, brief, model, effort, branch, base, worktree, urgent, outsider, gate_ok) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(w.id, w.clot, w.title, w.brief, w.model, w.effort, w.branch, w.base, w.worktree, w.urgent ? 1 : 0, w.outsider ? 1 : 0, w.gateOk === false ? 0 : 1);
   }
 
   getWorker(id: string): WorkerRow | undefined {
@@ -673,8 +705,8 @@ export class Store {
 
   enqueue(m: InboxInsert): boolean {
     const info = this.db
-      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at, kind, event_id, worker_id, outsider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt, m.kind ?? "message", m.eventId ?? null, m.workerId ?? null, m.outsider ? 1 : 0);
+      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at, kind, event_id, worker_id, outsider, gated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt, m.kind ?? "message", m.eventId ?? null, m.workerId ?? null, m.outsider ? 1 : 0, m.gated ? 1 : 0);
     return info.changes === 1;
   }
 
@@ -760,6 +792,41 @@ export class Store {
   nextPending(clot: string): InboxRow | undefined {
     const r = this.db.prepare("SELECT * FROM inbox WHERE clot = ? AND status = 'pending' ORDER BY rowid LIMIT 1").get(clot);
     return r ? toInbox(r) : undefined;
+  }
+
+  /** Every pending row of a Clot in the order they arrived, each with whether its event is urgent. */
+  pendingRows(clot: string): InboxRow[] {
+    return this.db
+      .prepare("SELECT inbox.*, events.urgent AS ev_urgent FROM inbox LEFT JOIN events ON events.id = inbox.event_id WHERE inbox.clot = ? AND inbox.status = 'pending' ORDER BY inbox.rowid")
+      .all(clot)
+      .map(toInbox);
+  }
+
+  setGated(id: string, gated: boolean): void {
+    this.db.prepare("UPDATE inbox SET gated = ? WHERE id = ?").run(gated ? 1 : 0, id);
+  }
+
+  /**
+   * Gathers waiting event rows into one digest row, all or nothing: the digest's own row (an outsider's
+   * when any of its events is), the list of its events, and the gathered rows set to "digested".
+   * Returns the new row.
+   */
+  makeDigest(clot: string, rows: InboxRow[]): InboxRow {
+    const first = rows[0]!;
+    const id = `digest:${clot}:${first.id}`;
+    return this.inTransaction(() => {
+      this.enqueue({ id, clot, channelId: first.channelId, text: "", receivedAt: first.receivedAt, kind: "digest", eventId: id, outsider: rows.some((r) => r.outsider) });
+      rows.forEach((r, position) => {
+        this.db.prepare("INSERT OR IGNORE INTO digests (digest_id, event_id, position) VALUES (?, ?, ?)").run(id, r.eventId, position);
+        this.setInboxStatus(r.id, "digested");
+      });
+      return this.pendingRows(clot).find((r) => r.id === id)!;
+    });
+  }
+
+  /** The events of a digest, in the order they arrived. */
+  digestEvents(digestId: string): EventRow[] {
+    return this.db.prepare("SELECT events.* FROM digests JOIN events ON events.id = digests.event_id WHERE digests.digest_id = ? ORDER BY digests.position").all(digestId).map(toEvent);
   }
 
   setInboxStatus(id: string, status: InboxStatus): void {
@@ -1056,6 +1123,57 @@ export class Store {
 
   deleteState(key: string): void {
     this.db.prepare("DELETE FROM state WHERE key = ?").run(key);
+  }
+
+  /**
+   * Stores a sweep's findings and its new record in one transaction, so that a restart never keeps a record
+   * without its events. Returns the events that were new: a repeat is dropped by its ID.
+   */
+  recordSweep(record: string, events: ClotEvent[]): ClotEvent[] {
+    return this.inTransaction(() => {
+      const inserted = events.filter((event) => this.insertEvent(event));
+      this.setState("sweep-record", record);
+      return inserted;
+    });
+  }
+
+  /** Deletes a state value only while it is still `value`. */
+  deleteStateIf(key: string, value: string): void {
+    this.db.prepare("DELETE FROM state WHERE key = ? AND value = ?").run(key, value);
+  }
+
+  /** Replaces a state value only while it is still `from`. Returns whether this call replaced it. */
+  swapState(key: string, from: string, to: string): boolean {
+    return this.db.prepare("UPDATE state SET value = ? WHERE key = ? AND value = ?").run(to, key, from).changes === 1;
+  }
+
+  /** Sets a state value only when the key is not set yet. Returns whether this call set it: only that caller carries on. */
+  claimState(key: string, value: string): boolean {
+    return this.db.prepare("INSERT OR IGNORE INTO state (key, value) VALUES (?, ?)").run(key, value).changes === 1;
+  }
+
+  /**
+   * Books the cost of a model call, in one transaction. With a session, the cost is the increase of its
+   * running total since the last one booked (a total that dropped is the cost in full); without one it is
+   * the total. Nothing is booked for a cost of 0 or less. Returns what was booked.
+   */
+  bookSpend(a: { at: number; clot: string; who: string; sessionId?: string; total: number }): number {
+    return this.inTransaction(() => {
+      let usd = a.total;
+      if (a.sessionId !== undefined) {
+        const last = this.db.prepare("SELECT total FROM session_costs WHERE session_id = ?").pluck().get(a.sessionId) as number | undefined;
+        usd = last !== undefined && a.total >= last ? a.total - last : a.total;
+        this.db.prepare("INSERT INTO session_costs (session_id, total) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET total = excluded.total").run(a.sessionId, a.total);
+      }
+      if (!(usd > 0)) return 0;
+      this.db.prepare("INSERT INTO spend (at, clot, who, usd) VALUES (?, ?, ?, ?)").run(a.at, a.clot, a.who, usd);
+      return usd;
+    });
+  }
+
+  /** What was spent from a moment on, by Clot and kind of call. */
+  spendSince(from: number): { clot: string; who: string; usd: number }[] {
+    return this.db.prepare("SELECT clot, who, SUM(usd) AS usd FROM spend WHERE at >= ? GROUP BY clot, who ORDER BY MIN(id)").all(from) as { clot: string; who: string; usd: number }[];
   }
 
   /** The records whose key begins with a prefix, in key order. */

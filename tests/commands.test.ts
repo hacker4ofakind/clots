@@ -81,6 +81,13 @@ it("reads &calendar undo, and answers &calendar alone with the usage", () => {
   expect(COMMAND_USAGE).toContain("`&calendar undo`");
 });
 
+it("reads &spend, and answers &spend with anything after it with the usage", () => {
+  expect(parseCommand("&spend")).toEqual({ kind: "spend" });
+  expect(parseCommand(" &Spend ")).toEqual({ kind: "spend" });
+  expect(parseCommand("&spend extra")).toEqual({ kind: "invalid", name: "spend" });
+  expect(COMMAND_USAGE).toContain("`&spend`");
+});
+
 it("reads &memory and &memory undo, and nothing else after &memory", () => {
   expect(parseCommand("&memory")).toEqual({ kind: "memory", undo: false });
   expect(parseCommand(" &Memory Undo")).toEqual({ kind: "memory", undo: true });
