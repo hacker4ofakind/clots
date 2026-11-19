@@ -383,7 +383,8 @@ export class SdkRunner implements AgentRunner {
       },
     });
     // Read at once, waiting for connectors that are still connecting: the hook waits for it before the first tool call.
-    ready = settledStatus(() => session.mcpServerStatus())
+    // A container logged in with claude /login has connectors to wait for; one using the token has none.
+    ready = settledStatus(() => session.mcpServerStatus(), { expectServers: env.CLAUDE_CODE_OAUTH_TOKEN === undefined })
       .then(connectorTools)
       .catch(() => ({ tools: new Set<string>(), servers: [] }));
 

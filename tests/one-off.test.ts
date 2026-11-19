@@ -93,7 +93,7 @@ describe("runOneOff", () => {
 
   it("lets re-grounding go on with no connector", async () => {
     fake.statuses = [];
-    expect(await runner().runOneOff(req({ kind: "reground" }))).toMatchObject({ ok: true });
+    expect(await runner({ env: { GH_TOKEN: "g", CLAUDE_CODE_OAUTH_TOKEN: "t" } }).runOneOff(req({ kind: "reground" }))).toMatchObject({ ok: true });
   });
 
   it("stops the process in the container and deletes the transcript when it runs out of time", async () => {

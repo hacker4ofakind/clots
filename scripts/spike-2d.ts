@@ -111,8 +111,42 @@ async function oneoff() {
   console.log("leftover transcripts:", dock("exec", CONTAINER, "sh", "-c", "ls /home/clot/.claude/projects/*/*.jsonl | wc -l"));
 }
 
+async function sweep() {
+  // Two real sweeps of clot-home's connectors through the real Sweeper, with a throwaway store.
+  const { SdkRunner } = await import("../src/agent/runner.js");
+  const { Sweeper, skipList } = await import("../src/sweep.js");
+  const { Store } = await import("../src/store.js");
+  const store = new Store(process.env.PROBE_DB ?? ":memory:");
+  store.deleteState("sweep-last-start");
+  const runner = new SdkRunner({ clot: "home", env: {}, cwd: "/workspace" });
+  const delivered: string[] = [];
+  let clock = Date.now();
+  const sweeper = new Sweeper({
+    store, now: () => clock, enabled: true, everyMinutes: 15,
+    run: async (req) => { const t = Date.now(); const r = await runner.runOneOff(req); console.log("run", JSON.stringify(r).slice(0, 1500), Date.now() - t, "ms"); return r; },
+    clots: () => [{ name: "home", about: "anything that belongs to no project" }, { name: "encryptify", about: "the Encryptify app" }],
+    skip: () => skipList({ sources: { stripe: [], email: [], calendar: [], linear: [], notion: [] }, mcpServers: {} }),
+    held: () => false, deliver: async (e) => void delivered.push(JSON.stringify(e)), tell: async (t) => console.log("tell", t),
+    book: async (a) => console.log("book", JSON.stringify(a)), onLimit: () => undefined, log: console.log,
+  });
+  await sweeper.tick();
+  console.log("record 1:", store.getState("sweep-record")?.slice(0, 600));
+  clock += 16 * 60_000;
+  if (process.argv[3] === "twice") { await sweeper.tick(); console.log("record 2:", store.getState("sweep-record")?.slice(0, 600)); console.log("delivered", delivered); }
+  console.log("transcripts left:", dock("exec", CONTAINER, "sh", "-c", "ls /home/clot/.claude/projects/*/*.jsonl 2>/dev/null | wc -l"));
+}
+
+async function readdoc() {
+  // Does the hook accept a real connector tool call, and refuse a delete?
+  const { SdkRunner } = await import("../src/agent/runner.js");
+  const { SWEEP_SCHEMA, SWEEP_SYSTEM_PROMPT } = await import("../src/sweep.js");
+  const runner = new SdkRunner({ clot: "home", env: {}, cwd: "/workspace" });
+  const r = await runner.runOneOff({ kind: "sweep", prompt: (c) => "Connectors: " + c.join(", ") + ". Call the read tool of claude.ai Claude Docs for the doc with id 0938837c-baaa-4d80-abce-4ccc6c0ca561, then report it as one finding (connector claude.ai Claude Docs, item that id, version its revision). Also try the delete tool on it once and say in the record whether it was refused.", systemPrompt: SWEEP_SYSTEM_PROMPT, model: "claude-opus-5-5", effort: "low", cwd: "/workspace", schema: SWEEP_SCHEMA, timeoutMs: 300_000 });
+  console.log(JSON.stringify(r).slice(0, 2500));
+}
+
 const probe = process.argv[2];
-const probes: Record<string, () => Promise<void>> = { usage, status, turns, oneoff };
+const probes: Record<string, () => Promise<void>> = { usage, status, turns, oneoff, sweep, readdoc };
 if (!probes[probe]) throw new Error(`probe: ${Object.keys(probes).join(" | ")}`);
 await probes[probe]();
 process.exit(0);

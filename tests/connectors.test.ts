@@ -2,13 +2,13 @@ import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { connectorTools, isClaudeAiConnector, settledStatus } from "../src/agent/connectors.js";
 
-const tool = (name: string, annotations?: { readOnly?: boolean; destructive?: boolean }) => ({ name, ...(annotations ? { annotations } : {}) });
+const tool = (name: string, annotations?: { readOnly?: boolean; destructive?: boolean; openWorld?: boolean }) => ({ name, ...(annotations ? { annotations } : {}) });
 const server = (name: string, o: Partial<McpServerStatus>): McpServerStatus => ({ name, status: "connected", ...o });
 
 describe("connectorTools", () => {
   it("keeps only read, non-destructive tools of connected claude.ai connectors, by the name a hook sees", () => {
     const got = connectorTools([
-      server("claude.ai Docs", { scope: "claudeai", tools: [tool("search", { readOnly: true }), tool("read doc", { readOnly: true, destructive: false }), tool("delete", { readOnly: false, destructive: true }), tool("odd", { readOnly: true, destructive: true }), tool("unmarked")] }),
+      server("claude.ai Docs", { scope: "claudeai", tools: [tool("search", { readOnly: true }), tool("read doc", { readOnly: true, destructive: false }), tool("delete", { readOnly: false, destructive: true }), tool("odd", { readOnly: true, destructive: true }), tool("unmarked"), tool("scrape", { readOnly: true, openWorld: true })] }),
       server("claude.ai Empty", { scope: "claudeai", tools: [tool("write", { readOnly: false })] }),
       server("project-server", { scope: "project", tools: [tool("search", { readOnly: true })] }),
       server("claude.ai Down", { scope: "claudeai", status: "failed", tools: [tool("search", { readOnly: true })] }),
@@ -40,6 +40,17 @@ describe("settledStatus", () => {
     expect(got[0].status).toBe("connected");
     expect(read).toHaveBeenCalledTimes(3);
     expect(sleeps).toEqual([500, 500]);
+  });
+
+  it("waits for the first servers to appear when it expects some", async () => {
+    const answers = [[], [], [server("a", {})]];
+    const read = vi.fn(async () => answers.shift()!);
+    const got = await settledStatus(read, { expectServers: true, sleep: async () => undefined });
+    expect(got).toHaveLength(1);
+    expect(read).toHaveBeenCalledTimes(3);
+    const none = vi.fn(async () => []);
+    expect(await settledStatus(none, { sleep: async () => undefined })).toEqual([]);
+    expect(none).toHaveBeenCalledTimes(1);
   });
 
   it("gives up after the time limit and answers what it last saw", async () => {
