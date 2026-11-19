@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkCommand, lockDecision, lockHookAnswer } from "../src/agent/command-check.js";
+import { checkCommand, lockDecision, lockHookAnswer, mcpToolName, regroundDecision, sweepDecision } from "../src/agent/command-check.js";
 
 const APPROVED = [
   "cat src/index.ts",
@@ -239,5 +239,43 @@ describe("lockHookAnswer", () => {
     for (const [tool, input] of [["Write", { file_path: "a.ts" }], ["mcp__x__send", {}], ["Bash", undefined], ["Bash", "git status"], ["Bash", { command: "file -0C -m magic" }]] as const) {
       expect(lockHookAnswer(tool, input).hookSpecificOutput?.permissionDecision).toBe("deny");
     }
+  });
+});
+
+describe("the lock with connector tools", () => {
+  const connectors = new Set(["mcp__claude_ai_Docs__search", "mcp__claude_ai_Docs__read_doc"]);
+
+  it("approves a listed connector tool in the lock, and still refuses an unlisted one", () => {
+    expect(lockDecision("mcp__claude_ai_Docs__search", {}, undefined, connectors).ok).toBe(true);
+    expect(lockDecision("mcp__claude_ai_Docs__delete_doc", {}, undefined, connectors).ok).toBe(false);
+    expect(lockDecision("mcp__claude_ai_Docs__search", {}).ok).toBe(false);
+    expect(lockHookAnswer("mcp__claude_ai_Docs__search", {}, undefined, connectors)).toEqual({});
+  });
+
+  it("sweeps with a connector tool and the answer tool, and nothing else", () => {
+    expect(sweepDecision("mcp__claude_ai_Docs__search", connectors).ok).toBe(true);
+    expect(sweepDecision("StructuredOutput", connectors).ok).toBe(true);
+    expect(regroundDecision("StructuredOutput", {}).ok).toBe(true);
+    expect(lockDecision("StructuredOutput", {}).ok).toBe(false);
+    for (const name of ["Bash", "Read", "WebFetch", "WebSearch", "Task", "Agent", "Skill", "Write", "Edit", "mcp__clots__show", "mcp__claude_ai_Docs__delete_doc"]) {
+      expect(sweepDecision(name, connectors).ok).toBe(false);
+    }
+  });
+
+  it("checks a recap with the lock's reading tools, gh and connectors, but not memory writes, subagents or skills", () => {
+    expect(regroundDecision("Bash", { command: "gh pr view 12 --repo o/r" }, undefined, connectors).ok).toBe(true);
+    expect(regroundDecision("WebFetch", {}, undefined, connectors).ok).toBe(true);
+    expect(regroundDecision("mcp__claude_ai_Docs__read_doc", {}, undefined, connectors).ok).toBe(true);
+    expect(regroundDecision("Write", { file_path: "/home/clot/.claude/projects/-workspace/memory/note.md" }, undefined, connectors).ok).toBe(false);
+    expect(regroundDecision("Edit", { file_path: "/home/clot/.claude/projects/-workspace/memory/note.md" }, undefined, connectors).ok).toBe(false);
+    for (const name of ["Task", "Agent", "Skill"]) expect(regroundDecision(name, {}, undefined, connectors).ok).toBe(false);
+    expect(regroundDecision("Bash", { command: "rm -rf x" }, undefined, connectors).ok).toBe(false);
+  });
+});
+
+describe("mcpToolName", () => {
+  it("replaces every character outside letters, digits, _ and - with _", () => {
+    expect(mcpToolName("claude.ai Docs", "read doc")).toBe("mcp__claude_ai_Docs__read_doc");
+    expect(mcpToolName("notion", "search-pages")).toBe("mcp__notion__search-pages");
   });
 });

@@ -1,6 +1,8 @@
 import { CONTINUE_TEXT, homeWorkerSystemPrompt, workerSystemPrompt } from "./agent/prompts.js";
 import type { AgentRunner, TurnHandle, TurnResult } from "./agent/runner.js";
+import { describeGate, type GateState } from "./gates.js";
 import { modelLabel, WORKER_MODELS } from "./models.js";
+import type { BookArgs } from "./spend.js";
 import type { Store, WorkerRow } from "./store.js";
 import type { Effort, TurnActivity, WorkerModel } from "./types.js";
 import { FROM_MAIN, prLink, ReportBuffer, workerBranch, workerPrompt } from "./worker-turn.js";
@@ -52,6 +54,11 @@ export interface WorkersDeps {
   /** Posts in the Clot's live channel. Never throws. */
   say(clot: string, text: string): Promise<void>;
   postActivity(clot: string, activity: TurnActivity): Promise<void>;
+  /** What the scarce and lead-in gates say now. Absent: no gate. */
+  gate?: () => GateState;
+  timeZone?: string;
+  /** The spend log: books a worker turn's cost. */
+  book?: (a: BookArgs) => Promise<void>;
 }
 
 /** A live turn, from the moment it takes a place. The handle is set once the worktree is ready. */
@@ -86,7 +93,7 @@ export class Workers {
   constructor(private d: WorkersDeps) {}
 
   /** The main session's start_session. Returns the text the tool gives back. */
-  async start(clot: string, a: { title: string; brief: string; model: WorkerModel; effort: Effort; urgent: boolean; outsider?: boolean }): Promise<string> {
+  async start(clot: string, a: { title: string; brief: string; model: WorkerModel; effort: Effort; urgent: boolean; gateOk: boolean; outsider?: boolean }): Promise<string> {
     const { store } = this.d;
     const title = a.title.trim();
     if (title.length < 3 || title.length > 80) return "Refused: the title must be 3 to 80 characters.";
@@ -98,11 +105,17 @@ export class Workers {
     const id = this.d.newId();
     const home = this.d.repoOf(clot) === null;
     const branch = workerBranch(title, this.d.random);
-    store.createWorker({ id, clot, title, brief: a.brief, model: a.model, effort: a.effort, branch, base: null, worktree: home ? `/workspace/workers/${id}` : `/workspace/worktrees/${id}`, urgent: a.urgent, outsider: a.outsider === true });
+    store.createWorker({ id, clot, title, brief: a.brief, model: a.model, effort: a.effort, branch, base: null, worktree: home ? `/workspace/workers/${id}` : `/workspace/worktrees/${id}`, urgent: a.urgent, gateOk: a.gateOk, outsider: a.outsider === true });
     store.queueWorker(id);
     const label = modelLabel(a.model, a.effort);
     const short = shortId(id);
 
+    // Under a gate a worker the daemon did not mark as allowed waits in the queue until the gate lifts.
+    if (this.heldByGate(store.getWorker(id)!)) {
+      const why = describeGate(this.gate(), this.d.timeZone ?? "UTC", this.d.now());
+      await this.d.say(clot, `Queued: ${title} (${label}). Usage is tight (${why}); it starts when that lifts.`);
+      return `Queued worker ${short} on branch ${branch}: usage is tight (${why}). It starts when that lifts.`;
+    }
     if (this.canStartNow()) {
       const failure = await this.begin(store.getWorker(id)!);
       if (failure !== undefined) return `Not started: ${failure}.`;
@@ -170,7 +183,7 @@ export class Workers {
 
   private setWake(until: number): void {
     this.cancelWake?.();
-    this.cancelWake = this.d.after(Math.max(0, until - this.d.now()), () => this.wake());
+    this.cancelWake = this.d.after(Math.max(0, until - this.d.now()), () => this.resumeAfterLimit());
   }
 
   /**
@@ -215,8 +228,27 @@ export class Workers {
       .map((w) => `- ${shortId(w.id)} "${w.title}": ${w.status}, ${modelLabel(w.model, w.effort)}, branch ${w.branch ?? "none"}, pull request ${w.prUrl ?? "none yet"}`);
   }
 
+  private gate(): GateState {
+    return this.d.gate?.() ?? { holds: null };
+  }
+
+  /** A gate holds, and the worker may not start under it. A follow-up to a worker that already has a place is never held. */
+  private heldByGate(w: WorkerRow): boolean {
+    return this.gate().holds !== null && !w.gateOk && !this.hasPlace(w);
+  }
+
+  /** The gate has lifted, or the queue may have changed: look at the queue again. */
+  wake(): void {
+    this.dispatch();
+  }
+
   private canStartNow(): boolean {
     return this.ready && !this.paused() && this.live.size < this.d.limit && !this.pacing;
+  }
+
+  /** Whether the account's usage limit is in force for the workers. */
+  isPaused(): boolean {
+    return this.paused();
   }
 
   private paused(): boolean {
@@ -255,7 +287,7 @@ export class Workers {
       do {
         this.again = false;
         if (this.paused()) break;
-        const queue = this.d.store.queuedWorkers().filter((w) => this.d.knows(w.clot) && !this.live.has(w.id));
+        const queue = this.d.store.queuedWorkers().filter((w) => this.d.knows(w.clot) && !this.live.has(w.id) && !this.heldByGate(w));
         if (queue.length === 0) this.pacing = false;
         for (const w of queue) {
           if (this.live.size >= this.d.limit) break;
@@ -374,6 +406,8 @@ export class Workers {
     for (const cancel of slot.cancel) cancel();
     this.live.delete(id);
     const w = store.getWorker(id)!;
+    // Booked first: the turn cost what it cost whatever became of the worker.
+    await this.d.book?.({ clot: w.clot, who: `worker:${id}`, sessionId: id, total: result.totalCostUsd }).catch((error) => console.error(`[${w.clot}] booking worker ${id}'s cost failed:`, error));
     try {
       if (w.status !== "running") return;
       const started = w.started || result.responded === true || result.ok;
@@ -464,7 +498,7 @@ export class Workers {
   }
 
   /** The usage limit has reset: every worker it cut off carries on. */
-  private wake(): void {
+  private resumeAfterLimit(): void {
     this.pausedUntil = null;
     this.d.store.setState(PAUSE_KEY, "0");
     for (const w of this.d.store.workersWithStatus("idle")) if (w.interrupted) this.d.store.queueWorker(w.id);

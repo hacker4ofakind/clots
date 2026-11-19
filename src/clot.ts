@@ -4,9 +4,13 @@ import type { ChatAdapter, InboundMessage } from "./chat/adapter.js";
 import { sessionChannelName } from "./chat/names.js";
 import { makeRoom } from "./chat/room.js";
 import { COMMAND_USAGE, parseCommand, type Command } from "./commands.js";
+import { digestText, planDrain, type DigestEntry } from "./digest.js";
+import { describeGate, waitingUntil, type GateState } from "./gates.js";
 import { formatEvent, linkTo } from "./events/format.js";
 import type { ClotEvent } from "./events/types.js";
 import { OPUS } from "./models.js";
+import { REGROUND_FAILED_NOTE, regroundNote, type RegroundOutcome } from "./reground.js";
+import type { BookArgs } from "./spend.js";
 import type { Router } from "./router.js";
 import type { InboxRow, SessionRow, Store } from "./store.js";
 import type { StandingMatch } from "./standing.js";
@@ -47,14 +51,20 @@ export interface ClotDeps {
   onLimit?: (resetsAt: number) => void;
   /** Called when this Clot's pause ends. */
   onResume?: (clot: string) => void;
+  /** What the scarce and lead-in gates say now. Absent: no gate. */
+  gate?: () => GateState;
+  /** The spend log: books each turn's cost, and answers `&spend`. */
+  spend?: { book(a: BookArgs): Promise<void>; report(clot: string): Promise<string> };
+  /** Checks a recap against the current state before the new session's first turn. Absent: the recap is taken as written. */
+  reground?: (clot: string, recap: string) => Promise<RegroundOutcome>;
 }
 
 /** A command the daemon answers at once, without a turn and without the session. */
-type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" | "memory" | "calendar" }>;
+type InstantCommand = Extract<Command, { kind: "invalid" | "effort" | "rules" | "memory" | "calendar" | "spend" }>;
 
 /** Returns the command when it is one answered at once; an `&effort` that carries a message is not. */
 function instantCommand(command: Command): InstantCommand | undefined {
-  return command.kind === "invalid" || command.kind === "rules" || command.kind === "memory" || command.kind === "calendar" || (command.kind === "effort" && command.rest === "") ? command : undefined;
+  return command.kind === "invalid" || command.kind === "rules" || command.kind === "memory" || command.kind === "calendar" || command.kind === "spend" || (command.kind === "effort" && command.rest === "") ? command : undefined;
 }
 
 const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: string; closed: string }> = {
@@ -129,14 +139,14 @@ export class Clot {
       }
       // An earlier message is waiting for this turn to end (a close, a refused push).
       // This one waits behind it, so it is not delivered ahead of what the user sent first.
-      const earlier = store.nextPending(name);
+      const earlier = this.nextRunnable();
       if (earlier && earlier.id !== m.id) return;
       // A turn's authority is fixed when it starts. A message that arrives during an event's or a
       // worker's turn stays pending and gets a chat turn of its own, so it keeps the user's.
       if (this.liveKind !== "chat") return;
       const live = this.live;
       const text = command.kind === "effort" ? command.rest : m.text;
-      const decision = await this.d.router.decide({ text, tail: store.tail(name, 4) });
+      const decision = await this.d.router.decide({ clot: name, text, tail: store.tail(name, 4) });
       if (this.live !== live) {
         // The turn ended while routing. The message is still pending; handle it as a normal turn.
         await this.drain();
@@ -155,6 +165,28 @@ export class Clot {
     await this.drain();
   }
 
+  private gateState(): GateState {
+    return this.d.gate?.() ?? { holds: null };
+  }
+
+  /** The first pending row that may run now: while a gate holds, the events it holds back are skipped, and never block the user's own work. */
+  private nextRunnable(): InboxRow | undefined {
+    return planDrain(this.d.store.pendingRows(this.d.name), this.gateState().holds !== null).run;
+  }
+
+  /** The fields every main session turn's prompt shares. Taking the notes marks them as given to this turn. */
+  private shared(session: SessionRow) {
+    const gate = this.gateState();
+    return {
+      seed: session.seed,
+      seedReason: session.seedReason,
+      interrupted: session.interrupted,
+      notes: this.takeNotes(),
+      workers: this.workerLines(),
+      ...(gate.holds === null ? {} : { tight: describeGate(gate, this.d.timeZone, this.d.now().getTime()) }),
+    };
+  }
+
   /** Whether a turn is running. */
   isBusy(): boolean {
     return this.live !== undefined;
@@ -168,10 +200,14 @@ export class Clot {
   async queueEvent(event: ClotEvent, notice: string, kick = true): Promise<void> {
     const { store, chat, name } = this.d;
     const session = store.activeSession(name)!;
+    // Under a gate an ordinary event waits: it gets its notice now, with when the gate is expected to lift, and arrives later in a digest.
+    const gate = this.gateState();
+    const waits = gate.holds !== null && store.getEvent(event.id)?.urgent !== true;
     // Named by the Clot as well, so an event handed to another Clot is queued there too.
-    store.enqueue({ id: `event:${name}:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event", eventId: event.id, outsider: event.outsider });
+    store.enqueue({ id: `event:${name}:${event.id}`, clot: name, channelId: session.channelId, text: formatEvent(event, this.d.timeZone), receivedAt: event.receivedAt, kind: "event", eventId: event.id, outsider: event.outsider, gated: waits });
     store.setEventStatus(event.id, "queued");
-    await chat.post(session.channelId, `${notice}${linkTo(event.url)}`).catch(() => undefined);
+    const until = waits ? waitingUntil(gate, this.d.timeZone, this.d.now().getTime()) : "";
+    await chat.post(session.channelId, `${notice}${until}${linkTo(event.url)}`).catch(() => undefined);
     if (kick) void this.drain().catch((error) => console.error(`[${name}]`, error));
   }
 
@@ -193,9 +229,18 @@ export class Clot {
       while (true) {
         const paused = store.getClot(name)!.pausedUntil;
         if (paused !== null && paused * 1000 > this.d.now().getTime()) return;
-        const row = store.nextPending(name);
-        if (!row) return;
-        const keepGoing = await this.process(row);
+        const plan = planDrain(store.pendingRows(name), this.gateState().holds !== null);
+        for (const id of plan.markGated) store.setGated(id, true);
+        for (const id of plan.ungate ?? []) store.setGated(id, false);
+        if (plan.digest) {
+          // The gate has lifted: what waited is looked into together, in turns of at most ten, one after the other.
+          for (const chunk of plan.digest) {
+            if (!(await this.process(store.makeDigest(name, chunk)))) return;
+          }
+          continue;
+        }
+        if (!plan.run) return;
+        const keepGoing = await this.process(plan.run);
         if (!keepGoing) return;
       }
     } finally {
@@ -215,6 +260,9 @@ export class Clot {
     } else if (command.kind === "memory") {
       const memory = this.d.memory;
       await chat.post(channelId, memory === undefined ? "Global memory is not available." : command.undo ? await memory.undo() : memory.list());
+    } else if (command.kind === "spend") {
+      const spend = this.d.spend;
+      await chat.post(channelId, spend === undefined ? "Spend is not tracked here." : await spend.report(name));
     } else if (command.kind === "calendar") {
       const calendar = this.d.calendar;
       await chat.post(channelId, calendar === undefined ? "No calendar can be changed from this daemon." : await calendar.undo(name));
@@ -242,6 +290,11 @@ export class Clot {
         // On a usage limit the command stays pending and is retried after the reset.
         if (outcome === "paused") return false;
         if (outcome === "resumed") return true;
+        // The handoff is done, but re-grounding hit the usage limit: the command is finished, and nothing is retried.
+        if (outcome === "done-paused") {
+          store.setInboxStatus(row.id, "done");
+          return false;
+        }
       } else if (!command.summary && session.seed !== null) {
         // A new session that still carries an unused recap: drop the recap in place.
         store.clearSeed(session.id);
@@ -260,12 +313,13 @@ export class Clot {
     await this.d.beforeTurn?.(name).catch((error) => console.error(`[${name}] syncing global memories failed:`, error));
     let result: TurnResult;
     try {
-      result = isEvent ? await this.runEventTurn(row, session) : row.kind === "worker" || row.kind === "choice" ? await this.runWorkerTurn(row, session) : await this.runTurn(row, session, command);
+      result = row.kind === "digest" ? await this.runDigestTurn(row, session) : isEvent ? await this.runEventTurn(row, session) : row.kind === "worker" || row.kind === "choice" ? await this.runWorkerTurn(row, session) : await this.runTurn(row, session, command);
     } finally {
       this.live = undefined;
       stopTyping();
     }
     await this.posts;
+    await this.d.spend?.book({ clot: name, who: "main", sessionId: session.id, total: result.totalCostUsd }).catch((error) => console.error(`[${name}] booking the turn's cost failed:`, error));
     if (result.activity && result.activity.files.length + result.activity.commands.length > 0) {
       await chat.postActivity(session.channelId, result.activity).catch(() => undefined);
     }
@@ -282,7 +336,9 @@ export class Clot {
     if (!result.ok && !result.limit) {
       await chat.post(
         session.channelId,
-        isEvent
+        row.kind === "digest"
+          ? `Looking into these events ended with an error: ${store.digestEvents(row.eventId ?? "").map((event) => event.id).join(", ")}. Ask me about any of them to try again.`
+          : isEvent
           ? "Looking into that event ended with an error. Ask me about it to try again."
           : row.kind === "worker"
             ? "Reading a worker's report ended with an error. Ask me about the worker to try again."
@@ -300,7 +356,10 @@ export class Clot {
       return (await this.pause(session.channelId, result.limit.resetsAt)) === "resumed";
     }
 
-    if (result.contextPercent >= this.d.rolloverPercent && (await this.handoff("context", true)) === "paused") return false;
+    if (result.contextPercent >= this.d.rolloverPercent) {
+      const outcome = await this.handoff("context", true);
+      if (outcome === "paused" || outcome === "done-paused") return false;
+    }
     return true;
   }
 
@@ -329,7 +388,7 @@ export class Clot {
   private queueContinuation(resetsAt: number): void {
     const { store, name } = this.d;
     const session = store.activeSession(name)!;
-    if (!session.interrupted || store.nextPending(name)) return;
+    if (!session.interrupted || this.nextRunnable()) return;
     store.enqueue({ id: `resume-${resetsAt}`, clot: name, channelId: session.channelId, text: CONTINUE_TEXT, receivedAt: this.d.now().getTime(), kind: session.interruptedKind, eventId: session.interruptedEvent, outsider: session.interruptedOutsider });
   }
 
@@ -339,7 +398,7 @@ export class Clot {
    */
   private async runEventTurn(row: InboxRow, session: SessionRow): Promise<TurnResult> {
     const { store, name } = this.d;
-    const decision = await this.d.router.decide({ text: row.text, tail: store.tail(name, 4) });
+    const decision = await this.d.router.decide({ clot: name, text: row.text, tail: store.tail(name, 4) });
     // The event this turn is for. A turn that picks up a cut-off investigation is for the same one.
     const event = row.eventId === null ? undefined : store.getEvent(row.eventId);
     const standing = event === undefined ? [] : (this.d.standingFor?.(name, event) ?? []);
@@ -349,19 +408,39 @@ export class Clot {
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt: buildPrompt({
         text: row.text,
-        seed: session.seed,
-        seedReason: session.seedReason,
-        interrupted: session.interrupted,
+        ...this.shared(session),
         event: true,
         outsider: row.outsider,
-        notes: this.takeNotes(),
         standing: standing.map((match) => ({ name: match.rule.name, text: match.filled })),
-        workers: this.workerLines(),
       }),
       effort: decision.effort,
       role: "main",
       model: OPUS,
       tools: this.d.makeTools?.({ clot: name, kind: "event", event, outsider: row.outsider }),
+      onText: this.sayIn(session.channelId),
+    });
+    return this.live.done;
+  }
+
+  /**
+   * Runs the events that waited behind a gate as one turn of their own, under the lock. A digest an
+   * outsider's event is in is an outsider's turn. One cut off by the usage limit is told to carry on, not
+   * sent the events again; its events are loaded for the tools.
+   */
+  private async runDigestTurn(row: InboxRow, session: SessionRow): Promise<TurnResult> {
+    const { store, name } = this.d;
+    const events = store.digestEvents(row.eventId ?? "");
+    const entries: DigestEntry[] = events.map((event) => ({ event, message: event.triageMessage, standing: (this.d.standingFor?.(name, event) ?? []).map((match) => ({ name: match.rule.name, text: match.filled })) }));
+    const decision = await this.d.router.decide({ clot: name, text: events.map((event) => event.title).join("\n").slice(0, 2000), tail: store.tail(name, 4) });
+    store.setInboxStatus(row.id, "running");
+    this.liveKind = "event";
+    this.live = this.d.runner.startTurn({
+      ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
+      prompt: buildPrompt({ text: row.id.startsWith("resume-") ? CONTINUE_TEXT : digestText(entries, this.d.timeZone), ...this.shared(session), event: true, outsider: row.outsider }),
+      effort: decision.effort,
+      role: "main",
+      model: OPUS,
+      tools: this.d.makeTools?.({ clot: name, kind: "event", digest: events, outsider: row.outsider }),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -378,7 +457,7 @@ export class Clot {
     this.liveKind = "worker";
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
-      prompt: buildPrompt({ text: row.text, seed: session.seed, seedReason: session.seedReason, interrupted: session.interrupted, notes: this.takeNotes(), workers: this.workerLines() }),
+      prompt: buildPrompt({ text: row.text, ...this.shared(session) }),
       effort: "low",
       role: "main",
       model: OPUS,
@@ -420,7 +499,7 @@ export class Clot {
   private async runTurn(row: InboxRow, session: SessionRow, command: Command): Promise<TurnResult> {
     const { store, name } = this.d;
     const text = command.kind === "effort" ? command.rest : row.text;
-    const decision = await this.d.router.decide({ text, tail: store.tail(name, 4) });
+    const decision = await this.d.router.decide({ clot: name, text, tail: store.tail(name, 4) });
     // The user's own choice of effort wins over the router's: given with this message, or set for it beforehand.
     // A one-off effort is spent on this message either way.
     const oneOff = store.takeNextEffort(name);
@@ -428,14 +507,7 @@ export class Clot {
 
     store.appendTail(name, "user", text);
     store.setInboxStatus(row.id, "running");
-    const prompt = buildPrompt({
-      text,
-      seed: session.seed,
-      seedReason: session.seedReason,
-      interrupted: session.interrupted,
-      notes: this.takeNotes(),
-      workers: this.workerLines(),
-    });
+    const prompt = buildPrompt({ text, ...this.shared(session) });
 
     this.liveKind = "chat";
     this.live = this.d.runner.startTurn({
@@ -473,7 +545,7 @@ export class Clot {
    * Returns "paused" or "resumed" when the recap turn hit the usage limit: the
    * old session stays active and the handoff has not happened.
    */
-  private async handoff(reason: SeedReason, summary: boolean): Promise<"done" | "failed" | "paused" | "resumed"> {
+  private async handoff(reason: SeedReason, summary: boolean): Promise<"done" | "failed" | "paused" | "resumed" | "done-paused"> {
     const { store, chat, name } = this.d;
     const old = store.activeSession(name)!;
     const words = HANDOFF_TEXT[reason];
@@ -492,6 +564,7 @@ export class Clot {
       await chat.post(old.channelId, words.notice).catch(() => undefined);
       const stopTyping = chat.startTyping(old.channelId);
       const recapResult = await recapTurn.done.finally(stopTyping);
+      await this.d.spend?.book({ clot: name, who: "main", sessionId: old.id, total: recapResult.totalCostUsd }).catch((error) => console.error(`[${name}] booking the recap's cost failed:`, error));
       if (recapResult.limit) {
         this.d.onLimit?.(recapResult.limit.resetsAt);
         return this.pause(old.channelId, recapResult.limit.resetsAt);
@@ -516,7 +589,40 @@ export class Clot {
     await chat.post(channelId, `${chat.mention(this.d.userId)} ${intro}`).catch(failed("posting to the new channel"));
     await chat.post(old.channelId, `${words.closed} Continued in ${chat.channelLink(channelId)}.`).catch(failed("posting the closing link"));
     await chat.makeReadOnly(old.channelId).catch(failed("making the old channel read-only"));
+    if (recap !== null) return this.reground(channelId, recap);
     return "done";
+  }
+
+  /**
+   * Checks the recap against the current state before the new session's first turn. What differs is posted in the new
+   * channel and left as a note in front of that turn; nothing changed posts nothing. A check that failed says so and
+   * leaves a note. One that hit the usage limit also pauses the Clot: there is no turn to continue, so the handoff
+   * is done, and "done-paused" says so. Messages that arrive meanwhile wait: this runs inside the drain.
+   */
+  private async reground(channelId: string, recap: string): Promise<"done" | "done-paused"> {
+    const { store, chat, name } = this.d;
+    if (this.d.reground === undefined) return "done";
+    const stopTyping = chat.startTyping(channelId);
+    let outcome: RegroundOutcome;
+    try {
+      outcome = await this.d.reground(name, recap);
+    } catch {
+      outcome = { failed: true };
+    } finally {
+      stopTyping();
+    }
+    if ("changes" in outcome) {
+      if (outcome.changes.length > 0) {
+        await chat.post(channelId, `Since the recap was written:\n${outcome.changes.map((line) => `- ${line}`).join("\n")}`).catch(() => undefined);
+        store.addNote(name, regroundNote(outcome.changes));
+      }
+      return "done";
+    }
+    await chat.post(channelId, "I couldn't check the recap against the current state. Treat it with care.").catch(() => undefined);
+    store.addNote(name, REGROUND_FAILED_NOTE);
+    if (outcome.limit === undefined) return "done";
+    this.d.onLimit?.(outcome.limit);
+    return (await this.pause(channelId, outcome.limit)) === "paused" ? "done-paused" : "done";
   }
 
   private async newChannel(categoryId: string): Promise<string> {

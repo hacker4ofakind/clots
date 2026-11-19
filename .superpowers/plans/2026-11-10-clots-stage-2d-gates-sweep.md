@@ -42,7 +42,7 @@
 - `src/events/kinds.ts`, `src/rulebook.ts` (modify): `sweep` source, `finding` kind.
 - `src/commands.ts` (modify): `&spend`.
 - `src/daemon.ts` (modify): wire the meter, gate, ticker, spend log, sweeper, re-grounder.
-- `scripts/spike.ts` (modify, Task 1 only): probes.
+- `scripts/spike-2d.ts` (create, Task 1): probes. Kept, like the earlier stages' spikes.
 - `README.md`, `clots.config.example.json` (modify): the new keys and `&spend`.
 - Tests: `tests/gates.test.ts`, `tests/usage-meter.test.ts`, `tests/spend.test.ts`, `tests/sweep.test.ts`, `tests/reground.test.ts`, `tests/digest.test.ts` (create); extend `clot.test.ts`, `workers.test.ts`, `config.test.ts`, `commands.test.ts`, `command-check.test.ts`, `tools.test.ts`, `rulebook.test.ts`, `store.test.ts`, `prompts.test.ts`.
 
@@ -117,23 +117,23 @@
 
   Resumed sessions keep their old system prompt, so the user must `&close` each Clot after the build (see the Manual Verification shared setup).
 - **Worker gate.**
-  - `workers.gate_ok INTEGER NOT NULL DEFAULT 0`. `tools.startSession` sets `gateOk = urgent || ctx.kind === "chat"`.
+  - `workers.gate_ok INTEGER NOT NULL DEFAULT 1` (a worker an earlier version queued is never held; `createWorker` always sets it). `tools.startSession` sets `gateOk = urgent || ctx.kind === "chat"`.
   - `WorkersDeps` gains `gate: () => GateState`. While it holds, `dispatch()` passes over queued workers with `!gateOk && !hasPlace(w)` and keeps the order. Workers that already have a place (follow-up turns) are never held.
   - Public `wake()` calls `dispatch()`.
   - **`start()` has a fast path.** `canStartNow()` → `begin()` (`src/workers.ts:106`) never goes through `dispatch()`. Add the gate check to it: a worker that may not start under the gate is queued, and the message is `Queued: <title> (<label>). Usage is tight (<describeGate>); it starts when that lifts.` A held worker must also not keep `pacing` set after a restart: `pacing` clears when no queued worker may start now, not only when the queue is empty.
 - **Rate-limit events.**
   - `parseRateLimit` also returns `type` (`rate_limit_info.rateLimitType`).
-  - Utilization: the SDK type does not say whether it is a fraction or a percentage. Task 1's probe decides. Write the answer into `toPercent` and into this note.
+  - Utilization: a rate-limit event gives a fraction (0.02 is 2%; measured against the usage call's percentage), so `toPercent` multiplies by 100. Every event of a subscription session also carries both windows in `rate_limit_info.unifiedWindows` (`five_hour` and `seven_day`, each `{ utilization, resetsAt }`, which the SDK's types do not list), and `parseRateLimit` returns them as `windows`; `observe` takes both windows from any event.
   - **`resetsAt` from a rate-limit event is in Unix seconds** (see `src/clot.ts:195`). `Reading.resetsAt` is in ms: convert in `observe`, or the first event of any turn replaces a good reading with one that has already expired, and gate 3 never holds. The usage call can return `utilization: null` or `resets_at: null`. An event or answer missing either leaves that window's reading untouched.
   - `RunnerOptions` gains `onRateLimit?: (s: RateLimitState) => void`, called for every event, not only `rejected`. `UsageMeter.observe` updates `five_hour` and `seven_day` and ignores the other types.
   - **The meter persists** its readings in the state table (`usage-five-hour`, `usage-seven-day`, as JSON) and loads them in its constructor. The daemon builds the meter, and runs the ticker's first computation, before any `clot.init()`, since `init()` drains at once. Without this, a restart during a held lead-in releases everything that waited.
   - **Backoff.** The meter keeps `lastAttemptAt` and a failure count. After a failed or timed-out call it waits 5, 10, 20, then 60 minutes before the next attempt, whatever the reading's age. A call that times out has its `claude` process stopped as for one-off sessions (below).
-- **Reading usage on demand.** `ClaudeRunner.readUsage()`:
+- **Reading usage on demand.** `SdkRunner.readUsage()`:
   - starts `query()` with an `InputQueue` that is never fed;
   - calls `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true })`, closes the queue and returns `{ fiveHour, sevenDay }`, with `resets_at` parsed from ISO 8601 to ms;
   - has a 20 s time limit and returns `undefined` on any failure.
 
-  The meter calls it on the account's runner (see "The account's container" below). `refresh(maxAgeMs)` is single-flight. Make `readUsage` and `runOneOff` methods of `ClaudeRunner` only, not of the `AgentRunner` interface, so the fake runners in `clot.test.ts` and `workers.test.ts` do not have to stub them. The meter, sweeper and re-grounder take injected functions and `now`.
+  The meter calls it on the account's runner (see "The account's container" below). `refresh(maxAgeMs)` is single-flight. Make `readUsage` and `runOneOff` methods of `SdkRunner` only, not of the `AgentRunner` interface, so the fake runners in `clot.test.ts` and `workers.test.ts` do not have to stub them. The meter, sweeper and re-grounder take injected functions and `now`.
 - **Spend booking.**
   - `TurnResult.totalCostUsd` is the last `result` message's `total_cost_usd`.
   - `SpendLog.book({ clot, who, sessionId?, total })`:
@@ -165,8 +165,8 @@
   - Lines with no spend are left out.
   - Before answering, `&spend` calls `meter.refresh(5 min)` with a 15 s ceiling.
   - Reuse `modelLabel` from `src/models.ts` for the worker's model.
-- **One-off sessions** (`ClaudeRunner.runOneOff`):
-  - Request: `{ prompt, systemPrompt, model, effort, cwd?, schema, timeoutMs }`. A fresh `newSessionId`, no daemon tools, `outputFormat: { type: "json_schema", schema }`.
+- **One-off sessions** (`SdkRunner.runOneOff`):
+  - Request: `{ kind, prompt, systemPrompt, model, effort, cwd?, schema, timeoutMs }`; `prompt` is a string or a function of the connectors' names, as the MCP status gives them, so that the sweep can tell the model which names to report under. A fresh `sessionId`, no daemon tools, `outputFormat: { type: "json_schema", schema }`. The schema is the zod schema through `jsonSchema()` (`src/json-schema.ts`), which drops `$schema`: Claude Code rejects zod's draft.
   - **One lock wiring, not a copy.** Add a third role to the options builder in `runner.ts` (today's `turnOptions`, around lines 173–191), and share the message loop (around lines 223–255) through one helper used by `startTurn` and `runOneOff`. A copy would miss the next change to the lock, and these sessions read untrusted text.
   - Request gains `kind: "sweep" | "reground"`. Each kind has its own allow-list on top of the hook:
     - **sweep:** allowed connector tools only. Everything else is refused, including Bash, Read, web, Task/Agent, Skill and memory writes. The environment has no `GH_TOKEN`.
@@ -178,7 +178,8 @@
     - of those servers' tools, keep the ones with `annotations.readOnly === true` and no `destructive: true`, named as the hook sees them (Task 1 records the naming).
     - The hook awaits this promise, so the set is ready before the first tool call.
   - An empty set fails the run with `error: "no connector available"`. This matters only to the sweep, which then counts a failure. Re-grounding carries on with gh and the web.
-  - Result: `{ ok, output?: unknown (result.structured_output), totalCostUsd?, limit?, error? }`.
+  - Result: `{ ok, output?: unknown (result.structured_output), totalCostUsd?, limit?, error?, connectors? }` (`connectors`: the allowed servers' names).
+  - Both locks also approve `StructuredOutput`, the tool a session answers with: without it every one-off session ends with no structured output.
   - **The time limit.** It uses the query's abort controller and returns `{ ok: false, error: "timed out" }`. Aborting kills only the `docker exec` client: also stop the `claude` process inside the container by its session ID (`pkill -f <sessionId>`, through the async `docker()` helper in `container.ts`, as `killStrayClaude` does).
   - In a `finally`, always call `deleteSession(container, sessionId)`, written with the async `docker()` helper. It removes `/home/clot/.claude/projects/*/<id>.jsonl` the same way `sessionExists` finds it.
 - **The account's container** is used for the sweep and for `readUsage`. It is the home Clot's container when `hasOwnLogin` is true for it, else the first Clot's container that has its own login. With none: the sweep is off, `readUsage` uses the home or first Clot's runner, and the daemon logs once that no container has a claude.ai login, so the sweep has no connectors.
@@ -239,7 +240,7 @@
 ## Tasks
 
 ### Task 1: Verify the assumptions
-**Files:** `scripts/spike.ts` (modify; revert before the final commit)
+**Files:** `scripts/spike-2d.ts` (create; kept)
 **Interfaces:** none.
 
 **Build:** Run probes with `npm run spike` against `clot-home` (or `clot-encryptify`), using the container login. For each of spec section 15's assumptions, record one line under Implementation Notes:
@@ -257,7 +258,7 @@ If any assumption fails, stop and bring the finding to the user before continuin
 
 **Done when:** every line is in Implementation Notes and none failed.
 
-- [ ] Task 1 complete
+- [ ] Task 1 complete (passed where it could run; the login-dependent probes are listed in Implementation Notes)
 
 ### Task 2: Config, gate and usage meter
 **Files:** `src/config.ts`, `src/gates.ts`, `src/usage-meter.ts`, `src/agent/usage.ts`, `src/agent/runner.ts` (`onRateLimit`, `readUsage`, `totalCostUsd`), tests.
@@ -298,7 +299,7 @@ Config gives `config.gates: GateConfig`, `config.sweep: { enabled: boolean; ever
 
 **Done when:** `npm test` and `npm run typecheck` pass.
 
-- [ ] Task 2 complete
+- [x] Task 2 complete
 
 ### Task 3: Gated drain, notices, digests and the tight line
 **Files:** `src/store.ts`, `src/clot.ts`, `src/digest.ts`, `src/agent/prompts.ts`, `src/tools.ts`, `src/agent/tool-server.ts`, `src/daemon.ts` (ticker part 2, and passing `gate` into `ClotDeps`), tests.
@@ -340,7 +341,7 @@ Config gives `config.gates: GateConfig`, `config.sweep: { enabled: boolean; ever
 
 **Done when:** `npm test` and `npm run typecheck` pass.
 
-- [ ] Task 3 complete
+- [x] Task 3 complete
 
 ### Task 4: Gated worker starts
 **Files:** `src/store.ts` (`gate_ok`), `src/workers.ts`, `src/tools.ts`, `src/daemon.ts` (ticker calls `workers.wake()`), tests.
@@ -362,7 +363,7 @@ Config gives `config.gates: GateConfig`, `config.sweep: { enabled: boolean; ever
 
 **Done when:** `npm test` and `npm run typecheck` pass.
 
-- [ ] Task 4 complete
+- [x] Task 4 complete
 
 ### Task 5: Spend log, `&spend` and the weekly warning
 **Files:** `src/spend.ts`, `src/store.ts` (`spend`, `session_costs`), `src/clot.ts` (book main turns and the recap; answer `&spend`), `src/workers.ts` (book worker turns), `src/triage.ts`, `src/router.ts`, `src/routing-call.ts`, `src/commands.ts`, `src/daemon.ts`, tests.
@@ -383,7 +384,7 @@ Config gives `config.gates: GateConfig`, `config.sweep: { enabled: boolean; ever
 
 **Done when:** `npm test` and `npm run typecheck` pass.
 
-- [ ] Task 5 complete
+- [x] Task 5 complete
 
 ### Task 6: One-off sessions and the sweep
 **Files:** `src/agent/runner.ts` (`runOneOff`), `src/agent/command-check.ts`, `src/agent/container.ts`, `src/sweep.ts`, `src/store.ts` (`recordSweep`), `src/events/kinds.ts`, `src/rulebook.ts` (only if validation needs it), `src/triage.ts` (prompt line), `src/daemon.ts` (ticker step 3), tests.
@@ -391,10 +392,10 @@ Config gives `config.gates: GateConfig`, `config.sweep: { enabled: boolean; ever
 - Consumes: `gateAt`, `SpendLog.book`, `pipeline.handle`.
 - Produces:
   ```ts
-  interface OneOffRequest { prompt: string; systemPrompt: string; model: string; effort: Effort; cwd?: string; schema: Record<string, unknown>; timeoutMs: number }
+  interface OneOffRequest { kind: "sweep" | "reground"; prompt: string | ((connectors: string[]) => string); systemPrompt: string; model: string; effort: Effort; cwd?: string; schema: Record<string, unknown>; timeoutMs: number }
   interface OneOffResult { ok: boolean; output?: unknown; totalCostUsd?: number; limit?: LimitInfo; error?: string }
   // AgentRunner: runOneOff(req: OneOffRequest): Promise<OneOffResult>
-  // lockDecision(toolName, input, testCommand?, connectorTools?: ReadonlySet<string>): Verdict
+  // lockDecision(toolName, input, testCommand?, connectorTools?: ReadonlySet<string>): Verdict; sweepDecision(toolName, connectorTools); regroundDecision(toolName, input, testCommand?, connectorTools?)
   function findingEvents(findings: Finding[], now: number): ClotEvent[];
   class Sweeper { tick(): Promise<void> }
   ```
@@ -421,7 +422,7 @@ Config gives `config.gates: GateConfig`, `config.sweep: { enabled: boolean; ever
 
 **Done when:** `npm test` and `npm run typecheck` pass.
 
-- [ ] Task 6 complete
+- [x] Task 6 complete
 
 ### Task 7: Re-grounding
 **Files:** `src/reground.ts`, `src/clot.ts` (`handoff`, `ClotDeps.reground`), `src/daemon.ts`, tests.
@@ -442,10 +443,10 @@ Config gives `config.gates: GateConfig`, `config.sweep: { enabled: boolean; ever
 
 **Done when:** `npm test` and `npm run typecheck` pass.
 
-- [ ] Task 7 complete
+- [x] Task 7 complete
 
 ### Task 8: Docs, live checks and the commit
-**Files:** `README.md`, `clots.config.example.json`, this plan's Implementation Notes, the spec's status line, `scripts/spike.ts` (revert).
+**Files:** `README.md`, `clots.config.example.json`, this plan's Implementation Notes, the spec's status line, `scripts/spike-2d.ts` (kept).
 
 **Build:**
 - Document `gates`, `sweep`, `spend` and `&spend` in the README and the example configuration.
@@ -611,4 +612,20 @@ To force a sweep, use either:
 - Sentry, Vercel and PostHog (2c Tasks 24–26), Pi deployment, onboarding, the browser.
 
 ## Implementation Notes
-_Filled in by the executor before finishing: deviations from this plan and why, final names/interfaces if they changed, surprises, and anything the next stage's planner should know. Keep it short._
+
+**Task 1 (probes, `scripts/spike-2d.ts`).** Run with the setup-token in `clot-encryptify` (its own login had expired: "OAuth session expired and could not be refreshed"; `clot-home` has none).
+- Passed: a resumed session's `total_cost_usd` carries on (0.223, 0.265, 0.272, the last after a one-off session ran between); `outputFormat` with a Read tool ends with `structured_output`; deleting a one-off's transcript leaves the main session resumable; rate-limit events give utilization as a **fraction** and `resetsAt` in **seconds**, and every event carries both windows in `unifiedWindows` (not in the SDK types).
+- With the token the usage call answers `rate_limits: null`, `subscription_type: null`: it needs `claude /login`.
+- **Not run, needs `docker exec -it clot-home claude /login`:** the usage call with a login; `mcpServerStatus()` for connectors; a resume after an interrupted turn; what the connectors give as a finding's `version`. The code assumes a claude.ai connector has `scope` or `source` `"claudeai"` and that a hook sees `mcp__<server>__<tool>` with every character outside `[A-Za-z0-9_-]` replaced by `_`. MV-9 checks both; if either is wrong the sweep fails with "no connector available" or every connector call is refused.
+- Live, with the token: `runOneOff` for re-grounding returned a correct change from `gh` and deleted its transcript; a sweep returned "no connector available".
+
+**Deviations.**
+- `SdkRunner` (not `ClaudeRunner`); `readUsage` and `runOneOff` are on it only. `OneOffRequest` has `kind` and a `prompt` that may be a function of the connector names; the result has `connectors`.
+- Both one-off locks approve the `StructuredOutput` tool, and schemas go through `jsonSchema()`: found live, without them every one-off session failed.
+- `ClotDeps.spend` is `{ book, report }` (the Clot books its own turns); `WorkersDeps` has `book`, `gate`, `timeZone`; `Workers.wake()` is the new public one and the usage-limit one is now `resumeAfterLimit`; `Workers.isPaused()` is new.
+- `workers.gate_ok` defaults to 1 for rows an earlier version made.
+- `GateTicker.recheck()` (also called by `meter.onChange`); `planDrain(rows, holds)` is in `src/digest.ts` and `nextRunnable` is a Clot method over it, not a store helper. A digest's chunks run one after the other inside the drain.
+- `SpendLog.report` formats the week start as "Mon 9 Nov 00:00" (no zero padding). `structuredQuery` (`src/structured-query.ts`) is the one place triage, the router and the routing call run their `query()`.
+- Time helpers live in `src/time.ts` (`weekStart`, `clockLabel`, `localDayAt` added). Zod is 4.6.7.
+
+**For the next planner.** Run the shared setup in the checklist with a real login before trusting the sweep. The sweep's first run is the ticker's first minute after startup, not at once. Sessions started before this build keep the old system prompt until `&close`.

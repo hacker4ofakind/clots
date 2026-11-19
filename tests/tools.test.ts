@@ -224,6 +224,42 @@ describe("send_from_template", () => {
   });
 });
 
+describe("a digest turn", () => {
+  const digestTools = (events: ClotEvent[], outsider = false) =>
+    makeTools(
+      {
+        rulebook,
+        writer,
+        asks: { rule: async () => "FILED" },
+        store,
+        senders: { github_comment: { reach: () => undefined, send: async (event, text) => (sent.push({ event: event.id, text }), sendAnswer) } },
+        say: async (_clot, text) => void said.push(text),
+        handOver: async () => "",
+      },
+      { clot: "graphite", kind: "event", digest: events, outsider },
+    );
+
+  it("sends from a template only for a named event that is in the digest", async () => {
+    standing(ACK);
+    const inside = issue({ id: "d-1" });
+    const other = issue({ id: "d-2", subject: "issue:8", ref: "8" });
+    const t = digestTools([inside, other]);
+    expect(await t.send({ rule: "ack-issue" })).toBe("Refused: name the event, this turn holds several.");
+    expect(await t.send({ rule: "ack-issue", event: "d-9" })).toBe("Refused: that event is not in this turn.");
+    expect(sent).toEqual([]);
+    expect(await t.send({ rule: "ack-issue", event: "d-2" })).toContain("Sent");
+    expect(sent).toEqual([{ event: "d-2", text: "Thanks for the report, @alice. I am looking into it." }]);
+    expect(store.hasSend("d-2", "ack-issue")).toBe(true);
+    expect(store.hasSend("d-1", "ack-issue")).toBe(false);
+  });
+
+  it("ignores the event argument outside a digest", async () => {
+    standing(ACK);
+    await tools("event", issue()).send({ rule: "ack-issue", event: "anything" });
+    expect(sent).toHaveLength(1);
+  });
+});
+
 describe("routing tools", () => {
   it("apply a routing rule at once, in the global file", async () => {
     const rule = { source: "email", place: "me+shop@gmail.com", clot: "graphite" };
@@ -352,6 +388,22 @@ describe("email_draft", () => {
       expect(reviews).toEqual([]);
       expect(await sendTools("worker")!({ account: "gmail", to: ["a@b.c"], subject: "s", text: "x" })).toBe("FILED FOR REVIEW");
       expect(await sendTools("event", mailEvent())!({ account: "gmail", to: ["a@b.c"], subject: "s", text: "x" })).toBe("FILED FOR REVIEW");
+    });
+
+    it("takes the email to answer by ID in a digest turn, and refuses one the digest does not hold", async () => {
+      const t = (events: ClotEvent[], outsider = false) => {
+        reviews = [];
+        return makeTools(
+          { rulebook, writer: new RuleWriter({ rulebook, store, commit: () => undefined }), asks: { rule: async () => "FILED", email: async (clot: string, req: any) => (reviews.push({ clot, req }), "FILED FOR REVIEW") }, store, senders: {}, say: async () => undefined, handOver: async () => "", email: { accounts: [account], save: async () => ({ mailbox: "Drafts" }) } },
+          { clot: "graphite", kind: "event", digest: events, outsider },
+        ).emailSend!;
+      };
+      const mail = mailEvent();
+      expect(await t([mail, issue()])({ text: "x" })).toBe("Refused: name the event, this turn holds several.");
+      expect(await t([issue()])({ event: "email:gmail:<m2@x.com>", text: "x" })).toBe("Refused: that event is not in this turn.");
+      expect(reviews).toEqual([]);
+      expect(await t([mail, issue()])({ event: "email:gmail:<m2@x.com>", text: "Thanks." })).toBe("FILED FOR REVIEW");
+      expect(await t([{ ...mail, outsider: true }, issue()], true)({ event: "email:gmail:<m2@x.com>", text: "Thanks." })).toBe("FILED FOR REVIEW");
     });
 
     it("refuses what a draft refuses, and is not offered when send review is off", async () => {

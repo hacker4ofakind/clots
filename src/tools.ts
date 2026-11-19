@@ -29,6 +29,8 @@ export interface TurnContext {
   kind: TurnKind;
   /** The event an investigation was started for. */
   event?: ClotEvent;
+  /** The events of a digest turn: several that waited behind a gate, each named by its ID in the tools that act on one. */
+  digest?: ClotEvent[];
   /** The turn's row carries an outsider's text, or comes from a turn that did. Read from the row, never worked out here. */
   outsider: boolean;
   /** The turn carries out a choice the user did not answer in time. */
@@ -65,7 +67,7 @@ export interface DaemonTools {
   prefilter(a: { action: "add" | "remove"; file: RuleScope; rule: Prefilter }): Promise<string>;
   guidance(a: { action: "add" | "remove"; file: RuleScope; line: string }): Promise<string>;
   standing(a: { action: "set" | "remove"; file: RuleScope; name: string; trigger?: StandingRule["trigger"]; via?: StandingRule["via"]; template?: string }): Promise<string>;
-  send(a: { rule: string; text?: string }): Promise<string>;
+  send(a: { rule: string; text?: string; event?: string }): Promise<string>;
   routing(a: { action: "add" | "remove"; rule: RoutingRule }): Promise<string>;
   routeCorrect(a: { event: string; clot: string }): Promise<string>;
   /** Only when email is set up. */
@@ -179,8 +181,9 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
     },
 
     // A standing rule's own scope, not a permission: it is used in the turn of the event its trigger matched.
-    send: ({ rule, text }) => gate(ctx, "send", async () => {
-      const event = ctx.event;
+    send: ({ rule, text, event: eventId }) => gate(ctx, "send", async () => {
+      const event = ctx.digest === undefined ? ctx.event : turnEvent(ctx.digest, eventId);
+      if (typeof event === "string") return event;
       if (ctx.kind !== "event" || event === undefined) return "Refused: a standing rule can be used only while looking into the event that triggered it.";
       const parts = event.kind === "batch" ? d.store.eventsMergedInto(event.id) : [];
       const match = matchStanding(d.rulebook.standingFor(ctx.clot), event, parts).find((candidate) => candidate.rule.name === rule);
@@ -255,7 +258,8 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       gate(ctx, "startSession", async () => {
         if (!d.workers) return "Refused: workers are not available.";
         const urgent = ctx.kind === "event" && ctx.event !== undefined && d.store.getEvent(ctx.event.id)?.urgent === true;
-        return d.workers.start(ctx.clot, { ...a, urgent, outsider: ctx.outsider });
+        // Decided here, from the turn that asked, never by the model: under a gate only the user's own turns and urgent events may start a worker.
+        return d.workers.start(ctx.clot, { ...a, urgent, gateOk: urgent || ctx.kind === "chat", outsider: ctx.outsider });
       }),
     messageWorker: async ({ id, text }) => gate(ctx, "messageWorker", async () => (d.workers ? d.workers.message(ctx.clot, id, text, ctx.outsider) : "Refused: workers are not available.")),
     stopWorker: async ({ id }) => gate(ctx, "stopWorker", async () => (d.workers ? d.workers.stop(ctx.clot, id) : "Refused: workers are not available.")),
@@ -275,6 +279,12 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
           calendarRemove: (a: { account?: string; uid: string }) => gate(ctx, "calendarRemove", () => calendarRemove(d, ctx, a)),
         }),
   };
+}
+
+/** The event a tool call names in a digest turn, which holds several. A string says why not. */
+function turnEvent(digest: ClotEvent[], id: string | undefined): ClotEvent | string {
+  if (id === undefined) return "Refused: name the event, this turn holds several.";
+  return digest.find((event) => event.id === id) ?? "Refused: that event is not in this turn.";
 }
 
 /** The state key that records an event was handed over by a Clot. */
@@ -457,9 +467,14 @@ function buildMail(d: ToolDeps, ctx: TurnContext, a: EmailArgs): { account: Emai
  * text started may only answer the email it is looking into.
  */
 async function emailSend(d: ToolDeps, ctx: TurnContext, a: EmailArgs): Promise<string> {
+  // A digest turn holds several events: the email is answered for one of them, named.
+  if (ctx.digest !== undefined) {
+    const named = turnEvent(ctx.digest, a.event);
+    if (typeof named === "string") return named;
+  }
   if (ctx.outsider) {
-    const event = ctx.event;
-    const looking = event === undefined ? [] : [event.id, ...(event.kind === "batch" ? d.store.eventsMergedInto(event.id).map((part) => part.id) : [])];
+    const events = ctx.digest ?? (ctx.event === undefined ? [] : [ctx.event]);
+    const looking = events.flatMap((event) => [event.id, ...(event.kind === "batch" ? d.store.eventsMergedInto(event.id).map((part) => part.id) : [])]);
     if (a.event === undefined || !looking.includes(a.event)) return "Refused: this turn came from an outsider's text, so you can only ask to answer the email you are looking into. Give its id.";
   }
   const built = buildMail(d, ctx, a);

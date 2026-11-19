@@ -1,11 +1,37 @@
 import { z } from "zod";
 import { repoSlug } from "./events/github.js";
+import { parseSpan, type GateConfig, type Windows } from "./gates.js";
+import { WEEKDAYS } from "./time.js";
 
 /** The name of the Clot for what belongs to no project. */
 export const HOME_CLOT = "home";
 
-/** Names a project Clot cannot have: the home Clot's, and the one the rulebook uses for the file every Clot shares. */
-const RESERVED_NAMES = [HOME_CLOT, "global"];
+/** Names a project Clot cannot have: the home Clot's, the one the rulebook uses for the file every Clot shares, and the two the spend log books to. */
+const RESERVED_NAMES = [HOME_CLOT, "global", "daemon", "sweep"];
+
+const weekdays = (window: string): Record<string, string> => Object.fromEntries(["mon", "tue", "wed", "thu", "fri"].map((day) => [day, window]));
+
+/** Windows by weekday: "15:00-18:00", start before end, in the configured time zone. */
+const windowsSchema = z.partialRecord(z.enum(WEEKDAYS), z.string()).transform((raw, ctx): Windows => {
+  const windows: Windows = {};
+  for (const [day, text] of Object.entries(raw)) {
+    const span = parseSpan(text as string);
+    if (typeof span === "string") {
+      ctx.addIssue({ code: "custom", message: `${day}: ${span}`, path: [day] });
+      continue;
+    }
+    windows[day as keyof Windows] = span;
+  }
+  return windows;
+});
+
+const GatesSchema = z
+  .strictObject({
+    scarce: windowsSchema.default(() => windowsSchema.parse(weekdays("15:00-18:00"))),
+    leadIn: windowsSchema.default(() => windowsSchema.parse(weekdays("10:00-15:00"))),
+    leadInPercent: z.number().int().min(1).max(100).default(50),
+  })
+  .prefault({});
 
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -95,6 +121,10 @@ const FileSchema = z.object({
   publicUrl: z.url().optional(),
   // Whether a Clot may ask to send an email, which the daemon sends on the user's yes in a review channel; and how many days a request waits for that answer.
   sendReview: z.strictObject({ enabled: z.boolean().default(true), days: z.number().positive().default(3) }).prefault({}),
+  gates: GatesSchema,
+  sweep: z.strictObject({ enabled: z.boolean().default(true), everyMinutes: z.number().int().min(15).default(90) }).prefault({}),
+  // An explicit {} means no warning.
+  spend: z.strictObject({ weeklyWarnUsd: z.number().positive().optional() }).default({ weeklyWarnUsd: 50 }),
   sources: SourcesSchema,
   mcpServers: z.record(z.string().regex(NAME), McpServerSchema).default({}),
 });
@@ -177,6 +207,12 @@ export interface Config {
   publicUrl: string;
   /** Emails a Clot asks to send, sent on the user's yes in a review channel. `maxMs`: how long a request waits for the answer. */
   sendReview: { enabled: boolean; maxMs: number };
+  /** The windows in which the Clots step back, and the five-hour utilization at which the lead-in holds. */
+  gates: GateConfig;
+  /** The periodic read of the claude.ai connectors. */
+  sweep: { enabled: boolean; everyMinutes: number };
+  /** `weeklyWarnUsd`: a Clot that spends more than this in a week is reported once. Absent: no warning. */
+  spend: { weeklyWarnUsd?: number };
   sources: Sources;
   mcpServers: Record<string, McpServer>;
 }
@@ -261,6 +297,9 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     maxWorkers,
     publicUrl,
     sendReview: { enabled: file.sendReview.enabled, maxMs: file.sendReview.days * 86_400_000 },
+    gates: file.gates,
+    sweep: file.sweep,
+    spend: file.spend,
     sources,
     mcpServers,
   };

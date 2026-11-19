@@ -277,3 +277,15 @@ describe("Rulebook", () => {
     ]);
   });
 });
+
+describe("sweep findings in rules", () => {
+  it("accepts source sweep with kind finding, and kind finding with no source", () => {
+    expect(() => parseRuleFile("prefilters:\n  - source: sweep\n    kind: finding\n")).not.toThrow();
+    expect(() => parseRuleFile("prefilters:\n  - kind: finding\n")).not.toThrow();
+  });
+
+  it("rejects kind finding on another built-in source, and a recipe named sweep", () => {
+    expect(() => parseRuleFile("prefilters:\n  - source: github\n    kind: finding\n")).toThrow();
+    expect(() => parseRuleFile("prefilters:\n  - source: sweep\n    kind: comment\n")).toThrow();
+  });
+});

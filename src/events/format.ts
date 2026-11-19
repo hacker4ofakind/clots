@@ -32,3 +32,11 @@ export function formatEvent(event: ClotEvent, timeZone: string): string {
     "</event>",
   ].join("\n");
 }
+
+/**
+ * Text the daemon did not write, in a block marked as data: a sweep's record of what it saw, a recap
+ * checked against the current state, the lines a check found. The text cannot close the block.
+ */
+export function dataBlock(tag: string, text: string): string {
+  return `<${tag}>\n${text.replaceAll(`</${tag}>`, `<\\/${tag}>`)}\n</${tag}>`;
+}

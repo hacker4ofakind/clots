@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { CalendarAccount } from "../src/config.js";
-import { CalendarFeed, describeWhen, dueReminders, linksIn, parseFeed, parseWhen, reminderEvent, wallClock, type Occurrence } from "../src/sources/calendar.js";
+import { CalendarFeed, describeWhen, dueReminders, linksIn, parseFeed, parseWhen, reminderEvent, type Occurrence } from "../src/sources/calendar.js";
+import { wallClock } from "../src/time.js";
 import { Store } from "../src/store.js";
 
 const ZONE = "Europe/Zurich";

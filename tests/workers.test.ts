@@ -142,7 +142,7 @@ function build(overrides: Partial<WorkersDeps> = {}): Workers {
   return new Workers(deps);
 }
 
-const fix = { title: "Fix X", brief: "Fix X in a.ts. Done when npm test passes.", model: "sonnet" as const, effort: "high" as const, urgent: false };
+const fix = { title: "Fix X", brief: "Fix X in a.ts. Done when npm test passes.", model: "sonnet" as const, effort: "high" as const, urgent: false, gateOk: true };
 const lines = (clot = "graphite") => said.filter((s) => s.clot === clot).map((s) => s.text);
 
 beforeEach(async () => {
@@ -648,5 +648,97 @@ describe("the main session's worker tools", () => {
   it("lets calendar_write run in a worker's turn", async () => {
     const tools = makeTools({ ...toolDeps(), calendar: { accounts: [{ account: "me", shared: true, icalUrl: "u", script: { url: "s", secret: "x" }, leadMinutes: [], pollMinutes: 5 }], timeZone: "UTC", now: () => 0, list: async () => [], call: async () => ({ ok: true, event: { uid: "u1", title: "x", start: "2026-10-16T00:00:00.000Z", end: "2026-10-17T00:00:00.000Z", allDay: true, location: "", description: "", guests: 0, repeats: false } }) as never } }, { clot: "graphite", kind: "worker", outsider: false });
     expect(await tools.calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Added");
+  });
+});
+
+describe("workers under a gate", () => {
+  const SCARCE = { holds: "scarce" as const, until: 1_000_000 + 3_600_000 };
+  let gate: { holds: null | "scarce" | "leadIn"; until?: number; percent?: number };
+  const FREE = { holds: null } as const;
+  let titles = 0;
+  const start = (kind: "chat" | "event" | "worker", o: { urgent?: boolean } = {}) => {
+    if (o.urgent) {
+      store.insertEvent({ id: "u1", source: "github", account: "github", kind: "issue_opened", place: "o/r", actor: "a", title: "t", body: "", url: "", ref: "1", subject: "issue:1", automated: false, outsider: false, receivedAt: 0 });
+      store.recordTriage("u1", "x", true);
+    }
+    return makeTools(
+      { rulebook: { file: () => ({}) as never, standingFor: () => [] }, writer: { apply: () => ({ ok: true }) as never, wasUndone: () => false }, asks: { rule: async () => "" }, store, senders: {}, say: async () => undefined, handOver: async () => "", workers },
+      { clot: "graphite", kind, ...(o.urgent ? { event: store.getEvent("u1")! } : {}), outsider: false },
+    ).startSession({ title: `Fix ${String.fromCharCode(65 + titles++)}`, brief: "b", model: "sonnet", effort: "high" });
+  };
+
+  beforeEach(async () => {
+    titles = 0;
+    gate = SCARCE;
+    workers = build({ gate: () => gate, timeZone: "UTC" });
+    workers.recover();
+    await workers.startUp();
+  });
+
+  it("starts a worker asked for in a chat turn, and one from an urgent event's turn", async () => {
+    expect(await start("chat")).toContain("Started worker");
+    expect(await start("event", { urgent: true })).toContain("Started worker");
+    expect(runner.turns).toHaveLength(2);
+  });
+
+  it("queues a worker asked for in any other turn, with the tight-usage message, and starts it when the gate lifts", async () => {
+    const reply = await start("worker");
+    expect(reply).toContain("Queued worker");
+    expect(reply).toMatch(/usage is tight \(scarce mode until \d\d:\d\d\)/);
+    expect(lines().at(-1)).toMatch(/^Queued: Fix [A-Z] \(Sonnet 5\.5 high\)\. Usage is tight \(scarce mode until \d\d:\d\d\); it starts when that lifts\.$/);
+    expect(runner.turns).toHaveLength(0);
+    expect(store.queuedWorkers()[0].gateOk).toBe(false);
+    gate = FREE;
+    workers.wake();
+    await settle();
+    expect(runner.turns).toHaveLength(1);
+  });
+
+  it("does not let a held worker block a later worker that may start", async () => {
+    await start("worker");
+    await start("chat");
+    expect(runner.turns).toHaveLength(1);
+    expect(store.queuedWorkers()).toHaveLength(1);
+  });
+
+  it("lets a follow-up to a worker that already has a place run", async () => {
+    await start("chat");
+    const id = "00000001-0000-0000-0000-000000000000";
+    finishTurn(runner.turns[0]);
+    await settle();
+    expect(store.getWorker(id)!.status).toBe("idle");
+    gate = SCARCE;
+    await workers.message("graphite", id.slice(0, 8), "more please");
+    await settle();
+    expect(runner.turns).toHaveLength(2);
+  });
+
+  it("keeps whether a worker may start across a restart, and a held worker does not hold up one that may start", async () => {
+    await start("worker");
+    const id = store.queuedWorkers()[0].id;
+    expect(store.getWorker(id)!.gateOk).toBe(false);
+    const restarted = build({ gate: () => gate, timeZone: "UTC" });
+    restarted.recover();
+    await restarted.startUp();
+    expect(runner.turns).toHaveLength(0);
+    expect(store.getWorker(id)!.status).toBe("queued");
+    // Pacing has cleared: nothing that may start is queued, so a worker started now begins at once.
+    expect(await restarted.start("graphite", { ...fix, title: "Fix later", gateOk: true })).toContain("Started worker");
+  });
+});
+
+describe("worker spend", () => {
+  it("books each worker turn's running total under the worker's session", async () => {
+    const booked: unknown[] = [];
+    workers = build({ book: async (a) => void booked.push(a) });
+    workers.recover();
+    await workers.startUp();
+    await workers.start("graphite", fix);
+    const id = "00000001-0000-0000-0000-000000000000";
+    const t = runner.turns.at(-1)!;
+    t.req.onText("Changed\n- a.ts");
+    finishTurn(t, { totalCostUsd: 0.42 });
+    await settle();
+    expect(booked).toEqual([{ clot: "graphite", who: `worker:${id}`, sessionId: id, total: 0.42 }]);
   });
 });

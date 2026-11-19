@@ -148,7 +148,7 @@ export class Pipeline {
     const { store, chat } = this.d;
     const drop = (why: string) => store.setEventStatus(event.id, "dropped", why);
 
-    const verdict = await this.d.triage.judge({ event, guidance: this.d.rulebook.guidance(clotName) });
+    const verdict = await this.d.triage.judge({ clot: clotName, event, guidance: this.d.rulebook.guidance(clotName) });
     store.recordTriage(event.id, verdict.message, verdict.urgent);
 
     // Checked before "no action": triage usually says both of an injection attempt, and the user must still hear of it.

@@ -184,6 +184,9 @@ export const workerExec = {
     "sh", base,
   ],
   killStray: (container: string) => ["exec", container, "pkill", "-x", "claude"],
+  // The session ID is on the claude process's command line (--session-id or --resume), which is how a stray one is found.
+  killSession: (container: string, sessionId: string) => ["exec", container, "pkill", "-f", sessionId],
+  deleteSession: (container: string, sessionId: string) => ["exec", container, "sh", "-c", 'rm -f /home/clot/.claude/projects/*/"$1".jsonl', "sh", sessionId],
   sessionExists: (container: string, sessionId: string) => ["exec", container, "sh", "-c", 'ls /home/clot/.claude/projects/*/"$1".jsonl', "sh", sessionId],
   prsForBranch: (container: string, branch: string, repo: string) => ["exec", "-e", "GH_TOKEN", container, "gh", "pr", "list", "-R", repo, "--head", branch, "--state", "all", "--json", "number,url,state,isCrossRepository"],
 };
@@ -248,6 +251,17 @@ export async function refreshMainCheckout(container: string, githubToken: string
 export async function killStrayClaude(container: string): Promise<void> {
   // pkill exits 1 when there was nothing to stop.
   await docker(workerExec.killStray(container)).catch(() => undefined);
+}
+
+/** Stops the Claude Code process of one session, when a `docker exec` was cut off but its process went on. */
+export async function killSession(container: string, sessionId: string): Promise<void> {
+  // pkill exits 1 when there was nothing to stop.
+  await docker(workerExec.killSession(container, sessionId)).catch(() => undefined);
+}
+
+/** Deletes a finished session's transcript: a one-off session leaves nothing behind. */
+export async function deleteSession(container: string, sessionId: string): Promise<void> {
+  await docker(workerExec.deleteSession(container, sessionId)).catch(() => undefined);
 }
 
 /** Whether Claude Code already holds a transcript for this session, without blocking the daemon. */

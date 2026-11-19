@@ -1,7 +1,7 @@
 # Clots stage 2d: gates, digests, spend log, sweep and re-grounding
 
 Date: 2026-11-10
-Status: approved in brainstorming; not yet built.
+Status: built on branch `stage-2d`; code and unit tests done. Live checks that need a container logged in with `claude /login` (the usage call, the connectors, the sweep) are still to be run.
 Parent design: `.superpowers/specs/2026-10-10-clots-design.md`. Plan:
 `.superpowers/plans/2026-11-10-clots-stage-2d-gates-sweep.md`. This document
 specifies the last of the parts of stage 2 (section 16 there). It builds on stages
@@ -120,8 +120,10 @@ the model a worker is started with.
 A **usage meter** in the daemon keeps the latest five-hour and seven-day
 utilization, each with its reset time:
 
-- **From turns.** Each rate-limit event of a turn that names the five-hour or
-  seven-day window updates that window.
+- **From turns.** Each rate-limit event of a turn updates the window it names, and
+  every event of a subscription session also carries both windows (five-hour and
+  seven-day, each with its utilization and reset), which update both. Events give
+  utilization as a fraction; the meter keeps percent.
 - **On demand.** The SDK's experimental usage call
   (`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`, with
   `skipBehaviors`) returns both windows. The meter makes it in a short-lived
@@ -138,6 +140,9 @@ utilization, each with its reset time:
   stored reading before any Clot drains its queue.
 - **No reading.** When the meter has no current five-hour reading (the call
   failed, the API changed, the account is not a subscription), gate 3 is off.
+  The usage call needs a login made with `claude /login`: with the token from
+  `claude setup-token` it answers that plan limits are unavailable, and the
+  readings then come from turns only.
   Gates 1 and 2 never need a reading.
 
 ## 4. Digests

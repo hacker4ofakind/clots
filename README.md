@@ -81,6 +81,28 @@ A choice not answered within 10 minutes (`CLOTS_CHOICE_TIMEOUT_MINUTES`, 1 to 14
 
 Global memories the home Clot writes apply to every Clot at once and are posted with `&memory undo`; only one written in a turn an outsider's text started is asked first.
 
+## Gates, digests and spend
+
+During the hours you keep for your own Claude use, the Clots step back. In **scarce** windows (default 15:00–18:00, Monday to Friday, in `timeZone`) and in a **lead-in** window (default 10:00–15:00) while the account's five-hour usage is at or above `leadInPercent` (default 50), an ordinary event gets its one-line notice ending "(waiting until 18:00)" and waits. When the gate lifts, what waited arrives as one digest turn of at most ten events (a single event runs as an ordinary investigation). Your messages, urgent events, workers' reports, choice timeouts and workers asked for in your own messages still run at once; a worker asked for anywhere else waits in the queue. While a gate holds, the main session is told to pick one step cheaper models for workers. The usage-limit pause (stage 1) is separate and always wins. The usage is the whole account's, yours included; it is read from each turn's rate-limit events, and from the SDK's usage call in a container logged in with `claude /login` (a container using the `claude setup-token` token has no plan limits to read, so the lead-in never holds there).
+
+```json
+"gates": {
+  "scarce": { "mon": "15:00-18:00", "tue": "15:00-18:00", "wed": "15:00-18:00", "thu": "15:00-18:00", "fri": "15:00-18:00" },
+  "leadIn": { "mon": "10:00-15:00", "tue": "10:00-15:00", "wed": "10:00-15:00", "thu": "10:00-15:00", "fri": "10:00-15:00" },
+  "leadInPercent": 50
+},
+"sweep": { "enabled": true, "everyMinutes": 90 },
+"spend": { "weeklyWarnUsd": 50 }
+```
+
+Giving `scarce` or `leadIn` replaces its whole default; `{}` means no windows. A window is `HH:MM-HH:MM`, start before end, and ends the same day. `spend: {}` turns the warning off.
+
+The daemon logs what every model call costs, per Clot and worker, with the SDK's estimate in USD (on a subscription an estimate of API prices, not a bill; stopped turns may go uncounted, so it is a floor). `&spend` shows this week. A Clot that passes `spend.weeklyWarnUsd` in a week is reported once in its channel.
+
+Every `sweep.everyMinutes` (at least 15) one read-only sweep looks at the connectors of the claude.ai login (Claude Docs and the like) in the home Clot's container, or the first with its own login, and turns what changed into events from the source `sweep`, kind `finding` (usable in rule files). It skips the sources the daemon already hears from, and is skipped while a gate or the usage limit holds. Log in once with `docker exec -it clot-home claude /login`. The first sweep only records a baseline.
+
+After every rollover that carries a recap (`&close` and the context limit), a short re-grounding session checks what the recap says is open against the current state; what differs is posted under "Since the recap was written:" and handed to the new session. `&close nosummary` skips it. A session started before this version keeps its old system prompt: send `&close` in each Clot once after updating.
+
 ## Commands
 
 A message that starts with `&` is handled by the daemon and never reaches the model.
@@ -94,6 +116,7 @@ A message that starts with `&` is handled by the daemon and never reaches the mo
 | `&rules`, `&rules undo` | Lists the rules in force for this Clot, routing rules included; undoes the latest edit made from chat. |
 | `&memory`, `&memory undo` | Lists the global memories in force; undoes the latest change. |
 | `&calendar undo` | Reverses this Clot's latest calendar change: removes an event it added, puts back what it changed, or creates again one it removed. Sent again, it steps further back. |
+| `&spend` | This week's estimated spend per Clot and worker, the gate in force, and the five-hour and seven-day usage. Answered at once, even during a turn. |
 
 ## Test
 

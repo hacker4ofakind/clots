@@ -11,9 +11,10 @@ export type Command =
   | { kind: "rules"; undo: boolean }
   | { kind: "memory"; undo: boolean }
   | { kind: "calendar"; undo: true }
+  | { kind: "spend" }
   | { kind: "invalid"; name: string };
 
-export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium [message]`, `&rules`, `&rules undo`, `&memory`, `&memory undo`, `&calendar undo`.";
+export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium [message]`, `&rules`, `&rules undo`, `&memory`, `&memory undo`, `&calendar undo`, `&spend`.";
 
 const EFFORTS: MainEffort[] = ["low", "medium"];
 
@@ -35,6 +36,8 @@ export function parseCommand(text: string): Command {
     if (!effort) return { kind: "invalid", name };
     return { kind: "effort", effort, rest: args.slice(level.length).trim() };
   }
+
+  if (name === "spend") return args === "" ? { kind: "spend" } : { kind: "invalid", name };
 
   if (name === "calendar") return args.toLowerCase() === "undo" ? { kind: "calendar", undo: true } : { kind: "invalid", name };
 

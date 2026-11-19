@@ -30,6 +30,9 @@ it("merges the config file and the environment", () => {
     choiceTimeoutMinutes: 10,
     publicUrl: "",
     sendReview: { enabled: true, maxMs: 3 * 86_400_000 },
+    gates: expect.any(Object),
+    sweep: { enabled: true, everyMinutes: 90 },
+    spend: { weeklyWarnUsd: 50 },
     sources: { stripe: [], email: [], calendar: [], linear: [], notion: [] },
     mcpServers: {},
   });
@@ -176,4 +179,38 @@ it("reads the choice timeout, from 1 to 1440 minutes, and names CLOTS_CHOICE_TIM
   expect(loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: "1" }).choiceTimeoutMinutes).toBe(1);
   expect(loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: "1440" }).choiceTimeoutMinutes).toBe(1440);
   for (const bad of ["0", "1441", "2.5", "soon"]) expect(() => loadConfig(json, { ...env, CLOTS_CHOICE_TIMEOUT_MINUTES: bad })).toThrow("CLOTS_CHOICE_TIMEOUT_MINUTES");
+});
+
+const defaultWindows = (window: { start: number; end: number }) => Object.fromEntries(["mon", "tue", "wed", "thu", "fri"].map((day) => [day, window]));
+
+it("defaults the gates, the sweep and the spend warning", () => {
+  const config = loadConfig(json, env);
+  expect(config.gates).toEqual({ scarce: defaultWindows({ start: 900, end: 1080 }), leadIn: defaultWindows({ start: 600, end: 900 }), leadInPercent: 50 });
+  expect(config.sweep).toEqual({ enabled: true, everyMinutes: 90 });
+  expect(config.spend).toEqual({ weeklyWarnUsd: 50 });
+});
+
+it("replaces a whole default window set when one is given, and {} means no windows", () => {
+  const config = loadConfig({ ...json, gates: { scarce: { sat: "09:30-11:00" }, leadIn: {} } }, env);
+  expect(config.gates.scarce).toEqual({ sat: { start: 570, end: 660 } });
+  expect(config.gates.leadIn).toEqual({});
+  expect(config.gates.leadInPercent).toBe(50);
+});
+
+it("rejects gate settings that cannot work", () => {
+  for (const gates of [{ scarce: { mon: "9-10" } }, { scarce: { mon: "18:00-15:00" } }, { leadIn: { mon: "10:00-10:00" } }, { leadInPercent: 0 }, { leadInPercent: 101 }, { scarce: { someday: "10:00-11:00" } }]) {
+    expect(() => loadConfig({ ...json, gates }, env)).toThrow();
+  }
+  expect(() => loadConfig({ ...json, sweep: { everyMinutes: 10 } }, env)).toThrow();
+  expect(() => loadConfig({ ...json, spend: { weeklyWarnUsd: 0 } }, env)).toThrow();
+});
+
+it("reads the sweep and an explicit empty spend setting as no warning", () => {
+  expect(loadConfig({ ...json, sweep: { enabled: false, everyMinutes: 15 } }, env).sweep).toEqual({ enabled: false, everyMinutes: 15 });
+  expect(loadConfig({ ...json, spend: {} }, env).spend).toEqual({});
+  expect(loadConfig({ ...json, spend: { weeklyWarnUsd: 12.5 } }, env).spend).toEqual({ weeklyWarnUsd: 12.5 });
+});
+
+it("keeps the names daemon and sweep for the spend log", () => {
+  for (const name of ["daemon", "sweep"]) expect(() => loadConfig({ ...json, clots: [{ name, repoUrl: "https://github.com/o/r.git" }] }, env)).toThrow();
 });
