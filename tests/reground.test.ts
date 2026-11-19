@@ -48,11 +48,11 @@ describe("makeReground", () => {
     return { fn, reqs, booked };
   };
 
-  it("runs a re-grounding session for the Clot at low effort in ten minutes, and books it as re-grounding", async () => {
+  it("runs a re-grounding session for the Clot at medium effort in ten minutes, and books it as re-grounding", async () => {
     const { fn, reqs, booked } = run({ ok: true, output: { changes: ["a"] }, totalCostUsd: 0.2 });
     expect(await fn("enc", "RECAP")).toEqual({ changes: ["a"] });
     expect(reqs[0].clot).toBe("enc");
-    expect(reqs[0].req).toMatchObject({ kind: "reground", model: "claude-opus-5-5", effort: "low", timeoutMs: 600_000 });
+    expect(reqs[0].req).toMatchObject({ kind: "reground", model: "claude-opus-5-5", effort: "medium", timeoutMs: 600_000 });
     expect(String(reqs[0].req.prompt)).toContain("RECAP");
     expect(booked).toEqual([{ clot: "enc", who: "regrounding", total: 0.2 }]);
   });

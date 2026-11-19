@@ -135,7 +135,7 @@ describe("Sweeper", () => {
     expect(store.getState("sweep-record")).toBe("baseline");
     expect(delivered).toEqual([]);
     expect(store.eventsWithStatus("received")).toEqual([]);
-    expect(requests[0]).toMatchObject({ kind: "sweep", model: "claude-opus-5-5", effort: "low", cwd: "/workspace", timeoutMs: 15 * MIN });
+    expect(requests[0]).toMatchObject({ kind: "sweep", model: "claude-opus-5-5", effort: "medium", cwd: "/workspace", timeoutMs: 15 * MIN });
     expect(typeof requests[0].prompt).toBe("function");
   });
 

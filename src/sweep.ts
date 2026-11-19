@@ -185,7 +185,7 @@ export class Sweeper {
       prompt: (connectors) => sweepPrompt({ record, clots: this.d.clots(), skip: this.d.skip(), connectors }),
       systemPrompt: SWEEP_SYSTEM_PROMPT,
       model: OPUS,
-      effort: "low",
+      effort: "medium",
       cwd: "/workspace",
       schema: SWEEP_SCHEMA,
       timeoutMs: SWEEP_TIMEOUT_MS,

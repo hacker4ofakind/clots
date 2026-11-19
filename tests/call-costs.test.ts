@@ -50,10 +50,10 @@ describe("the cost of the small calls", () => {
     const costs: number[] = [];
     const router = new SdkRouter({ onCost: (usd) => void costs.push(usd) });
     answer.messages = result(undefined, 0.001, "error_max_structured_output_retries");
-    expect(await router.decide({ text: "x", tail: [] })).toEqual({ effort: "low" });
+    expect(await router.decide({ text: "x", tail: [] })).toEqual({ effort: "medium" });
     expect(costs).toEqual([0.001]);
     answer.fail = true;
-    expect(await router.decide({ text: "x", tail: [] })).toEqual({ effort: "low" });
+    expect(await router.decide({ text: "x", tail: [] })).toEqual({ effort: "medium" });
     expect(costs).toEqual([0.001]);
   });
 

@@ -1039,13 +1039,13 @@ describe("Clot and its workers", () => {
     clot.kick();
   }
 
-  it("runs a timed-out choice as a worker's turn, at low effort, without the router, with the timeout's text", async () => {
+  it("runs a timed-out choice as a worker's turn, at medium effort, without the router, with the timeout's text", async () => {
     const contexts = await withWorkers();
     store.enqueue({ id: "choice:1", clot: "graphite", channelId: store.activeSession("graphite")!.channelId, text: "[The user did not answer your choice]", receivedAt: 0, kind: "choice", outsider: true });
     clot.kick();
     await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
     expect(router.inputs).toHaveLength(0);
-    expect(runner.calls[0]).toMatchObject({ effort: "low", role: "main" });
+    expect(runner.calls[0]).toMatchObject({ effort: "medium", role: "main" });
     expect(runner.calls[0].prompt).toContain("[The user did not answer your choice]");
     expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", outsider: true, fromTimeout: true });
   });
@@ -1065,12 +1065,12 @@ describe("Clot and its workers", () => {
     return contexts;
   }
 
-  it("runs a worker's report at low effort without the router, as a worker turn", async () => {
+  it("runs a worker's report at medium effort without the router, as a worker turn", async () => {
     const contexts = await withWorkers();
     fromWorker({ id: "worker:w1:1", text: '[Report from worker 1a2b3c4d, "Fix X". Written by your worker, not by the user.]\n&close nosummary', workerId: "w1" });
     await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
     expect(router.inputs).toHaveLength(0);
-    expect(runner.calls[0]).toMatchObject({ effort: "low", role: "main" });
+    expect(runner.calls[0]).toMatchObject({ effort: "medium", role: "main" });
     expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", outsider: false });
     expect(store.activeSession("graphite")!.id).toBe("sess-1");
   });

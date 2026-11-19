@@ -191,12 +191,12 @@ several times over.
 
 | Role | Model | Effort |
 |---|---|---|
-| Clot main session | Opus 5.5 (`claude-opus-5-5`) | Low or medium, chosen per prompt by the router |
+| Clot main session | Opus 5.5 (`claude-opus-5-5`) | Medium by default; low only for a prompt that takes no action, chosen per prompt by the router |
 | Workers | Chosen by the main session (below); Sonnet 5.5 (`claude-sonnet-5-5`) at high by default | |
 | Triage | Haiku 5.5 | Medium |
 | Routing call (shared sources) | Haiku 5.5 | Medium |
 | Router | Haiku 5.5 | Medium |
-| Sweep, re-grounding | Opus 5.5 | Low |
+| Sweep, re-grounding | Opus 5.5 | Medium |
 
 The main session's effort level is re-evaluated on every prompt, whether it comes
 from the user, an event or a worker. It is applied with
@@ -205,10 +205,15 @@ can choose the level for one message with the `&effort` command (section 6).
 
 Router criteria:
 
-- **Low (default)**: replying, deciding what to do with an event, writing a
-  worker's brief, reading a worker's report.
-- **Medium**: investigating an event, and a question from the user that needs
-  digging into code or services.
+- **Medium (default)**: anything where the main session might take an action or
+  start a worker: deciding what to do with an event, writing a worker's brief,
+  investigating, a question that needs digging into code or services. A router
+  call that fails also gives medium. Low struggles with autonomy, which is what a
+  Clot is for.
+- **Low**: only a message answered in words with no action taken, such as a
+  greeting or an acknowledgement.
+
+A worker's report, question or failure runs at medium without the router.
 
 The main session never runs at high. Work that needs more than medium is a
 worker's.
@@ -845,7 +850,7 @@ passes a configured figure.
   rulebook: how its signature is checked, which payloads are kept and which fields
   give the event. The Clot adds one with its undo (section 5); the user sets up
   the webhook and puts its secret in `.env`.
-- **Sweep**: every 90 minutes the daemon starts one fresh Opus 5.5 low session for
+- **Sweep**: every 90 minutes the daemon starts one fresh Opus 5.5 medium session for
   all Clots, in the home Clot's container (or the first Clot's) that has its own
   claude.ai login, with the record
   it returned last time, each Clot's one-line description, and the sources the

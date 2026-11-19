@@ -56,7 +56,7 @@ export function makeReground(d: { run: (clot: string, req: OneOffRequest) => Pro
         prompt: regroundPrompt(recap, d.workerLines(clot)),
         systemPrompt: REGROUND_SYSTEM_PROMPT,
         model: OPUS,
-        effort: "low",
+        effort: "medium",
         schema: REGROUND_SCHEMA,
         timeoutMs: REGROUND_TIMEOUT_MS,
       });

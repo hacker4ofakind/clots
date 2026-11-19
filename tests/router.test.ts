@@ -7,10 +7,10 @@ describe("parseDecision", () => {
     expect(parseDecision({ effort: "medium" })).toEqual({ effort: "medium" });
   });
 
-  it("falls back to low for anything else, high included", () => {
-    expect(parseDecision(undefined)).toEqual({ effort: "low" });
-    expect(parseDecision({ effort: "high" })).toEqual({ effort: "low" });
-    expect(parseDecision({ effort: "max" })).toEqual({ effort: "low" });
+  it("falls back to medium for anything else, high included", () => {
+    expect(parseDecision(undefined)).toEqual({ effort: "medium" });
+    expect(parseDecision({ effort: "high" })).toEqual({ effort: "medium" });
+    expect(parseDecision({ effort: "max" })).toEqual({ effort: "medium" });
   });
 });
 

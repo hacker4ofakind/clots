@@ -449,7 +449,7 @@ export class Clot {
   }
 
   /**
-   * Runs a worker's report, question or failure as a turn of its own, at low effort, without the
+   * Runs a worker's report, question or failure as a turn of its own, at medium effort, without the
    * router. It carries none of the user's authority: a report can quote outside text. A choice the
    * user did not answer in time runs the same way.
    */
@@ -460,7 +460,7 @@ export class Clot {
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
       prompt: buildPrompt({ text: row.text, ...this.shared(session) }),
-      effort: "low",
+      effort: "medium",
       role: "main",
       model: OPUS,
       tools: this.d.makeTools?.({ clot: name, kind: "worker", outsider: row.outsider, ...(row.kind === "choice" ? { fromTimeout: true } : {}) }),

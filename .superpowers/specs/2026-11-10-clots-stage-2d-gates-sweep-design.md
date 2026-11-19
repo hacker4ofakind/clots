@@ -252,7 +252,7 @@ client cannot reach. Sources the daemon already hears from are not swept.
   login, else the first Clot's that has one. A token from `claude setup-token`
   brings no connectors. With no such container there is no sweep, and the daemon
   logs that once.
-- A fresh session there, on Opus 5.5 at low effort, started in `/workspace`, with
+- A fresh session there, on Opus 5.5 at medium effort, started in `/workspace`, with
   no daemon tools and without the Clots' GitHub token in its environment.
 - **Only connector reads.** The sweep may call a connector tool and nothing else:
   no shell, no files, no web, no subagents, no skills, no memory. The daemon reads
@@ -370,7 +370,7 @@ starts from its recap.
 ### The session
 
 - Fresh, in that Clot's container, started where its main session starts, on Opus
-  5.5 at low effort.
+  5.5 at medium effort.
 - Under the lock, with the read-only connector tools as for the sweep, and no
   daemon tools. Unlike a main turn it may not write its memory folder, and has no
   subagents or skills: it only reads and looks things up.
