@@ -69,9 +69,10 @@ export class SpendLog {
     if (!this.d.store.claimState(key, claim) && !this.takeOver(key, claim, now)) return;
     try {
       await this.d.post(clot, `${clot} has spent an estimated ${usd(spent)} this week, past the ${usd(limit).replace(/\.00$/, "")} warning. \`&spend\` shows where.`);
-      this.d.store.setState(key, "posted");
+      // Only while the claim is still ours: one taken over meanwhile belongs to the taker.
+      this.d.store.swapState(key, claim, "posted");
     } catch (error) {
-      this.d.store.deleteState(key);
+      this.d.store.deleteStateIf(key, claim);
       console.error(`[${clot}] posting the spend warning failed; it is tried again after the next turn:`, error);
     }
   }
@@ -79,8 +80,9 @@ export class SpendLog {
   /** A claim whose post never finished (the daemon stopped in between) is taken over once it is five minutes old. A confirmed post stays. */
   private takeOver(key: string, claim: string, now: number): boolean {
     const held = this.d.store.getState(key);
-    const since = held?.startsWith("posting:") ? Number(held.slice("posting:".length)) : NaN;
-    return held !== undefined && now - since > STALE_CLAIM_MS && this.d.store.swapState(key, held, claim);
+    // A bare "posting" is a claim an earlier build left without a time: it is abandoned too.
+    const abandoned = held === "posting" || (held?.startsWith("posting:") === true && now - Number(held.slice("posting:".length)) > STALE_CLAIM_MS);
+    return abandoned && this.d.store.swapState(key, held!, claim);
   }
 
   /** The text of `&spend` for one Clot. */

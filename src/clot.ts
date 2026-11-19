@@ -437,7 +437,8 @@ export class Clot {
     this.liveKind = "event";
     this.live = this.d.runner.startTurn({
       ...(session.started ? { resume: session.id } : { newSessionId: session.id }),
-      prompt: buildPrompt({ text: row.id.startsWith("resume-") ? CONTINUE_TEXT : digestText(entries, this.d.timeZone), ...this.shared(session), event: true, outsider: row.outsider }),
+      // Told to carry on only in the session that was cut off. A session that never ran (a `&close` came in between) gets the events in full.
+      prompt: buildPrompt({ text: row.id.startsWith("resume-") && session.started ? CONTINUE_TEXT : digestText(entries, this.d.timeZone), ...this.shared(session), event: true, outsider: row.outsider }),
       effort: decision.effort,
       role: "main",
       model: OPUS,

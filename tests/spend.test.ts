@@ -142,6 +142,27 @@ describe("the weekly warning", () => {
     expect(posted).toHaveLength(1);
   });
 
+  it("takes over a bare posting claim from an earlier build, and leaves a taken-over claim to its taker", async () => {
+    const log = make({ weeklyWarnUsd: 1 });
+    const key = `spend-warned:graphite:${log.weekStart(clock)}`;
+    store.setState(key, "posting");
+    await log.book({ clot: "graphite", who: "main", sessionId: "a", total: 2 });
+    expect(posted).toHaveLength(1);
+    expect(store.getState(key)).toBe("posted");
+
+    // A post that fails after its claim was taken over must not delete the taker's claim.
+    const slowKey = `spend-warned:shop:${log.weekStart(clock)}`;
+    let fail!: () => void;
+    const slow = new SpendLog({ store, now: () => clock, timeZone: "UTC", weeklyWarnUsd: 1, post: () => new Promise((_, reject) => (fail = () => reject(new Error("late")))), gate: () => gate, meter: { refresh: async () => undefined, fiveHour: () => undefined, sevenDay: () => undefined } });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const booking = slow.book({ clot: "shop", who: "main", sessionId: "s", total: 2 });
+    await vi.waitFor(() => expect(store.getState(slowKey)).toMatch(/^posting:/));
+    store.setState(slowKey, "posting:taken-over");
+    fail();
+    await booking;
+    expect(store.getState(slowKey)).toBe("posting:taken-over");
+  });
+
   it("is off without a figure, and never for the daemon or the sweep", async () => {
     await make({ weeklyWarnUsd: undefined }).book({ clot: "graphite", who: "main", sessionId: "a", total: 500 });
     const log = make({ weeklyWarnUsd: 1 });

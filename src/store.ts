@@ -1137,6 +1137,11 @@ export class Store {
     });
   }
 
+  /** Deletes a state value only while it is still `value`. */
+  deleteStateIf(key: string, value: string): void {
+    this.db.prepare("DELETE FROM state WHERE key = ? AND value = ?").run(key, value);
+  }
+
   /** Replaces a state value only while it is still `from`. Returns whether this call replaced it. */
   swapState(key: string, from: string, to: string): boolean {
     return this.db.prepare("UPDATE state SET value = ? WHERE key = ? AND value = ?").run(to, key, from).changes === 1;
