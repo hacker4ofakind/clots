@@ -1020,8 +1020,8 @@ onboarding can be resumed.
 - Live checks: a GitHub issue reaches an open pull request with no reply from the
   user; a choice times out and the Clot goes with its pick; an ask is listed in
   `clots-waiting`, answered, and leaves the list.
-- On the Pi: a memory and build-time check with three Clots and three workers
-  running, and Chromium open.
+- On the Pi: a memory and build-time check with both Clots and three workers
+  running.
 
 ## 15. Development environments
 
@@ -1104,8 +1104,13 @@ Each stage gets its own specification and plan.
      Composio's tags and a fixed list, the write reviewer, and
      `&composio undo`. GitHub and email stay as built
      (`.superpowers/specs/2026-11-19-clots-stage-2e-composio-design.md`).
-3. **Pi deployment and onboarding**, with Composio's connections in the
-   onboarding checklist.
+3. **Headless deployment on the Pi**: the daemon running unattended on the Pi
+   as a systemd service, the Clot image built for arm64, Tailscale Funnel on the
+   Pi for webhooks, and two Clots (the home Clot and one project) set up by hand
+   as in development, talking through Discord. The Pi stands in until the
+   always-on x64 machine arrives. Onboarding (section 11), with Composio's
+   connections in its checklist, is not part of this stage; it will be built in
+   the web UI.
 4. **Browser and live view.**
 
 ### Stage 1 scope
@@ -1178,7 +1183,6 @@ If any of these fails, stop and bring the finding to the user before continuing.
 
 - Native desktop applications.
 - Voice.
-- A web dashboard.
 - iMessage: it needs a Mac to relay, and the Pi cannot do it. The chat adapter
   interface leaves room for it.
 - Waking the PC over the network: unnecessary now that the Pi hosts the Clots.
@@ -1201,9 +1205,8 @@ If any of these fails, stop and bring the finding to the user before continuing.
 - A worker's branch runs the repository's CI with its Actions secrets, as any
   collaborator's pull request does. The Clots' token cannot change workflow files,
   but the scripts CI runs are the worker's to change.
-- Three workers per host, plus Chromium, on an 8 GB Pi is unmeasured, and the
-  containers have no memory cap. Stage 3's
-  check on the Pi runs exactly that load.
+- Two Clots and three workers on an 8 GB Pi is unmeasured, and the containers
+  have no memory cap. Stage 3's check on the Pi runs exactly that load.
 - Acting without asking means a wrong low action is noticed later: a pre-filter
   that drops too much, a pull request built on the wrong option. Each is posted
   with its undo, which is what keeps this acceptable.
