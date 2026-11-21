@@ -80,6 +80,10 @@ section 3 for every account, built-in or not.
   unconnected; nothing else is held up.
 - Accounts already connected stay as they are: a built-in toolkit's key resolves
   to the scheme and field it uses now, so upgrading replaces no connection.
+- **Signing in again**: `&composio reconnect <toolkit>:<account>`, in any
+  channel, deletes the account's connection and its learned identity and posts a
+  new sign-in link (for a key account, it reconnects with the `.env` values). It
+  is how a sign-in made with the wrong account is put right.
 
 ## 4. Configuration
 
@@ -117,8 +121,7 @@ account of that toolkit:
 
 ```yaml
 composio:
-  - name: slack
-    toolkit: slack
+  - toolkit: slack
     identity: { tool: SLACK_AUTH_TEST, path: user_id }
     triggers:
       SLACK_CHANNEL_MESSAGE_RECEIVED:
@@ -171,14 +174,27 @@ composio:
   fails leaves a line saying so in the body, and the event goes on with that
   read's data empty. Intake does not wait for these reads: the delivery is
   answered first, and the reads run in the pipeline's enrichment step.
+- **Read cache and budget**: a read's data is kept for 24 hours by account, tool
+  and arguments, and a read already in flight is shared, so a channel's or a
+  person's name is read once a day, not once a message. Once the month's
+  Composio allowance that the account counts against is 80% used, recipe reads
+  are skipped (the body says so) until the month resets, so enrichment never
+  starves the calendar or the Clots' own tool calls.
+- **`ownWrites`**: for a connection whose own writes the service does not mark
+  with an ID field (a Slack post answers `channel` and `ts`), a list of
+  `{ tool, ids }`, where `ids` are templates over `args` and `result` of that
+  write tool, giving the object IDs to record for the drop of what the Clots' own
+  writes touched. It matters most with `selfIsUser`, where identity cannot tell
+  the Clot's posts from the user's.
 - **Outsider**: a recipe's events are always an outsider's. A recipe cannot
   change that, nor how any write is rated, nor add an undo.
 - **Limits**: a recipe cannot name a toolkit that has a built-in mapping (Stripe,
   Linear, Notion, Google Calendar, PostHog), nor one named like a built-in source
   (`github`, `sentry`, `vercel`, …) or a webhook or watch recipe in force, since
   the toolkit becomes its events' source. A trigger the recipe does not list is
-  mapped generically. Two recipes for one toolkit: the first in file order is in
-  force and the other is reported, as two recipes of one name are now.
+  mapped generically. A recipe is known by its toolkit; it has no name of its
+  own. Two recipes for one toolkit: the first in file order is in force and the
+  other is reported, as two recipes of one name are now.
 - **Where it lives**: in `global.yaml` or a Clot's own file, under `composio:`,
   and is added, replaced and removed as webhook recipes are (2c section 15):
   applied and posted with its undo, or put to the user when the turn came from an
@@ -214,7 +230,7 @@ configured:
 |---|---|
 | `composio_toolkit(toolkit, trigger?)` | What Composio says of a toolkit, connected or not: its auth schemes, whether Composio manages one, each scheme's connection fields, its triggers with their type (webhook or polled), and its tools marked read or write. With a trigger, that trigger's config and payload schemas. Only reads. |
 | `composio_samples(account, trigger?)` | The kept payloads of an account's triggers, newest first, wrapped as untrusted data. |
-| `composio_try(recipe, account, sample or payload)` | Runs a draft recipe on a kept sample or on a payload the Clot gives, including its enrichment reads on the connected account, and shows the event it would make, or why it does not fit. Records nothing. |
+| `composio_try(recipe, account, sample or payload)` | Runs a draft recipe on a kept sample or on a payload the Clot gives, including its enrichment reads on the connected account, and shows the event it would make, or why it does not fit. Records nothing. Its reads count against `composio_run`'s per-turn and per-day limits (2e section 11). |
 | `rulebook_composio(action, file, recipe)` | Sets or removes a Composio recipe, as `rulebook_webhook` does. When set, every tool it names is checked: it exists, belongs to the toolkit, and is a read. |
 
 ## 9. The skill
@@ -235,7 +251,9 @@ It takes the Clot through adding a service:
    recipe, with what each costs of the allowance, and wait for the user's answer.
 3. Choose the auth: Composio's managed app when there is one; otherwise the key
    scheme and its fields, or the user's own OAuth app when the triggers need it.
-   Ask whether the Clots have an account of their own at the service; if the
+   Composio's managed allowance is the smallest and the calendar shares it, so
+   for a service expected to send more than about 100 events a day, suggest the
+   user's own OAuth app, which counts against the larger allowance. Ask whether the Clots have an account of their own at the service; if the
    connection will be the user's own, the entry gets `selfIsUser`.
 4. Give the user the exact `sources.composio` entry, any `.env` keys to add, the
    audience it suggests and why, and that a restart applies it. Only the user

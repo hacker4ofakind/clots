@@ -62,12 +62,19 @@
 **Recipes**
 - Schema (in `rulebook.ts`, list key `composio`, added to `LIST_KEYS`):
   ```ts
-  { name: NAME; toolkit: /^[a-z][a-z0-9_]*$/ not a built-in toolkit;
+  { toolkit: /^[a-z][a-z0-9_]*$/ not a built-in toolkit;
     identity?: { tool: SLUG; path: string };
+    ownWrites?: { tool: SLUG; ids: string[] /* templates over { args, result } */ }[];
     triggers: Record<TRIGGER_SLUG, { kind; title: string; id?; actorId?; actor?; body?; url?; ref?; place?; subject?: string;
       objects?: string[]; automatedWhen?: Record<string, scalar>; enrich?: { as: NAME; tool: SLUG; args?: Record<string, unknown> }[] /* max 3, unique as */ }> /* at least one */ }
   ```
-  Every tool slug must start with `<TOOLKIT>_` (uppercase toolkit). Recipe names have their own namespace (not `recipeName`, since a recipe's events take the toolkit as source, not the name). Two recipes for one toolkit: the first in file order is in force and the other is reported in the file's problems, as two recipes of one name are now.
+  Every tool slug must start with `<TOOLKIT>_` (uppercase toolkit). A recipe has no name: it is known by its toolkit (edits and undo address it by toolkit). Two recipes for one toolkit: the first in file order is in force and the other is reported in the file's problems, as two recipes of one name are now.
+- `ownWrites`: after a successful `composio_run` write (in `actions.ts`, next to `idsIn`), when the account's toolkit has a recipe naming that tool, the filled `ids` are recorded as touched objects alongside what `idsIn` found. An `ids` template that fills empty records nothing.
+- Read cache: a `composio_reads` table `(account, tool, args_hash, data, at)`, used by recipe enrichment only, entries younger than 24 h returned without a call; concurrent identical reads share one promise. Pruned in the daily check.
+- Read budget: before each recipe read, ask the meter for the account's pool (managed or own, by auth kind); at ≥ 80% of either the calls or the events allowance, skip the read with the line `Skipped reading <as>: Composio's monthly allowance is 80% used.` Add `Meter.used(pool): { calls: number; events: number }` (fractions) if it has no such reader.
+- `composio_try` counts each of its reads against `composio_run`'s per-turn and per-day limits through the same counter (`actions.ts`), and refuses with the same text past them.
+- `&composio reconnect <toolkit>:<account>` (`commands.ts`, CRLF): deletes the account's connection at Composio and its stored connection, identity and staged marker, then runs the account's connect step (a sign-in link for managed or `oauthApp`, a fresh key connection otherwise); answers `Reconnecting <toolkit>:<account>.` or `No Composio account <name>.`; `COMMAND_USAGE` updated. Its triggers are re-made on the new connection by the normal sync.
+- The skill's auth step suggests `oauthApp` for a service expected to send more than about 100 events a day.
 - Template context is `{ payload, enrich }`; `fillPaths` and `pathGet` from `watch.ts` as they are. `args` values that are strings are filled the same way; other values pass through. `automatedWhen` paths are read from the same context.
 - **Two-step application.** Composio expects a quick answer, so intake never waits on reads. `recipeMapper` (sync, a `Mapper`): fills `id`, `actorId`, `objects`, `automatedWhen`, `kind`, and the text fields with `enrich` empty. Event ID `<toolkit>:<account>:<id>`, or `composio:<webhook-id>` when `id` is absent or fills empty. `recipeEnricher(composio, rulebook, store): Enricher`, registered as the fallback of `enricherBySource` (add an optional fallback argument): for an event whose source is a toolkit with a recipe in force and a kept delivery with that `event_id`, run the reads in order, then render every text field again with `enrich` filled. No recipe or no kept delivery → the event is returned unchanged.
 - Each read: `composio.tool(slug)` must exist, belong to the toolkit, and pass `isRead` from `rating.ts`; else the line `Could not read <as>: <slug> is not a read tool.` Runs through `composio.run` on the event's account (counted by the meter). A failed run → `Could not read <as>: <error>.` appended to the body; that read's `enrich.<as>` stays empty. Field fallbacks after rendering: `actor` → `unknown`, `body` → the clipped payload JSON, `subject` → `<toolkit>:<slug>`, others → empty; `title` filling empty → the generic mapper's title.
@@ -110,7 +117,7 @@
 - A delivery whose payload was clipped is not enriched; the event keeps its intake text and the body says the payload was too large to read.
 - `identity`: before each run, check the tool is still a read (as `enrich` is).
 - `learnIdentity` takes a per-user guard so a retry chain is never started twice; the generic def gets the recipe through a lookup in `ComposioDeps`, and `Composio.recipeChanged(toolkit)` (called from the rulebook's on-load hook) clears and relearns identity for that toolkit's accounts. A generic account with no recipe identity does not retry.
-- A recipe shadowed by an earlier one for the same toolkit is reported by `rulebook_composio` as set but not in force, naming the one that is.
+- A recipe shadowed by an earlier one for the same toolkit (in another file) is reported by `rulebook_composio` as set but not in force, naming the file whose recipe is.
 - Edits follow the existing pattern: `RuleEdit` ops `set_composio` / `remove_composio` with `was?`, mirroring `set_webhook` (`rulebook-edit.ts:275-295`), so an undo never overwrites a later change. The tool input is derived from the exported recipe schema, not copied by hand.
 - Tools are named after the existing ones: `rulebook_composio` (as `rulebook_webhook`) and `composio_try` (as `watch_try`). Their logic lives in `src/composio/authoring.ts`; `tools.ts` only passes through.
 
@@ -147,8 +154,10 @@
 - every built-in resolves to today's scheme and field, and an existing stored key hash is unchanged (no reconnect);
 - a managed generic account posts `Sign in to Slack for the Clots: …` with the own-account line, once; `selfIsUser` omits the line and identity is never read;
 - changing one of two `fields` replaces the connection through the staged swap; changing an `oauthApp` secret makes a new auth config and sign-in;
-- a mismatch is told once per start, and the other accounts connect.
-**Done when:** `npm test -- composio-auth composio-component config` passes.
+- a mismatch is told once per start, and the other accounts connect;
+- `&composio reconnect slack:work` deletes the connection and identity and posts one new link; an unknown name answers `No Composio account slack:nope.`
+**Files (also):** `src/commands.ts`, `tests/commands.test.ts` (the reconnect command).
+**Done when:** `npm test -- composio-auth composio-component config commands` passes.
 
 - [ ] Task 2 complete
 
@@ -163,7 +172,11 @@
 - `actorId` equal to the learned identity → dropped as self-caused; same with `selfIsUser` → not dropped;
 - an unlisted trigger of a toolkit with a recipe → generic event; a recipe with no `id` → `composio:<webhook-id>`;
 - samples: the sixth delivery prunes the oldest unless it is younger than an hour; 7-day-old rows go; a 70 KB payload is clipped and marked;
-- rules with `source: slack, kind: message` validate once the recipe is in force.
+- rules with `source: slack, kind: message` validate once the recipe is in force;
+- two messages from one user in one channel within a day make one `SLACK_USERS_INFO` call; two arriving together share one in-flight call;
+- with the meter at 80% of the account's pool, no read is made and the body has the skipped line;
+- a `SLACK_CHAT_POST_MESSAGE` write whose result has `channel` and `ts` records `<channel>:<ts>` through `ownWrites`, and the delivery of that post is dropped as self-caused even with `selfIsUser`.
+**Files (also):** `src/composio/actions.ts`, `src/composio/meter.ts` (`ownWrites`, the read budget).
 **Done when:** `npm test -- composio-recipe composio-samples composio-intake rulebook` passes.
 
 - [ ] Task 3 complete
@@ -181,7 +194,7 @@
 **Files:** `src/composio/api.ts` (`triggerType`, `toolkitTools`), `src/tools.ts`, `src/agent/tool-server.ts`, `src/axes.ts`, `src/rulebook-edit.ts`, `tests/tools.test.ts`, `tests/axes.test.ts`, `tests/rulebook-edit.test.ts`
 **Interfaces:** Produces `DaemonTools.composioToolkit?`, `composioSamples?`, `composioRecipeTry?`, `composioRecipe?` (string results); `RuleEdit` gains `{ kind: "composio"; action: "set"; file; recipe } | { kind: "composio"; action: "remove"; file; name }`; `describeComposioRecipe(recipe): string` (toolkit, triggers mapped, reads named).
 **Build:** per Key Decisions "Tools". Tool descriptions say what each does in one or two sentences and that samples and tried payloads are other people's text.
-**Tests (behaviours):** `composio_toolkit slack` lists both the managed scheme and the nine triggers as webhook; with a trigger it shows its config schema; `composio_samples` wraps as untrusted and clips; `composio_try` on a kept sample shows the rendered event and stores nothing; a draft with a schema error returns the error; `rulebook_composio set` with a write tool in `enrich` is refused naming it; set → posted with its undo, undo removes it; in an outsider's turn it is put to the user; the read-only two are approved under the lock.
+**Tests (behaviours):** `composio_toolkit slack` lists both the managed scheme and the nine triggers as webhook; with a trigger it shows its config schema; `composio_samples` wraps as untrusted and clips; `composio_try` on a kept sample shows the rendered event and stores nothing; a draft with a schema error returns the error; `rulebook_composio set` with a write tool in `enrich` is refused naming it; set → posted with its undo, undo removes it; in an outsider's turn it is put to the user; the read-only two are approved under the lock; `composio_try` past `composio_run`'s per-turn limit is refused with the same text.
 **Done when:** `npm test -- tools axes rulebook-edit` passes.
 
 - [ ] Task 5 complete
@@ -246,7 +259,7 @@
 - **How the executor runs it:** `[user-only]` for the keys; the rest by the executor through the home Clot.
 
 #### MV-8: Reddit through a watch
-- **Setup:** `{ "toolkit": "reddit", "account": "me", "shared": true }`; sign in through the posted link.
+- **Setup:** `{ "toolkit": "reddit", "account": "me", "shared": true }`; sign in through the posted link. The user's calendar polls every 20 minutes (2,160 calls a month), which leaves room under the 10,000 for a 15-minute watch (2,880).
 - **Steps:** ask the Clot to watch new posts in a small subreddit; then `every: 5` in a hand edit.
 - **Expected:** the Clot sets a watch with `account: reddit:me` and `every ≥ 15` after saying its monthly cost; new posts arrive as `item_added`; the hand edit with `every: 5` is reported as a problem and not run.
 - **How the executor runs it:** `[user-only]` for the sign-in and chat.
