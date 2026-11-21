@@ -101,7 +101,7 @@ const stable = (value: unknown): string => {
 export const READ_BUDGET = 0.8;
 
 export interface RecipeReader {
-  composio: Pick<Composio, "run" | "tool" | "account" | "managed">;
+  composio: Pick<Composio, "run" | "tool" | "account" | "managed" | "connectionId">;
   /** The month's usage of a pool, as fractions. Absent: no budget. */
   used?: (managed: boolean) => { calls: number; events: number };
   cached(account: string, tool: string, argsHash: string, now: number): unknown | undefined;
@@ -123,7 +123,8 @@ export class RecipeReads {
   async run(trigger: ComposioTriggerRecipe, account: ComposioAccount, payload: unknown, o: { count?: () => string | undefined } = {}): Promise<{ enrich: Record<string, unknown>; lines: string[] }> {
     const enrich: Record<string, unknown> = {};
     const lines: string[] = [];
-    const user = `${account.toolkit}:${account.account}`;
+    // A read is scoped to the connection it ran on: after a reconnect or a credential swap another service user's data is never reused, and a read still in flight for the old connection never fills the new one's cache.
+    const user = `${account.toolkit}:${account.account}#${this.d.composio.connectionId(account)}`;
     for (const read of trigger.enrich ?? []) {
       const args = fillArgs(read.args ?? {}, { payload, enrich }) as Record<string, unknown>;
       const tool: ToolInfo | undefined = await this.d.composio.tool(read.tool).catch(() => undefined);

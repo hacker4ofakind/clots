@@ -518,7 +518,8 @@ export class Rulebook {
   /** Why a watch on a Composio account cannot be set: with it, the calendars' polling and the other Composio watches would pass the limit. Undefined when it fits or is not on an account. */
   watchBudgetProblem(recipe: WatchRecipe): string | undefined {
     if (recipe.account === undefined) return undefined;
-    const others = this.names().flatMap((file) => this.file(file).watches).filter((w) => w.account !== undefined && w.name !== recipe.name && !this.overBudget().has(w.name));
+    // Only watches in force count: a shadowed copy, or one already refused, takes nothing.
+    const others = this.watches().map((w) => w.recipe).filter((w) => w.account !== undefined && w.name !== recipe.name);
     const sum = this.calendarCalls + others.reduce((n, w) => n + callsPerMonth(w.every), 0) + callsPerMonth(recipe.every);
     return sum > MONTHLY_POLLING_CALLS ? watchOverBudgetText(recipe.name) : undefined;
   }

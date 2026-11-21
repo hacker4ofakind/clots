@@ -173,7 +173,9 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
 
     async linkManaged(user, authConfigId) {
       const request: any = await timed("making a sign-in link", composio.connectedAccounts.link(user, authConfigId));
-      connectionOf.set(user, request.id);
+      // Tool calls stay on the connection already pinned while a replacement sign-in is pending: the pin moves only
+      // when that connection is deleted (the swap is complete), and the next call finds the active one.
+      if (!connectionOf.has(user)) connectionOf.set(user, request.id);
       return { redirectUrl: request.redirectUrl, connectionId: request.id };
     },
 
@@ -183,6 +185,7 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
 
     async deleteConnection(id) {
       await timed("deleting a connection", composio.connectedAccounts.delete(id));
+      for (const [user, pinned] of connectionOf) if (pinned === id) connectionOf.delete(user);
     },
 
     async listTriggers(connectionId) {

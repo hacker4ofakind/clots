@@ -398,6 +398,40 @@ describe("the read cache, in-flight sharing and the budget", () => {
     expect((await enricher()(stored[0])).body).toContain("Skipped reading channel");
   });
 
+  it("scopes a cached read to the connection: after a reconnect the old user's data is not reused", async () => {
+    await deliver(slackBody(), "m1");
+    await deliver(slackBody(second), "m2");
+    const e = enricher();
+    await e(stored[0]);
+    const before = executions().length;
+    store.composio.setAccount("slack:work", { connectionId: "ca_slack_new" });
+    await e(stored[1]);
+    expect(executions().length - before).toBe(2);
+  });
+
+  it("does not let a read still in flight for the old connection fill the new connection's cache", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    api.answers.set("SLACK_RETRIEVE_CONVERSATION_INFORMATION", () => ({ ok: true, data: answers.SLACK_RETRIEVE_CONVERSATION_INFORMATION }));
+    const run = composio.run.bind(composio);
+    composio.run = async (a, slug, args) => {
+      if (slug === "SLACK_RETRIEVE_CONVERSATION_INFORMATION") await gate;
+      return run(a, slug, args);
+    };
+    await deliver(slackBody(), "m1");
+    await deliver(slackBody(second), "m2");
+    const pending = enricher()(stored[0]);
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+    store.composio.setAccount("slack:work", { connectionId: "ca_slack_new" });
+    release();
+    await pending;
+    expect(store.composio.cachedRead("slack:work#ca_slack_new", "SLACK_RETRIEVE_CONVERSATION_INFORMATION", "x", NOW)).toBeUndefined();
+    const calls = executions().filter((c) => c.startsWith("SLACK_RETRIEVE_CONVERSATION_INFORMATION")).length;
+    composio.run = run;
+    await enricher()(stored[1]);
+    expect(executions().filter((c) => c.startsWith("SLACK_RETRIEVE_CONVERSATION_INFORMATION")).length).toBe(calls + 1);
+  });
+
   it("serves a cached read even when the allowance is nearly used", async () => {
     await deliver(slackBody(), "m1");
     await deliver(slackBody(second), "m2");

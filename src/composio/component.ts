@@ -112,6 +112,11 @@ export class Composio implements ToolkitHost {
     }
   }
 
+  /** The account's established connection, or "" before it has one: what a cached read is scoped to. */
+  connectionId(a: ComposioAccount): string {
+    return this.d.store.composio.account(userOf(a))?.connectionId ?? "";
+  }
+
   /** The connection's own user ID at the service, or "" until it has been read. */
   identity(a: ComposioAccount): string {
     return this.d.store.composio.account(userOf(a))?.identity ?? "";

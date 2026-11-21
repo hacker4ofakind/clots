@@ -267,6 +267,18 @@ describe("Rulebook", () => {
       expect(invalid).toContainEqual({ file: "graphite.yaml", problem: 'the watch "c" would take Composio past 10,000 polling calls a month' });
     });
 
+    it("does not count a shadowed copy of a watch when judging a new one", () => {
+      rulebook = new Rulebook(dir, ["graphite", "other"], (file, problem) => invalid.push({ file, problem }));
+      // 2,000 calendar calls, one active 15-minute watch (2,880) and a shadowed copy of it: 4,880 in force, not 7,760.
+      rulebook.setCalendarCalls(2000);
+      write("graphite.yaml", `watches:\n${onAccount("a", 15)}`);
+      write("other.yaml", `watches:\n${onAccount("a", 15)}`);
+      rulebook.load();
+      const recipe = parseWatch({ name: "b", account: "reddit:me", tool: "REDDIT_GET_NEW_POSTS", items: "posts", id: "id", every: 15 });
+      expect(rulebook.watches()).toHaveLength(1);
+      expect(rulebook.watchBudgetProblem(recipe)).toBeUndefined();
+    });
+
     it("counts only watches on accounts: an MCP server's watch costs no allowance", () => {
       rulebook.setCalendarCalls(9990);
       write("graphite.yaml", "watches:\n  - name: mcp-one\n    server: s\n    tool: t\n    items: x\n    id: id\n    every: 1\n");
