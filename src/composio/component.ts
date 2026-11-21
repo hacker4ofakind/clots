@@ -242,7 +242,7 @@ export class Composio implements ToolkitHost {
     // so a crash midway leaves the old connection working and the next start redoes it.
     const oldConnection = row.connectionId;
     const oldTriggers = store.composio.triggers(user).map((t) => t.triggerId);
-    const made = await api.connectWithKey(user, authConfigId, a.apiKey!, extra);
+    const made = await this.stagedConnection(a, authConfigId, hash, extra);
     await this.syncTriggers(a, made.id, { verify: false, force: true });
     const fresh = new Set(store.composio.triggers(user).map((t) => t.triggerId));
     for (const id of oldTriggers.filter((t) => !fresh.has(t))) {
@@ -254,7 +254,44 @@ export class Composio implements ToolkitHost {
     }
     await api.deleteConnection(oldConnection);
     store.composio.setAccount(user, { connectionId: made.id, keyHash: hash, status: made.status });
+    store.deleteState(this.stagedKey(user));
     return made.id;
+  }
+
+  private stagedKey(user: string): string {
+    return `composio.staged.${user}`;
+  }
+
+  /**
+   * The connection a changed key is moving to. It is remembered (by the key's hash) until the swap is complete, so
+   * a swap that fails midway and is retried reuses it instead of making another and stranding this one. One staged
+   * for a key that has since changed again is deleted.
+   */
+  private async stagedConnection(a: ComposioAccount, authConfigId: string, hash: string, extra?: Record<string, string>): Promise<{ id: string; status: "active" | "initiating" | "expired" | "failed" }> {
+    const { api, store } = this.d;
+    const user = userOf(a);
+    const staged = store.getState(this.stagedKey(user));
+    if (staged !== undefined) {
+      const [stagedHash, id] = staged.split("|");
+      if (stagedHash === hash && id) {
+        try {
+          const found = await api.connection(id);
+          if (found.status === "active") return found;
+        } catch {
+          // It is gone, so a new one is made.
+        }
+      }
+      if (id) {
+        try {
+          await api.deleteConnection(id);
+        } catch (e) {
+          this.log(`deleting an abandoned connection of ${user} failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+    const made = await api.connectWithKey(user, authConfigId, a.apiKey!, extra);
+    store.setState(this.stagedKey(user), `${hash}|${made.id}`);
+    return made;
   }
 
   /** The calendar's connection: adopted when active, else a sign-in link is posted once per start and its answer awaited. */

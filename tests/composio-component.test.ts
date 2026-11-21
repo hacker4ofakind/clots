@@ -167,6 +167,35 @@ describe("reconcile", () => {
     expect(store.composio.account("linear:proton")?.keyHash).not.toBe(first.keyHash);
   });
 
+  it("reuses the connection a failed swap already made when it is retried, and leaves no stranded one", async () => {
+    make([linear]);
+    await composio.reconcile();
+    const first = store.composio.account("linear:proton")!;
+    make([{ ...linear, apiKey: "lin_api_NEWKEY" }]);
+    api.failNext.set("upsertTrigger", new Error("down"));
+    await composio.reconcile();
+    expect(api.of("connectWithKey")).toHaveLength(2);
+    api.calls = [];
+    expect((await composio.reconcile()).failures).toEqual([]);
+    expect(api.of("connectWithKey")).toEqual([]);
+    expect([...api.connections.values()].map((c) => c.id)).toEqual([store.composio.account("linear:proton")!.connectionId]);
+    expect(api.connections.has(first.connectionId!)).toBe(false);
+    expect(store.getState("composio.staged.linear:proton")).toBeUndefined();
+  });
+
+  it("deletes a connection staged for a key that has since changed again, rather than stranding it", async () => {
+    make([linear]);
+    await composio.reconcile();
+    make([{ ...linear, apiKey: "lin_api_SECOND" }]);
+    api.failNext.set("upsertTrigger", new Error("down"));
+    await composio.reconcile();
+    const staged = store.getState("composio.staged.linear:proton")!.split("|")[1];
+    make([{ ...linear, apiKey: "lin_api_THIRD" }]);
+    expect((await composio.reconcile()).failures).toEqual([]);
+    expect(api.connections.has(staged)).toBe(false);
+    expect(api.connections.size).toBe(1);
+  });
+
   it("deletes the triggers of an account that left the configuration, leaving its connection", async () => {
     make([linear, notion]);
     await composio.reconcile();

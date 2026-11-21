@@ -48,7 +48,7 @@ function request(raw: string, headers: Record<string, string>): Incoming {
   return { method: "POST", headers, query: new URLSearchParams(), rawBody: Buffer.from(raw) };
 }
 
-const handlerFor = (secret: string | null = SECRET, extra: { meter?: Meter } = {}) =>
+const handlerFor = (secret: string | null = SECRET, extra: { meter?: Meter; log?: (text: string) => void } = {}) =>
   composioHandler({
     composio,
     secret: () => secret ?? undefined,
@@ -198,6 +198,15 @@ describe("composioHandler", () => {
     expect(await handlerFor()(request(expired, sign(expired)))).toMatchObject({ status: 200 });
     expect(lifecycle).toEqual(["disabled ti_9 other", `expired ${fixture.body.metadata.connected_account_id}`]);
     expect(stored).toEqual([]);
+  });
+
+  it("logs the shape of a lifecycle delivery, its type and data keys and no value", async () => {
+    const logs: string[] = [];
+    const expired = JSON.stringify({ id: "msg_3", type: "composio.connected_account.expired", metadata: { project_id: "pr_1" }, data: { id: "ca_x", status: "EXPIRED", status_reason: "SECRETREASON" } });
+    await handlerFor(SECRET, { log: (text: string) => void logs.push(text) })(request(expired, sign(expired)));
+    const text = logs.join(" | ");
+    expect(text).toContain("composio.connected_account.expired (data keys: id, status, status_reason)");
+    expect(text).not.toContain("SECRETREASON");
   });
 
   it("answers 200 even when handling a lifecycle delivery fails, so Composio does not keep retrying", async () => {

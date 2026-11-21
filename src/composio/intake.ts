@@ -72,6 +72,9 @@ export function composioHandler(d: ComposioIntakeDeps): Handler {
     const data: Record<string, any> = typeof body.data === "object" && body.data !== null ? body.data : {};
     const connectionId = text(meta.connected_account_id) || text(data.connected_account_id);
 
+    // Only the shape is logged, never a value: the first real lifecycle delivery shows whether the fields below are the ones sent.
+    if (type !== "composio.trigger.message") log(`[composio] ${type || "a delivery with no type"} (data keys: ${Object.keys(data).join(", ") || "none"})`);
+
     // The lifecycle deliveries, as Composio documents them: a disabled trigger's `data.id` is the trigger instance and
     // `data.disabled_reason` says why; an expired connection's `data.id` is the connection itself.
     if (type === "composio.trigger.disabled") {
