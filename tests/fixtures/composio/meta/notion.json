@@ -1,0 +1,63 @@
+{
+  "info": {
+    "slug": "notion",
+    "name": "Notion",
+    "managed": [
+      "OAUTH2"
+    ],
+    "schemes": [
+      {
+        "scheme": "OAUTH2",
+        "required": [],
+        "optional": [],
+        "creationRequired": [
+          "client_id",
+          "client_secret"
+        ]
+      },
+      {
+        "scheme": "API_KEY",
+        "required": [
+          "generic_api_key"
+        ],
+        "optional": [],
+        "creationRequired": []
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "slug": "NOTION_COMMENT_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "NOTION_DATABASE_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "NOTION_DATASOURCE_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "NOTION_DATASOURCE_SCHEMA_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "NOTION_PAGE_CONTENT_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "NOTION_PAGE_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "NOTION_PAGE_PROPERTIES_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "NOTION_VIEW_CREATED",
+      "type": "webhook"
+    }
+  ],
+  "payloadSchemaField": "payload"
+}

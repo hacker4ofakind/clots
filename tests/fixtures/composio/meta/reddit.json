@@ -1,0 +1,21 @@
+{
+  "info": {
+    "slug": "reddit",
+    "name": "Reddit",
+    "managed": [
+      "OAUTH2"
+    ],
+    "schemes": [
+      {
+        "scheme": "OAUTH2",
+        "required": [],
+        "optional": [],
+        "creationRequired": [
+          "client_id",
+          "client_secret"
+        ]
+      }
+    ]
+  },
+  "triggers": []
+}

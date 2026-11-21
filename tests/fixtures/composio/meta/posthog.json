@@ -1,0 +1,65 @@
+{
+  "info": {
+    "slug": "posthog",
+    "name": "PostHog",
+    "managed": [],
+    "schemes": [
+      {
+        "scheme": "API_KEY",
+        "required": [
+          "subdomain",
+          "generic_api_key"
+        ],
+        "optional": [],
+        "creationRequired": []
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "slug": "POSTHOG_ACTION_PERFORMED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_ACTIVITY_LOG_ENTRY_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_EARLY_ACCESS_FEATURE_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_ERROR_TRACKING_ISSUE_ASSIGNED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_ERROR_TRACKING_ISSUE_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_ERROR_TRACKING_ISSUES_MERGED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_ERROR_TRACKING_ISSUE_SPLIT",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_ERROR_TRACKING_ISSUE_STATUS_CHANGED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_ERROR_TRACKING_ISSUE_UNASSIGNED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_EVENT_CAPTURED",
+      "type": "webhook"
+    },
+    {
+      "slug": "POSTHOG_PERSON_UPDATED",
+      "type": "webhook"
+    }
+  ],
+  "payloadSchemaField": "payload"
+}

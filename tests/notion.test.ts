@@ -8,7 +8,7 @@ import { NOTION_UNREAD, normalizeNotion, notionCommentSender, notionEnricher, no
 import { Store } from "../src/store.js";
 import { FakeComposioApi } from "./fake-composio.js";
 
-const account: NotionAccount = { toolkit: "notion", account: "tady", shared: true, audience: "private", apiKey: "ntn_test", apiKeyName: "K", triggers: [] };
+const account: NotionAccount = { toolkit: "notion", account: "tady", shared: true, audience: "private", apiKey: "ntn_test", apiKeyName: "K", triggers: [], selfIsUser: false };
 const NOW = 1_760_000_000_000;
 const PAGE = "1a2b3c4d-0000-4000-8000-000000000001";
 

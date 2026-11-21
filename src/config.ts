@@ -79,12 +79,22 @@ const COMPOSIO_TOOLKITS = {
     events: z.array(z.string().min(1)).min(1),
   }),
 };
-const GENERIC_TOOLKIT = z.strictObject({
-  ...composioFields,
-  toolkit: z.string().regex(/^[a-z][a-z0-9_]*$/, "a toolkit is Composio's lowercase slug"),
-  apiKey: envKey,
-  triggers: z.array(z.strictObject({ slug: z.string().regex(/^[A-Z][A-Z0-9_]*$/, "a trigger is Composio's uppercase slug"), config: z.record(z.string(), z.unknown()).default({}) })).default([]),
-});
+const GENERIC_TOOLKIT = z
+  .strictObject({
+    ...composioFields,
+    toolkit: z.string().regex(/^[a-z][a-z0-9_]*$/, "a toolkit is Composio's lowercase slug"),
+    // How it connects: a key (`apiKey`, or `fields` for a scheme of several fields), the user's own OAuth app, or neither (Composio's managed sign-in).
+    apiKey: envKey.optional(),
+    fields: z.record(z.string().min(1), envKey).refine((f) => Object.keys(f).length > 0, "fields names at least one field").optional(),
+    scheme: z.string().regex(/^[A-Z][A-Z0-9_]*$/, "a scheme is Composio's uppercase name, such as API_KEY").optional(),
+    oauthApp: z.strictObject({ clientId: envKey, clientSecret: envKey }).optional(),
+    // True when the connection is the user's own account at the service, not the Clots'.
+    selfIsUser: z.boolean().default(false),
+    triggers: z.array(z.strictObject({ slug: z.string().regex(/^[A-Z][A-Z0-9_]*$/, "a trigger is Composio's uppercase slug"), config: z.record(z.string(), z.unknown()).default({}) })).default([]),
+  })
+  .refine((a) => !(a.oauthApp !== undefined && (a.apiKey !== undefined || a.fields !== undefined)), { message: "oauthApp cannot go with apiKey or fields", path: ["oauthApp"] })
+  .refine((a) => !(a.apiKey !== undefined && a.fields !== undefined), { message: "give apiKey or fields, not both", path: ["fields"] })
+  .refine((a) => a.scheme === undefined || a.apiKey !== undefined || a.fields !== undefined, { message: "scheme goes with apiKey or fields", path: ["scheme"] });
 
 /** The source keys 2e moved into sources.composio. */
 const MOVED_SOURCES = ["stripe", "linear", "notion", "calendar"];
@@ -183,10 +193,20 @@ export interface ComposioAccount extends AccountBase {
   /** Composio's toolkit slug: `linear`, `googlecalendar`, `slack`... */
   toolkit: string;
   audience: Audience;
-  /** The service's key, read from .env. Absent for the calendar, which signs in through Composio. */
+  /** The service's key, read from .env. Absent for an account that signs in through Composio or gives `fields`. */
   apiKey?: string;
   /** The .env key that holds it, for telling the user which key to replace. */
   apiKeyName?: string;
+  /** A key scheme of several fields: each field's value by Composio's field name, and the .env key it came from. */
+  fields?: Record<string, string>;
+  fieldKeys?: Record<string, string>;
+  /** Which key scheme, when the toolkit has several. */
+  scheme?: string;
+  /** The user's own OAuth app: the .env keys of its client ID and secret, and their values. */
+  oauthApp?: { clientId: string; clientSecret: string };
+  oauthValues?: { clientId: string; clientSecret: string };
+  /** The connection is the user's own account at the service, not the Clots'. */
+  selfIsUser: boolean;
   /** Notion: the .env key of Notion's verification token, if set by hand. */
   verificationToken?: string;
   /** A toolkit with no built-in mapper: the triggers to make, with their config. */
@@ -267,6 +287,45 @@ function composioIssues(index: number, error: z.ZodError): string {
   return error.issues.map((issue) => `sources.composio[${index}].${issue.path.join(".") || "(account)"}: ${issue.message}`).join("; ");
 }
 
+/** Composio's free plan allows this many tool calls a month on its own app: the calendars' polling and the Composio watches share it. */
+export const MONTHLY_POLLING_CALLS = 10_000;
+
+/** A month's polling calls at one interval, in minutes. */
+export const callsPerMonth = (minutes: number): number => 43_200 / minutes;
+
+/** The calendars' share of the month's polling calls. */
+export const calendarPollingCalls = (accounts: ComposioAccount[]): number => accounts.filter(isCalendar).reduce((sum, a) => sum + callsPerMonth(a.pollMinutes), 0);
+
+/** The .env keys the daemon uses for itself: no account's `apiKey`, `fields` or `oauthApp` may name one. */
+const DAEMON_ENV_KEYS = ["COMPOSIO_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "DISCORD_BOT_TOKEN", "CLOT_GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET"];
+
+/**
+ * An entry for a toolkit without built-in support may name only `.env` keys that nothing else uses: not the
+ * daemon's own, not a recipe's secret, and not a key another part of the configuration names. The keys of
+ * the built-in toolkits, the mail accounts and the MCP servers are the parts of the file it is held against.
+ */
+function refuseSharedEnvKeys(file: z.infer<typeof FileSchema>, accounts: ComposioAccount[], entries: Record<string, any>[]): void {
+  const owners = new Map<string, string>();
+  const claim = (key: string | undefined, owner: string, generic: boolean) => {
+    if (key === undefined) return;
+    if (generic) {
+      if (DAEMON_ENV_KEYS.includes(key)) throw new Error(`${owner}: ${key} is a key the daemon uses for itself`);
+      if (key.startsWith("RECIPE_")) throw new Error(`${owner}: ${key} is for a recipe's secret`);
+      const other = owners.get(key);
+      if (other !== undefined) throw new Error(`${owner}: ${key} is already used by ${other}`);
+    }
+    if (!owners.has(key)) owners.set(key, owner);
+  };
+  for (const a of file.sources.email) claim(a.password, `email account ${a.account}`, false);
+  for (const [name, server] of Object.entries(file.mcpServers)) for (const key of Object.values("command" in server ? server.env : server.headers)) claim(key, `the MCP server ${name}`, false);
+  accounts.forEach((a, index) => {
+    const entry = entries[index];
+    const generic = !(a.toolkit in COMPOSIO_TOOLKITS);
+    const owner = `${a.toolkit} account ${a.account}`;
+    for (const key of [entry.apiKey, entry.verificationToken, ...Object.values<string>(entry.fields ?? {}), entry.oauthApp?.clientId, entry.oauthApp?.clientSecret]) claim(key, owner, generic);
+  });
+}
+
 export function loadConfig(json: unknown, env: Record<string, string | undefined>): Config {
   const raw = (json as { sources?: Record<string, unknown> } | null)?.sources;
   for (const name of MOVED_SOURCES) {
@@ -303,7 +362,11 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
       toolkit: a.toolkit,
       ...base(a.toolkit, a as { account: string; clot?: string; shared?: true }),
       audience: a.audience,
+      selfIsUser: a.selfIsUser === true,
       ...(a.apiKey === undefined ? {} : { apiKey: secret(env, a.apiKey), apiKeyName: a.apiKey }),
+      ...(a.fields === undefined ? {} : { fields: values(env, a.fields), fieldKeys: a.fields }),
+      ...(a.scheme === undefined ? {} : { scheme: a.scheme }),
+      ...(a.oauthApp === undefined ? {} : { oauthApp: a.oauthApp, oauthValues: { clientId: secret(env, a.oauthApp.clientId), clientSecret: secret(env, a.oauthApp.clientSecret) } }),
       ...(a.verificationToken === undefined ? {} : { verificationToken: secret(env, a.verificationToken) }),
       triggers,
       ...(a.leadTimes === undefined ? {} : { leadMinutes: a.leadTimes, pollMinutes: a.pollMinutes }),
@@ -317,9 +380,9 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     if (seenComposio.has(name)) throw new Error(`${a.toolkit} account ${a.account} is named twice`);
     seenComposio.add(name);
   }
-  // Composio's free plan allows 10,000 tool calls a month on its own app, which the calendars' polling uses.
-  const calendarCalls = composio.filter(isCalendar).reduce((sum, a) => sum + 43_200 / a.pollMinutes, 0);
-  if (calendarCalls > 10_000) throw new Error(`the calendars would poll ${Math.round(calendarCalls).toLocaleString("en-US")} times a month; the limit across all calendars is 10,000 (raise pollMinutes)`);
+  refuseSharedEnvKeys(file, composio, file.sources.composio as Record<string, any>[]);
+  const calendarCalls = calendarPollingCalls(composio);
+  if (calendarCalls > MONTHLY_POLLING_CALLS) throw new Error(`the calendars would poll ${Math.round(calendarCalls).toLocaleString("en-US")} times a month; the limit across all calendars is ${MONTHLY_POLLING_CALLS.toLocaleString("en-US")} (raise pollMinutes)`);
 
   const sources: Sources = {
     email: file.sources.email.map((a) => {

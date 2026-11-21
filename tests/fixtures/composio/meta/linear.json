@@ -1,0 +1,79 @@
+{
+  "info": {
+    "slug": "linear",
+    "name": "Linear",
+    "managed": [
+      "OAUTH2"
+    ],
+    "schemes": [
+      {
+        "scheme": "OAUTH2",
+        "required": [],
+        "optional": [],
+        "creationRequired": [
+          "client_id",
+          "client_secret"
+        ]
+      },
+      {
+        "scheme": "API_KEY",
+        "required": [
+          "generic_api_key"
+        ],
+        "optional": [],
+        "creationRequired": []
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "slug": "LINEAR_COMMENT_EVENT_TRIGGER",
+      "type": "webhook"
+    },
+    {
+      "slug": "LINEAR_ISSUE_CREATED_TRIGGER",
+      "type": "webhook"
+    },
+    {
+      "slug": "LINEAR_ISSUE_UPDATED_TRIGGER",
+      "type": "webhook"
+    },
+    {
+      "slug": "LINEAR_PRIVATE_TEAM_COMMENT_CREATED",
+      "type": "poll"
+    },
+    {
+      "slug": "LINEAR_PRIVATE_TEAM_ISSUE_CREATED",
+      "type": "poll"
+    },
+    {
+      "slug": "LINEAR_PRIVATE_TEAM_ISSUE_PROPERTIES_UPDATED",
+      "type": "poll"
+    },
+    {
+      "slug": "LINEAR_PROJECT_CREATED",
+      "type": "poll"
+    },
+    {
+      "slug": "LINEAR_PROJECT_PROPERTIES_UPDATED",
+      "type": "poll"
+    },
+    {
+      "slug": "LINEAR_PROJECT_UPDATE_POSTED",
+      "type": "poll"
+    },
+    {
+      "slug": "LINEAR_PUBLIC_TEAM_COMMENT_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "LINEAR_PUBLIC_TEAM_ISSUE_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "LINEAR_PUBLIC_TEAM_ISSUE_PROPERTIES_UPDATED",
+      "type": "webhook"
+    }
+  ],
+  "payloadSchemaField": "payload"
+}

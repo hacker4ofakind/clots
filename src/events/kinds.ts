@@ -25,6 +25,11 @@ export function isBuiltinSource(name: string): name is BuiltinSource {
   return Object.hasOwn(SOURCE_KINDS, name);
 }
 
+/** The toolkits with a built-in mapping and def: a Composio recipe cannot name one. */
+export const BUILTIN_TOOLKITS = ["linear", "notion", "stripe", "googlecalendar", "posthog"] as const;
+
+export const isBuiltinToolkit = (name: string): boolean => (BUILTIN_TOOLKITS as readonly string[]).includes(name);
+
 /** What a watch recipe reports. */
 export const WATCH_KINDS = ["item_added", "item_changed"] as const;
 

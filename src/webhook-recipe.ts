@@ -3,7 +3,7 @@ import { clip } from "./events/body.js";
 import type { ClotEvent } from "./events/types.js";
 import { jsonBody, storeEvent, type Handler } from "./intake.js";
 import type { WebhookRecipe } from "./rulebook.js";
-import { fillPaths, pathGet } from "./watch.js";
+import { fillPaths, pathGet } from "./paths.js";
 
 const same = (a: string, b: string) => {
   const x = Buffer.from(a);

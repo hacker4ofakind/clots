@@ -646,7 +646,7 @@ describe("the main session's worker tools", () => {
   });
 
   it("lets calendar_write run in a worker's turn", async () => {
-    const tools = makeTools({ ...toolDeps(), calendar: { accounts: [{ toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], leadMinutes: [], pollMinutes: 5 }], timeZone: "UTC", now: () => 0, list: async () => [], call: async () => ({ ok: true, event: { uid: "u1", title: "x", start: "2026-10-16T00:00:00.000Z", end: "2026-10-17T00:00:00.000Z", allDay: true, location: "", description: "", guests: 0, repeats: false } }) as never } }, { clot: "graphite", kind: "worker", outsider: false });
+    const tools = makeTools({ ...toolDeps(), calendar: { accounts: [{ toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], selfIsUser: false, leadMinutes: [], pollMinutes: 5 }], timeZone: "UTC", now: () => 0, list: async () => [], call: async () => ({ ok: true, event: { uid: "u1", title: "x", start: "2026-10-16T00:00:00.000Z", end: "2026-10-17T00:00:00.000Z", allDay: true, location: "", description: "", guests: 0, repeats: false } }) as never } }, { clot: "graphite", kind: "worker", outsider: false });
     expect(await tools.calendarWrite!({ action: "create", title: "x", start: "2026-10-16", end: "2026-10-17", allDay: true })).toContain("Added");
   });
 });

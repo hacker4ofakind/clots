@@ -435,7 +435,7 @@ describe("calendar_list", () => {
             calls.push({ account, req });
             return scriptAnswers[req.action] ?? { ok: false, reason: "no answer set", reached: true };
           },
-          accounts: [{ toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], leadMinutes: [1440], pollMinutes: 5 }],
+          accounts: [{ toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], selfIsUser: false, leadMinutes: [1440], pollMinutes: 5 }],
           timeZone: "Europe/Zurich",
           now: () => new Date("2026-10-15T12:30:00Z").getTime(),
           list: async (account, from, to) => {

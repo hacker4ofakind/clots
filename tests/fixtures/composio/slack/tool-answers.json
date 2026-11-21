@@ -1,0 +1,38 @@
+{
+  "_note": "What Composio's session.execute answers in `data` for the Slack tools the recipe tests use, trimmed from a live run on 2026-11-21.",
+  "answers": {
+    "SLACK_TEST_AUTH": {
+      "is_enterprise_install": false,
+      "ok": true,
+      "team": "Example Workspace",
+      "team_id": "T0TESTTEAM1",
+      "url": "https://example-workspace.slack.com/",
+      "user": "ada.tester",
+      "user_id": "U0TESTUSER1"
+    },
+    "SLACK_RETRIEVE_DETAILED_USER_INFORMATION": {
+      "ok": true,
+      "user": {
+        "id": "U0TESTUSER1",
+        "name": "ada.tester",
+        "is_bot": false,
+        "profile": {
+          "real_name": "Ada Tester",
+          "display_name": "",
+          "first_name": "Ada",
+          "last_name": "Tester"
+        }
+      }
+    },
+    "SLACK_RETRIEVE_CONVERSATION_INFORMATION": {
+      "ok": true,
+      "channel": {
+        "id": "C0TESTCHAN1",
+        "name": "general-test",
+        "is_channel": true,
+        "is_private": false,
+        "is_member": true
+      }
+    }
+  }
+}

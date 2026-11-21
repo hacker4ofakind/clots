@@ -10,8 +10,9 @@ import type { ClotEvent } from "./events/types.js";
 import { UNLOGGED_NOTE, type WriteResult } from "./rule-writer.js";
 import { describeMatch, describeRouting, describeStanding, type RuleEdit, type RuleScope } from "./rulebook-edit.js";
 import type { ToolInfo, ToolResult } from "./mcp/hub.js";
-import { parseWatch, parseWebhook, problemText, type Prefilter, type RoutingRule, type RuleFile, type StandingRule, type WatchRecipe, type WebhookRecipe } from "./rulebook.js";
-import { tryRecipe } from "./watch.js";
+import { parseComposioRecipe, parseWatch, parseWebhook, problemText, type Prefilter, type RoutingRule, type RuleFile, type StandingRule, type WatchRecipe, type WebhookRecipe } from "./rulebook.js";
+import type { ComposioAuthoring } from "./composio/authoring.js";
+import { tryRecipe, type Hub } from "./watch.js";
 import { checkSend, matchStanding, MAX_CHANGED_WORDS, mentionsNotify } from "./standing.js";
 import type { CalendarChangeRow, Store } from "./store.js";
 import type { Effort, WorkerModel } from "./types.js";
@@ -48,6 +49,16 @@ export function gate(_ctx: TurnContext, tool: RatedTool, run: (() => Promise<str
   const step = isHigh(TOOL_AXES[tool]) ? ask : run;
   if (step === undefined) throw new Error(`${tool} has no way for its rating`);
   return step();
+}
+
+/** The hub a watch recipe calls: a Composio account's tools for one that names an account, an MCP server's for one that names a server. */
+function watchHub(d: Pick<ToolDeps, "mcp" | "composioHub">, recipe: WatchRecipe): Hub {
+  if (recipe.account !== undefined) {
+    if (d.composioHub === undefined) throw new Error("no Composio account is configured, so a watch cannot name one");
+    return d.composioHub;
+  }
+  if (d.mcp?.listTools === undefined || d.mcp.callTool === undefined) throw new Error("the daemon has no MCP servers");
+  return { listTools: d.mcp.listTools, callTool: d.mcp.callTool };
 }
 
 /** What a rulebook edit from an outsider's turn is told. */
@@ -87,6 +98,12 @@ export interface DaemonTools {
   composioFind?(a: { account: string; query: string }): Promise<string>;
   /** Rates each call itself, in code: a read runs, a write runs, is reviewed or becomes an ask. */
   composioRun?(a: { account: string; tool: string; args: Record<string, unknown> }): Promise<string>;
+  /** The four tools that extend a Composio integration; only when a Composio account is configured. Main session only. */
+  composioToolkit?(a: { toolkit: string; trigger?: string }): Promise<string>;
+  composioSamples?(a: { account: string; trigger?: string }): Promise<string>;
+  composioRecipeTry?(a: { recipe: unknown; account: string; sample?: string; payload?: unknown; trigger?: string }): Promise<string>;
+  /** Sets or removes a Composio recipe: `name` is the toolkit. */
+  composioRecipe?(a: { action: "set" | "remove"; file: RuleScope; recipe?: unknown; name?: string }): Promise<string>;
   /** Only when the daemon has MCP servers. */
   mcpList?(): Promise<string>;
   watchTry?(recipe: WatchRecipe): Promise<string>;
@@ -135,6 +152,12 @@ export interface ToolDeps {
   composio?: { find(ctx: TurnContext, a: { account: string; query: string }): Promise<string>; run(ctx: TurnContext, a: { account: string; tool: string; args: Record<string, unknown> }): Promise<string> };
   /** The workers. Absent where nothing can start one. */
   workers?: Pick<Workers, "start" | "message" | "stop">;
+  /** The logic of the Composio authoring tools. Absent when no Composio account is configured. */
+  composioAuthoring?: ComposioAuthoring;
+  /** A watch recipe on a Composio account calls it through this, in the shape of an MCP server. Absent when no Composio account is configured. */
+  composioHub?: Hub;
+  /** Why a watch recipe on a Composio account would take polling past the month's limit, if it would. */
+  watchBudgetProblem?: (recipe: WatchRecipe) => string | undefined;
   /** The daemon's MCP servers. Absent when it has none. */
   mcp?: { describe(): Promise<string>; listTools?(server: string): Promise<ToolInfo[]>; callTool?(server: string, tool: string, args: Record<string, unknown>): Promise<ToolResult> };
 }
@@ -242,11 +265,32 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
           composioFind: (a: { account: string; query: string }) => gate(ctx, "composioFind", () => d.composio!.find(ctx, a)),
           composioRun: (a: { account: string; tool: string; args: Record<string, unknown> }) => gate(ctx, "composioRun", () => d.composio!.run(ctx, a)),
         }),
+    // What Composio says of a toolkit and what was delivered only read, so they work under the lock too. Trying a draft runs its reads on the account, counted like composio_run's; setting a recipe is a rulebook edit, applied or put to the user as the others are.
+    ...(d.composioAuthoring === undefined
+      ? {}
+      : {
+          composioToolkit: (a: { toolkit: string; trigger?: string }) => gate(ctx, "composioToolkit", () => d.composioAuthoring!.toolkit(a)),
+          composioSamples: (a: { account: string; trigger?: string }) => gate(ctx, "composioSamples", async () => d.composioAuthoring!.samples(a)),
+          composioRecipeTry: (a: { recipe: unknown; account: string; sample?: string; payload?: unknown; trigger?: string }) => gate(ctx, "composioRecipeTry", () => d.composioAuthoring!.try(ctx, a)),
+          composioRecipe: async ({ action, file, recipe, name }: { action: "set" | "remove"; file: RuleScope; recipe?: unknown; name?: string }) => {
+            if (action === "remove") return name === undefined ? "Not done: give the recipe's toolkit as name." : submit("composioRecipe", file, { op: "remove_composio", name });
+            if (recipe === undefined) return "Not done: give the recipe.";
+            try {
+              const parsed = parseComposioRecipe(recipe);
+              const refusal = await d.composioAuthoring!.checkRecipe(parsed);
+              if (refusal !== undefined) return `Not done: ${refusal}`;
+              const done = await submit("composioRecipe", file, { op: "set_composio", recipe: parsed });
+              return done.startsWith("Applied") ? done + d.composioAuthoring!.shadowNote(parsed.toolkit, file) : done;
+            } catch (error) {
+              return `Not done: ${problemText(error)}.`;
+            }
+          },
+        }),
     // These only read, so they work under the lock too. Trying a recipe refuses a tool that may change things.
     ...(d.mcp === undefined ? {} : { mcpList: () => d.mcp!.describe() }),
-    ...(d.mcp?.listTools === undefined || d.mcp.callTool === undefined
+    ...(d.mcp?.listTools === undefined && d.composioHub === undefined
       ? {}
-      : { watchTry: (recipe: WatchRecipe) => tryRecipe({ listTools: d.mcp!.listTools!, callTool: d.mcp!.callTool! }, recipe) }),
+      : { watchTry: (recipe: WatchRecipe) => tryRecipe((r) => watchHub(d, r), recipe) }),
 
     webhook: async ({ action, file, recipe, name }) => {
       if (action === "remove") return name === undefined ? "Not done: give the recipe's name." : submit("webhook", file, { op: "remove_webhook", name });
@@ -262,7 +306,10 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       if (action === "remove") return name === undefined ? "Not done: give the recipe's name." : submit("watch", file, { op: "remove_watch", name });
       if (recipe === undefined) return "Not done: give the recipe.";
       try {
-        return await submit("watch", file, { op: "set_watch", recipe: parseWatch(recipe) });
+        const parsed = parseWatch(recipe);
+        const over = d.watchBudgetProblem?.(parsed);
+        if (over !== undefined) return `Not done: ${over}.`;
+        return await submit("watch", file, { op: "set_watch", recipe: parsed });
       } catch (error) {
         return `Not done: ${problemText(error)}.`;
       }

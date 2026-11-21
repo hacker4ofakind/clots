@@ -4,6 +4,8 @@ import type { ClotEvent } from "../events/types.js";
 import { jsonBody, storeEvent, type Answer, type Handler } from "../intake.js";
 import type { Composio } from "./component.js";
 import type { Meter } from "./meter.js";
+import { recipeMapper } from "./recipe.js";
+import type { ComposioRecipe } from "../rulebook.js";
 import { userOf } from "./toolkits/index.js";
 
 /** A delivery whose timestamp is further than this from the daemon's clock is refused as a replay. */
@@ -32,6 +34,12 @@ export interface ComposioIntakeDeps {
   insertEvent: (event: ClotEvent) => boolean;
   now: () => number;
   meter?: Meter;
+  /** The Composio recipe in force for a toolkit, if any: it maps its triggers before the generic mapping does. */
+  recipe?: (toolkit: string) => ComposioRecipe | undefined;
+  /** Keeps a delivery of a toolkit without a built-in mapper, for samples and for enrichment. */
+  keep?: (d: { webhookId: string; user: string; slug: string; eventId: string; payload: unknown; receivedAt: number }) => void;
+  /** Runs the event's insert and the delivery's keep as one unit: both are stored, or neither. */
+  transaction?: <T>(fn: () => T) => T;
   log?: (text: string) => void;
 }
 
@@ -100,14 +108,26 @@ export function composioHandler(d: ComposioIntakeDeps): Handler {
       log(`[composio] a delivery for an unknown connection (${connectionId || "none"}) was discarded`);
       return { status: 200, text: "unknown account" };
     }
-    await d.meter?.count("delivery", userOf(account), account.apiKey === undefined);
-    const mapper = d.mappers[account.toolkit] ?? (account.triggers.length > 0 ? d.mappers.generic : undefined);
-    if (!mapper) return { status: 200, text: "ignored" };
-    const mapped = mapper(account, text(meta.trigger_slug), body.data, id, d.now());
-    if (!mapped) return { status: 200, text: "ignored" };
+    await d.meter?.count("delivery", userOf(account), d.composio.managed(account));
+    const slug = text(meta.trigger_slug);
+    const builtin = d.mappers[account.toolkit];
+    // A toolkit without a built-in mapper: its recipe maps the triggers it lists, the generic mapping any other, for an account that names triggers.
+    const recipe = builtin === undefined ? d.recipe?.(account.toolkit) : undefined;
+    const mapper = builtin ?? (recipe?.triggers[slug] !== undefined ? recipeMapper(recipe) : account.triggers.length > 0 ? d.mappers.generic : undefined);
+    const mapped = mapper?.(account, slug, body.data, id, d.now());
 
-    const self = mapped.actorId !== "" && mapped.actorId === d.composio.identity(account);
-    const own = (mapped.objectIds ?? []).some((object) => d.composio.touchedByClot(account, object, d.now() - OWN_WRITE_WINDOW_MS));
-    return storeEvent(mapped.event, d.insertEvent, self || own ? "caused by the Clot itself" : undefined);
+    const run = d.transaction ?? (<T,>(fn: () => T) => fn());
+    return run(() => {
+      let answer: Answer = { status: 200, text: "ignored" };
+      if (mapped) {
+        // An account that is the user's own has no identity to compare: only what the Clots' own writes touched is dropped.
+        const self = !account.selfIsUser && mapped.actorId !== "" && mapped.actorId === d.composio.identity(account);
+        const own = (mapped.objectIds ?? []).some((object) => d.composio.touchedByClot(account, object, d.now() - OWN_WRITE_WINDOW_MS));
+        answer = storeEvent(mapped.event, d.insertEvent, self || own ? "caused by the Clot itself" : undefined);
+      }
+      // Kept after mapping, so the delivery knows its event; a repeat that stored nothing keeps none, and the first delivery stays the event's.
+      if (builtin === undefined) d.keep?.({ webhookId: id, user: userOf(account), slug, eventId: mapped && answer.status === 202 ? mapped.event.id : "", payload: body.data ?? null, receivedAt: d.now() });
+      return answer;
+    });
   };
 }

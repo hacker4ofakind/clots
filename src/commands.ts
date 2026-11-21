@@ -12,10 +12,11 @@ export type Command =
   | { kind: "memory"; undo: boolean }
   | { kind: "calendar"; undo: true }
   | { kind: "composio"; undo: true }
+  | { kind: "composio"; reconnect: string }
   | { kind: "spend" }
   | { kind: "invalid"; name: string };
 
-export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium [message]`, `&rules`, `&rules undo`, `&memory`, `&memory undo`, `&calendar undo`, `&composio undo`, `&spend`.";
+export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium [message]`, `&rules`, `&rules undo`, `&memory`, `&memory undo`, `&calendar undo`, `&composio undo`, `&composio reconnect <toolkit>:<account>`, `&spend`.";
 
 const EFFORTS: MainEffort[] = ["low", "medium"];
 
@@ -42,7 +43,11 @@ export function parseCommand(text: string): Command {
 
   if (name === "calendar") return args.toLowerCase() === "undo" ? { kind: "calendar", undo: true } : { kind: "invalid", name };
 
-  if (name === "composio") return args.toLowerCase() === "undo" ? { kind: "composio", undo: true } : { kind: "invalid", name };
+  if (name === "composio") {
+    if (args.toLowerCase() === "undo") return { kind: "composio", undo: true };
+    const reconnect = /^reconnect\s+(\S+)$/i.exec(args);
+    return reconnect ? { kind: "composio", reconnect: reconnect[1] } : { kind: "invalid", name };
+  }
 
   if (name === "rules" || name === "memory") {
     if (args === "") return { kind: name, undo: false };

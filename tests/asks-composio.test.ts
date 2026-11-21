@@ -13,7 +13,7 @@ import { FakeComposioApi, tool } from "./fake-composio.js";
 
 const USER = "user-1";
 const NOW = Date.UTC(2026, 10, 19, 12, 0, 0);
-const base = { shared: false, triggers: [] };
+const base = { shared: false, triggers: [], selfIsUser: false };
 const pub: ComposioAccount = { ...base, toolkit: "linear", account: "proton", clot: "graphite", audience: "public", apiKey: "lin_api_SECRET", apiKeyName: "K" };
 const ctx: ActionContext = { clot: "graphite", kind: "chat", outsider: false, userText: "make it so" };
 

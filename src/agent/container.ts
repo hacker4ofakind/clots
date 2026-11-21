@@ -144,6 +144,29 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl?
   return typeof account?.login === "string" ? account.login : undefined;
 }
 
+/** Where the daemon's plugin is in every container: outside the home volume, and the root user's. */
+export const PLUGIN_DIR = "/opt/clots/plugin";
+
+/**
+ * The docker arguments that put a plugin folder into a container, in order: remove what is there, copy the
+ * folder in (from the folder itself, so no host path reaches docker's `container:path` syntax), then make
+ * it root's and read-only to the Clot. A Clot steered by outsider text cannot rewrite its own skill.
+ */
+export function pluginInstallSteps(container: string): { args: string[]; inSource: boolean }[] {
+  return [
+    { args: ["exec", "-u", "root", container, "sh", "-c", `rm -rf ${PLUGIN_DIR} && mkdir -p ${PLUGIN_DIR}`], inSource: false },
+    { args: ["cp", "./.", `${container}:${PLUGIN_DIR}`], inSource: true },
+    { args: ["exec", "-u", "root", container, "sh", "-c", `chown -R root:root ${PLUGIN_DIR} && chmod -R a+rX,go-w ${PLUGIN_DIR}`], inSource: false },
+  ];
+}
+
+/** Copies the plugin folder into the container, replacing what is there. Throws on a failed step: the caller logs it and the Clot starts without the skill. */
+export async function installPlugin(container: string, source: string): Promise<void> {
+  for (const step of pluginInstallSteps(container)) {
+    await run("docker", step.args, { timeout: EXEC_TIMEOUT_MS, ...(step.inSource ? { cwd: source } : {}) });
+  }
+}
+
 // Workers. Every git command the daemon runs in a container goes through that container's own
 // chain, one at a time: git commands in one shared .git collide on its lock files.
 

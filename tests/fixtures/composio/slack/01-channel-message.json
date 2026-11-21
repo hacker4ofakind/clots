@@ -1,0 +1,54 @@
+{
+  "path": "/webhooks/composio",
+  "headers": {
+    "content-type": "application/json",
+    "webhook-id": "msg_1d43ae41-1065-4e43-b2ef-125cd3b89363",
+    "webhook-signature": "v1,A/Hr+jTzAXNoxPUaVZHrNnkG0Wh60bXYgTCq00x4ODM=",
+    "webhook-timestamp": "1795263988"
+  },
+  "raw": "{\"id\":\"msg_1d43ae41-1065-4e43-b2ef-125cd3b89363\",\"timestamp\":\"2026-11-21T12:26:28.003Z\",\"type\":\"composio.trigger.message\",\"metadata\":{\"log_id\":\"log_z0urrS7gbJMC\",\"trigger_slug\":\"SLACK_CHANNEL_MESSAGE_RECEIVED\",\"toolkit_slug\":\"slack\",\"trigger_id\":\"ti_SpspjVHoUOUo\",\"connected_account_id\":\"ca_wGxJ93x5l7Q-\",\"auth_config_id\":\"ac__qxYVKW6UMD-\",\"user_id\":\"spike:slack\"},\"data\":{\"attachments\":null,\"blocks\":[{\"block_id\":\"KNUcj\",\"elements\":[{\"elements\":[{\"text\":\"Hello team\",\"type\":\"text\"}],\"type\":\"rich_text_section\"}],\"type\":\"rich_text\"}],\"bot_id\":null,\"channel\":\"C0TESTCHAN1\",\"channel_type\":\"channel\",\"files\":null,\"subtype\":null,\"team_id\":\"T0TESTTEAM1\",\"text\":\"Hello team\",\"thread_ts\":null,\"ts\":\"1795263981.000100\",\"user\":\"U0TESTUSER1\"}}",
+  "body": {
+    "id": "msg_1d43ae41-1065-4e43-b2ef-125cd3b89363",
+    "timestamp": "2026-11-21T12:26:28.003Z",
+    "type": "composio.trigger.message",
+    "metadata": {
+      "log_id": "log_z0urrS7gbJMC",
+      "trigger_slug": "SLACK_CHANNEL_MESSAGE_RECEIVED",
+      "toolkit_slug": "slack",
+      "trigger_id": "ti_SpspjVHoUOUo",
+      "connected_account_id": "ca_wGxJ93x5l7Q-",
+      "auth_config_id": "ac__qxYVKW6UMD-",
+      "user_id": "spike:slack"
+    },
+    "data": {
+      "attachments": null,
+      "blocks": [
+        {
+          "block_id": "KNUcj",
+          "elements": [
+            {
+              "elements": [
+                {
+                  "text": "Hello team",
+                  "type": "text"
+                }
+              ],
+              "type": "rich_text_section"
+            }
+          ],
+          "type": "rich_text"
+        }
+      ],
+      "bot_id": null,
+      "channel": "C0TESTCHAN1",
+      "channel_type": "channel",
+      "files": null,
+      "subtype": null,
+      "team_id": "T0TESTTEAM1",
+      "text": "Hello team",
+      "thread_ts": null,
+      "ts": "1795263981.000100",
+      "user": "U0TESTUSER1"
+    }
+  }
+}

@@ -1,8 +1,10 @@
 import type { ZodType } from "zod";
 import type { ComposioAccount } from "../config.js";
 import { retryWait, type Supervisor } from "../listeners.js";
+import type { ComposioRecipe } from "../rulebook.js";
 import type { Store } from "../store.js";
-import { configKey, keyHash, type ComposioApi, type Connection, type ExecResult, type ToolInfo } from "./api.js";
+import { configKey, type ComposioApi, type Connection, type ExecResult, type ToolInfo } from "./api.js";
+import { authHash, chooseAuth, entryAuthKey, fieldValues, secretsOf, type AuthChoice, type ToolkitInfo } from "./auth.js";
 import type { Meter } from "./meter.js";
 import { defFor, userOf, type ToolkitHost, type TriggerWant } from "./toolkits/index.js";
 
@@ -34,6 +36,8 @@ export interface ComposioDeps {
   log?: (text: string) => void;
   /** Counts each tool call against the month's allowance. */
   meter?: Meter;
+  /** The Composio recipe in force for a toolkit: the generic def reads its identity from it. */
+  recipe?: (toolkit: string) => ComposioRecipe | undefined;
 }
 
 /**
@@ -46,6 +50,11 @@ export class Composio implements ToolkitHost {
   private told = new Set<string>();
   private signingIn = new Set<string>();
   private tools = new Map<string, ToolInfo | undefined>();
+  private infos = new Map<string, ToolkitInfo>();
+  /** The accounts whose identity is being learned, so a retry chain is never started twice. */
+  private learning = new Set<string>();
+  /** The identity each toolkit's recipe named when last looked at, to tell a change. */
+  private identityOf = new Map<string, string>();
   /** The fixed-purpose calls whose answers did not have the shape they rely on, since the daemon started. */
   private drift = new Map<string, { account: ComposioAccount; slug: string; where: string }>();
 
@@ -80,6 +89,29 @@ export class Composio implements ToolkitHost {
     return user === undefined ? undefined : this.d.accounts.find((a) => userOf(a) === user);
   }
 
+  /** The Composio recipe in force for a toolkit. */
+  recipe(toolkit: string): ComposioRecipe | undefined {
+    return this.d.recipe?.(toolkit);
+  }
+
+  /**
+   * Called when the rulebook has been read: when a toolkit's recipe names another `identity` than the one the
+   * stored identities were learned with, they are cleared and learned again.
+   */
+  recipeChanged(toolkit: string): void {
+    const now = JSON.stringify(this.recipe(toolkit)?.identity ?? null);
+    const before = this.identityOf.get(toolkit);
+    this.identityOf.set(toolkit, now);
+    if (before === undefined || before === now) return;
+    for (const a of this.d.accounts.filter((x) => x.toolkit === toolkit)) {
+      const row = this.d.store.composio.account(userOf(a));
+      if (row === undefined) continue;
+      this.d.store.composio.setAccount(userOf(a), { identity: undefined });
+      this.learning.delete(userOf(a));
+      if (row.connectionId !== undefined && row.status === "active") void this.learnIdentity(a);
+    }
+  }
+
   /** The connection's own user ID at the service, or "" until it has been read. */
   identity(a: ComposioAccount): string {
     return this.d.store.composio.account(userOf(a))?.identity ?? "";
@@ -88,7 +120,7 @@ export class Composio implements ToolkitHost {
   /** Runs a tool as the account's own user. Tells the user, once, when it learns of a cap or a rejected connection. */
   async run(a: ComposioAccount, slug: string, args: Record<string, unknown>): Promise<ExecResult> {
     const result = await this.d.api.execute(userOf(a), a.toolkit, slug, args);
-    await this.d.meter?.count("call", userOf(a), a.apiKey === undefined);
+    await this.d.meter?.count("call", userOf(a), this.managed(a));
     if (!result.ok) {
       if (result.reason === "cap") await this.noteCap();
       else if (result.reason === "auth") await this.tellOnce(`auth:${userOf(a)}`, a, this.connectionText(a));
@@ -203,6 +235,7 @@ export class Composio implements ToolkitHost {
       // established connection stays. When it cannot be deleted now, the account's row stays and the next start tries again.
       if (!(await this.dropStaged(row.user, row.connectionId))) continue;
       this.d.store.composio.deleteAccount(row.user);
+      this.d.store.deleteState(this.authKey(row.user));
     }
   }
 
@@ -224,30 +257,101 @@ export class Composio implements ToolkitHost {
     return true;
   }
 
-  /** Brings one account up: auth config, connection, identity, triggers. Idempotent. */
-  async reconcileAccount(a: ComposioAccount): Promise<void> {
-    const { api, store } = this.d;
-    const user = userOf(a);
-    const row = store.composio.account(user);
-    const managed = a.apiKey === undefined;
-    const authConfigId = row?.authConfigId ?? (await api.ensureAuthConfig(a.toolkit, managed ? "MANAGED" : "API_KEY"));
-    store.composio.setAccount(user, { authConfigId });
-
-    const connectionId = managed ? await this.ensureManaged(a, authConfigId) : await this.ensureKeyConnection(a, authConfigId);
-    if (connectionId === undefined) return;
-
-    await this.learnIdentity(a);
-    await this.syncTriggers(a, connectionId, { verify: false });
-    const held = store.composio.triggers(user);
-    this.log(`${user} connected${held.length > 0 ? `, holding ${held.length} trigger${held.length === 1 ? "" : "s"}: ${[...new Set(held.map((t) => t.slug))].join(", ")}` : ""}`);
+  /** What the account's entry connects with, resolved once from Composio's metadata and kept in `state` until the entry's auth fields change. */
+  private authKey(user: string): string {
+    return `composio.auth.${user}`;
   }
 
-  /** The connection of a key account: adopted, made, or replaced when the key changed. */
-  private async ensureKeyConnection(a: ComposioAccount, authConfigId: string): Promise<string> {
+  /**
+   * The way to connect an account (`chooseAuth`), read from Composio's metadata only when nothing is stored for the
+   * entry's auth fields, so a working account never re-reads it and a later change in Composio's metadata cannot
+   * disconnect it. A mismatch is told once per start in the account's channel and leaves the account unconnected;
+   * unreadable metadata throws, and the account's job tries again.
+   */
+  private async resolveAuth(a: ComposioAccount): Promise<{ choice: AuthChoice; name: string } | undefined> {
     const { api, store } = this.d;
     const user = userOf(a);
-    const hash = keyHash(a.apiKey!);
+    const entry = entryAuthKey(a);
+    const kept = store.getState(this.authKey(user));
+    if (kept !== undefined) {
+      try {
+        const stored = JSON.parse(kept) as { entry: string; choice: AuthChoice; name: string };
+        if (stored.entry === entry) return { choice: stored.choice, name: stored.name };
+      } catch {
+        // An unreadable record is read again from Composio.
+      }
+    }
+    const info = await this.toolkitInfo(a.toolkit);
+    const chosen = chooseAuth(a, info, Object.keys(defFor(a.toolkit).connectExtra?.(a) ?? {}));
+    if ("error" in chosen) {
+      this.log(chosen.error);
+      await this.tellOnce(`auth:${user}`, a, chosen.error);
+      return undefined;
+    }
+    store.setState(this.authKey(user), JSON.stringify({ entry, choice: chosen, name: info.name }));
+    return { choice: chosen, name: info.name };
+  }
+
+  /** What Composio says of a toolkit, read once per toolkit per daemon life. A failed read is not kept: the caller's retry reads it again. */
+  async toolkitInfo(slug: string): Promise<ToolkitInfo> {
+    let info = this.infos.get(slug);
+    if (info === undefined) {
+      info = await this.d.api.toolkitInfo(slug);
+      this.infos.set(slug, info);
+    }
+    return info;
+  }
+
+  /** Whether the account counts against Composio's managed allowance: no key, no fields and no OAuth app of its own. */
+  managed(a: ComposioAccount): boolean {
+    return a.apiKeyName === undefined && a.fieldKeys === undefined && a.oauthApp === undefined;
+  }
+
+  /** Brings one account up: auth choice, connection, identity, triggers. Idempotent. */
+  async reconcileAccount(a: ComposioAccount): Promise<void> {
+    const { store } = this.d;
+    const user = userOf(a);
+    const auth = await this.resolveAuth(a);
+    if (auth === undefined) return;
+    const { choice, name } = auth;
+    const secrets = secretsOf(a);
+    const hash = authHash(choice, secrets);
+
+    if (choice.kind === "none") {
+      store.composio.setAccount(user, { keyHash: hash, status: "active" });
+      this.log(`${name} (${a.account}) needs no connection`);
+      return;
+    }
+    const connectionId = choice.kind === "key" ? await this.ensureKeyConnection(a, choice, secrets, hash) : await this.ensureSignIn(a, choice, secrets, hash, name);
+    if (connectionId === undefined) return;
+
+    await this.afterConnected(a, connectionId, name);
+  }
+
+  /** Identity and triggers, and the line that says the account is up. Runs when a sign-in completes as well as at reconcile. */
+  private async afterConnected(a: ComposioAccount, connectionId: string, name: string): Promise<void> {
+    const user = userOf(a);
+    await this.learnIdentity(a);
+    await this.syncTriggers(a, connectionId, { verify: false });
+    const held = this.d.store.composio.triggers(user);
+    this.log(`${name} (${a.account}) connected${held.length > 0 ? `, holding ${held.length} trigger${held.length === 1 ? "" : "s"}: ${[...new Set(held.map((t) => t.slug))].join(", ")}` : ""}`);
+  }
+
+  /** What a key connection is made with: the entry's fields, and what the def adds (PostHog's region). */
+  private keyFields(a: ComposioAccount, choice: Extract<AuthChoice, { kind: "key" }>, secrets: Record<string, string>): Record<string, string> {
+    return { ...fieldValues(choice, secrets), ...(defFor(a.toolkit).connectExtra?.(a) ?? {}) };
+  }
+
+  /** The connection of a key account: adopted, made, or replaced when a field changed. */
+  private async ensureKeyConnection(a: ComposioAccount, choice: Extract<AuthChoice, { kind: "key" }>, secrets: Record<string, string>, hash: string): Promise<string> {
+    const { api, store } = this.d;
+    const user = userOf(a);
     const row = store.composio.account(user);
+    const connect = async () => {
+      const authConfigId = await api.ensureAuthConfig(a.toolkit, choice, secrets);
+      const made = await api.connectWithKey(user, authConfigId, choice.scheme, this.keyFields(a, choice, secrets));
+      return { made, authConfigId };
+    };
     if (row?.connectionId !== undefined && row.keyHash === hash) {
       const staged = store.getState(this.stagedKey(user))?.split("|")[1];
       // A swap that finished but crashed before clearing its marker.
@@ -263,24 +367,35 @@ export class Composio implements ToolkitHost {
       return row.connectionId;
     }
 
-    const extra = defFor(a.toolkit).connectExtra?.(a);
     if (row?.connectionId === undefined) {
       const found = await api.findConnection(user, a.toolkit);
       if (found?.status === "active") {
         store.composio.setAccount(user, { connectionId: found.id, keyHash: hash, status: "active" });
         return found.id;
       }
-      const made = await api.connectWithKey(user, authConfigId, a.apiKey!, extra);
-      store.composio.setAccount(user, { connectionId: made.id, keyHash: hash, status: made.status });
+      const { made, authConfigId } = await connect();
+      store.composio.setAccount(user, { connectionId: made.id, authConfigId, keyHash: hash, status: made.status });
       return made.id;
     }
 
-    // The key changed: connect the new one first, move the triggers onto it, and only then delete the old one,
+    // A value changed: connect the new one first, move the triggers onto it, and only then delete the old one,
     // so a crash midway leaves the old connection working and the next start redoes it.
-    const oldConnection = row.connectionId;
+    const made = await this.stagedConnection(a, hash, async () => (await connect()).made);
+    await this.completeSwap(a, made.id, hash, made.status);
+    return made.id;
+  }
+
+  /**
+   * Moves an account from its established connection to a new one that is active: its triggers are made on the new
+   * connection and the old ones deleted, then the old connection is, and only then is the account's row changed.
+   * A crash midway leaves the old connection working; the next start redoes it.
+   */
+  private async completeSwap(a: ComposioAccount, newId: string, hash: string, status: Connection["status"], authConfigId?: string): Promise<void> {
+    const { api, store } = this.d;
+    const user = userOf(a);
+    const old = store.composio.account(user);
     const oldTriggers = store.composio.triggers(user).map((t) => t.triggerId);
-    const made = await this.stagedConnection(a, authConfigId, hash, extra);
-    await this.syncTriggers(a, made.id, { verify: false, force: true });
+    await this.syncTriggers(a, newId, { verify: false, force: true });
     const fresh = new Set(store.composio.triggers(user).map((t) => t.triggerId));
     for (const id of oldTriggers.filter((t) => !fresh.has(t))) {
       try {
@@ -289,15 +404,20 @@ export class Composio implements ToolkitHost {
         this.log(`deleting an old trigger of ${user} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
-    try {
-      await api.deleteConnection(oldConnection);
-    } catch (e) {
-      // Gone already, such as after a crash between this and storing the account: the swap is still done.
-      if (!isNotFound(e)) throw e;
+    if (old?.connectionId !== undefined && old.connectionId !== newId) {
+      try {
+        await api.deleteConnection(old.connectionId);
+      } catch (e) {
+        // Gone already, such as after a crash between this and storing the account: the swap is still done.
+        if (!isNotFound(e)) throw e;
+      }
     }
-    store.composio.setAccount(user, { connectionId: made.id, keyHash: hash, status: made.status });
+    // An OAuth app's auth config belongs to its one account: it goes with the connection that used it.
+    if (old?.keyHash?.startsWith("oauth:") && old.authConfigId !== undefined && old.authConfigId !== authConfigId) {
+      await api.deleteAuthConfig(old.authConfigId).catch((e) => this.log(`deleting the old auth config of ${user} failed: ${e instanceof Error ? e.message : String(e)}`));
+    }
+    store.composio.setAccount(user, { connectionId: newId, keyHash: hash, status, ...(authConfigId === undefined ? {} : { authConfigId }) });
     store.deleteState(this.stagedKey(user));
-    return made.id;
   }
 
   private stagedKey(user: string): string {
@@ -312,7 +432,7 @@ export class Composio implements ToolkitHost {
    * connection is made only once the staged one is confirmed gone. A marker that names the account's own connection
    * (a crash after the swap) is just cleared, never acted on.
    */
-  private async stagedConnection(a: ComposioAccount, authConfigId: string, hash: string, extra?: Record<string, string>): Promise<{ id: string; status: "active" | "initiating" | "expired" | "failed" }> {
+  private async stagedConnection(a: ComposioAccount, hash: string, make: () => Promise<Connection>): Promise<Connection> {
     const { api, store } = this.d;
     const user = userOf(a);
     const marker = this.stagedKey(user);
@@ -339,69 +459,170 @@ export class Composio implements ToolkitHost {
         store.deleteState(marker);
       }
     }
-    const made = await api.connectWithKey(user, authConfigId, a.apiKey!, extra);
+    const made = await make();
     store.setState(marker, `${hash}|${made.id}`);
     return made;
   }
 
-  /** The calendar's connection: adopted when active, else a sign-in link is posted once per start and its answer awaited. */
-  private async ensureManaged(a: ComposioAccount, authConfigId: string): Promise<string | undefined> {
+  /**
+   * The connection of an account that signs in (Composio's managed app, or the user's own OAuth app): adopted when
+   * active, else a sign-in link is posted once per start and its answer awaited. A changed choice (the OAuth app's
+   * values, or key to sign-in) signs in anew while the old connection stays the account's, until the new one is active.
+   */
+  private async ensureSignIn(a: ComposioAccount, choice: AuthChoice, secrets: Record<string, string>, hash: string, name: string): Promise<string | undefined> {
     const { api, store } = this.d;
     const user = userOf(a);
-    let id = store.composio.account(user)?.connectionId;
-    if (id === undefined) {
+    let row = store.composio.account(user);
+    if (row?.connectionId === undefined) {
       const found = await api.findConnection(user, a.toolkit);
-      if (found) {
-        id = found.id;
-        store.composio.setAccount(user, { connectionId: id, status: found.status });
+      if (found) store.composio.setAccount(user, { connectionId: found.id, status: found.status });
+      row = store.composio.account(user);
+    }
+    const current = row?.connectionId;
+    if (current === undefined) {
+      if (!this.signingIn.has(user)) await this.signIn(a, choice, secrets, hash, name, {});
+      return undefined;
+    }
+    // A row from before the choice was kept (the calendar's) has no hash yet: what is connected is adopted.
+    if (row?.keyHash === hash || row?.keyHash === undefined) {
+      const status = (await api.connection(current)).status;
+      store.composio.setAccount(user, { status, keyHash: hash });
+      if (status === "active") {
+        const staged = store.getState(this.stagedKey(user))?.split("|")[1];
+        if (staged === current) store.deleteState(this.stagedKey(user));
+        return current;
+      }
+      if (!this.signingIn.has(user)) await this.signIn(a, choice, secrets, hash, name, { reuse: true });
+      return undefined;
+    }
+
+    // The choice changed while a connection exists: sign in anew, and keep the old connection until the new one is active.
+    const staged = store.getState(this.stagedKey(user))?.split("|");
+    if (staged !== undefined && staged[0] === hash && staged[1]) {
+      let status: Connection["status"] | undefined;
+      try {
+        status = (await api.connection(staged[1])).status;
+      } catch (e) {
+        if (!isNotFound(e)) throw e;
+      }
+      if (status === "active") {
+        await this.completeSwap(a, staged[1], hash, "active", staged[2]);
+        return staged[1];
+      }
+      if (status === "initiating") {
+        if (!this.signingIn.has(user)) this.watchSignIn(a, staged[1], this.d.now() + SIGN_IN_WAIT_MS, name);
+        return current;
       }
     }
-    if (id !== undefined) {
-      const status = (await api.connection(id)).status;
-      store.composio.setAccount(user, { status });
-      if (status === "active") return id;
+    if (!this.signingIn.has(user)) {
+      if (!(await this.dropStaged(user, current))) throw new Error(`could not delete the abandoned connection of ${user} yet`);
+      await this.signIn(a, choice, secrets, hash, name, { swap: true });
     }
-    if (!this.signingIn.has(user)) await this.signIn(a, authConfigId);
-    return undefined;
+    return current;
   }
 
   /** Makes a sign-in link, posts it, and waits for the connection to become active. */
-  private async signIn(a: ComposioAccount, authConfigId?: string): Promise<void> {
+  private async signIn(a: ComposioAccount, choice: AuthChoice, secrets: Record<string, string>, hash: string, name: string, o: { reuse?: boolean; swap?: boolean }): Promise<void> {
     const { api, store } = this.d;
     const user = userOf(a);
-    const config = authConfigId ?? store.composio.account(user)?.authConfigId ?? (await api.ensureAuthConfig(a.toolkit, "MANAGED"));
-    const link = await api.linkManaged(user, config);
-    store.composio.setAccount(user, { authConfigId: config, connectionId: link.connectionId, status: "initiating" });
+    const row = store.composio.account(user);
+    // A managed auth config is one for the toolkit, so it is reused; an OAuth app's is the account's own, made once per set of values.
+    const authConfigId = o.reuse && row?.authConfigId !== undefined ? row.authConfigId : await api.ensureAuthConfig(a.toolkit, choice, secrets);
+    const link = await api.linkManaged(user, authConfigId);
+    if (o.swap) store.setState(this.stagedKey(user), `${hash}|${link.connectionId}|${authConfigId}`);
+    else store.composio.setAccount(user, { authConfigId, connectionId: link.connectionId, keyHash: hash, status: "initiating" });
     this.signingIn.add(user);
-    await this.d.tell(a, `Sign in to Google Calendar for the Clots: ${link.redirectUrl}`);
-    this.watchSignIn(a, link.connectionId, this.d.now() + SIGN_IN_WAIT_MS);
+    // The calendar is the user's own account by design; every other sign-in should be made as the Clots' own.
+    const own = a.selfIsUser || a.toolkit === "googlecalendar" ? "" : `\nSign in with the Clots' own ${name} account, not yours, unless the entry has "selfIsUser": true.`;
+    await this.d.tell(a, `Sign in to ${name} for the Clots: ${link.redirectUrl}${own}`);
+    this.watchSignIn(a, link.connectionId, this.d.now() + SIGN_IN_WAIT_MS, name);
   }
 
-  private watchSignIn(a: ComposioAccount, connectionId: string, deadline: number): void {
+  private watchSignIn(a: ComposioAccount, connectionId: string, deadline: number, name: string): void {
+    this.signingIn.add(userOf(a));
     this.d.schedule(SIGN_IN_POLL_MS, () => {
       void (async () => {
         try {
           const status = (await this.d.api.connection(connectionId)).status;
           if (status === "active") {
-            this.d.store.composio.setAccount(userOf(a), { status });
-            this.log(`Google Calendar (${a.account}) connected`);
+            await this.signedIn(a, connectionId, status, name);
             return;
           }
         } catch (e) {
-          this.log(`checking the Google Calendar sign-in of ${a.account} failed: ${e instanceof Error ? e.message : String(e)}`);
+          this.log(`checking the ${name} sign-in of ${a.account} failed: ${e instanceof Error ? e.message : String(e)}`);
         }
-        if (this.d.now() < deadline) this.watchSignIn(a, connectionId, deadline);
+        if (this.d.now() < deadline) this.watchSignIn(a, connectionId, deadline, name);
+        else this.signingIn.delete(userOf(a));
       })();
     });
   }
 
-  /** Reads who the connection is, once. A failure is retried with a growing wait and does not hold back anything else. */
+  /** The sign-in completed: the account is brought up at once, not at the next daily check. */
+  private async signedIn(a: ComposioAccount, connectionId: string, status: Connection["status"], name: string): Promise<void> {
+    const user = userOf(a);
+    this.signingIn.delete(user);
+    const staged = this.d.store.getState(this.stagedKey(user))?.split("|");
+    try {
+      if (staged !== undefined && staged[1] === connectionId) await this.completeSwap(a, connectionId, staged[0], status, staged[2]);
+      else this.d.store.composio.setAccount(user, { status });
+      await this.afterConnected(a, connectionId, name);
+    } catch (e) {
+      this.log(`bringing ${user} up after its sign-in failed: ${e instanceof Error ? e.message : String(e)}; the next daily check tries again`);
+    }
+  }
+
+  /**
+   * `&composio reconnect <toolkit>:<account>`: deletes the account's connection at Composio and what the daemon
+   * stored of it (its connection, identity and staged marker), then connects again: a new sign-in link for a
+   * managed or OAuth-app account, a fresh connection from the `.env` values for a key one. It puts right a sign-in
+   * made with the wrong account. The account's triggers are made again on the new connection by the usual sync.
+   */
+  async reconnect(name: string): Promise<string> {
+    const a = this.account(name);
+    if (a === undefined || !name.includes(":")) return `No Composio account ${name}.`;
+    const { api, store } = this.d;
+    const user = userOf(a);
+    const row = store.composio.account(user);
+    const staged = store.getState(this.stagedKey(user))?.split("|")[1];
+    try {
+      for (const t of store.composio.triggers(user)) {
+        await api.deleteTrigger(t.triggerId).catch((e) => {
+          if (!isNotFound(e)) throw e;
+        });
+        store.composio.deleteTrigger(user, t.slug, t.key);
+      }
+      for (const id of new Set([row?.connectionId, staged].filter((x): x is string => x !== undefined && x !== ""))) {
+        await api.deleteConnection(id).catch((e) => {
+          if (!isNotFound(e)) throw e;
+        });
+      }
+      // An OAuth app's auth config is the account's own: the new sign-in makes another.
+      if (row?.keyHash?.startsWith("oauth:") && row.authConfigId !== undefined) await api.deleteAuthConfig(row.authConfigId).catch(() => undefined);
+    } catch (e) {
+      return `Could not reconnect ${user}: ${e instanceof Error ? e.message : String(e)}. Nothing was changed that cannot be tried again.`;
+    }
+    store.composio.setAccount(user, { connectionId: undefined, keyHash: undefined, identity: undefined, status: undefined });
+    store.deleteState(this.stagedKey(user));
+    this.signingIn.delete(user);
+    for (const key of [...this.told]) if (key.includes(user)) this.told.delete(key);
+    void this.reconcileAccount(a).catch((e) => this.log(`reconnecting ${user} failed: ${e instanceof Error ? e.message : String(e)}`));
+    return `Reconnecting ${user}.`;
+  }
+
+  /**
+   * Reads who the connection is, once. A failure is retried with a growing wait and does not hold back anything else. One
+   * chain per account: a second call while one is running does nothing. A toolkit that cannot say who it is does not retry.
+   */
   private async learnIdentity(a: ComposioAccount, failures = 0): Promise<void> {
     const def = defFor(a.toolkit);
     const user = userOf(a);
-    if (def.identity === undefined || this.d.store.composio.account(user)?.identity) return;
+    if (a.selfIsUser || def.identity === undefined || this.d.store.composio.account(user)?.identity) return;
+    if (failures === 0 && this.learning.has(user)) return;
+    this.learning.add(user);
     try {
-      this.d.store.composio.setAccount(user, { identity: await def.identity(a, this) });
+      const id = await def.identity(a, this);
+      if (id !== undefined) this.d.store.composio.setAccount(user, { identity: id });
+      this.learning.delete(user);
     } catch (e) {
       this.log(`${user}: could not tell who the connection is yet (${e instanceof Error ? e.message : String(e)}); trying again`);
       this.d.schedule(Math.min(retryWait(failures + 1), 3_600_000), () => void this.learnIdentity(a, failures + 1));
@@ -464,6 +685,8 @@ export class Composio implements ToolkitHost {
         this.log(`the daily check of ${user} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    this.d.store.composio.pruneDeliveries(this.d.now());
+    this.d.store.composio.pruneReads(this.d.now());
     await this.reportDrift();
   }
 
@@ -500,18 +723,22 @@ export class Composio implements ToolkitHost {
 
   /** Tells, once, that a connection stopped: the calendar gets a new sign-in link, a key account the .env key to replace. */
   private async connectionProblem(a: ComposioAccount): Promise<void> {
-    if (a.apiKey === undefined) {
+    if (a.apiKeyName === undefined && a.fieldKeys === undefined) {
       // Once a day, never more: the daily check is what asks again.
       if (this.told.has(`signin:${userOf(a)}:${Math.floor(this.d.now() / DAY_MS)}`)) return;
       this.told.add(`signin:${userOf(a)}:${Math.floor(this.d.now() / DAY_MS)}`);
-      await this.signIn(a);
+      const auth = await this.resolveAuth(a);
+      if (auth === undefined || auth.choice.kind === "key" || auth.choice.kind === "none") return;
+      const secrets = secretsOf(a);
+      await this.signIn(a, auth.choice, secrets, authHash(auth.choice, secrets), auth.name, { reuse: true });
       return;
     }
     await this.tellOnce(`expired:${userOf(a)}`, a, this.connectionText(a));
   }
 
   private connectionText(a: ComposioAccount): string {
-    return `Composio is no longer accepting the connection for ${userOf(a)}. Replace ${a.apiKeyName ?? "its key"} in .env and restart the daemon.`;
+    const keys = a.apiKeyName ?? Object.values(a.fieldKeys ?? {}).join(", ");
+    return `Composio is no longer accepting the connection for ${userOf(a)}. Replace ${keys || "its key"} in .env and restart the daemon.`;
   }
 
   private async tellOnce(key: string, a: ComposioAccount, text: string): Promise<void> {

@@ -15,6 +15,14 @@ beforeEach(() => {
 });
 
 describe("Meter", () => {
+  it("says how much of a pool's calls and events is used, as fractions, for the recipe read budget", async () => {
+    expect(meter.used(true)).toEqual({ calls: 0, events: 0 });
+    await meter.count("call", "slack:work", true, ALLOWANCE.calls.managed * 0.8);
+    await meter.count("delivery", "slack:work", true, ALLOWANCE.events.managed * 0.25);
+    expect(meter.used(true)).toEqual({ calls: 0.8, events: 0.25 });
+    expect(meter.used(false)).toEqual({ calls: 0, events: 0 });
+  });
+
   it("counts tool calls and deliveries per calendar month, managed apps apart", async () => {
     await meter.count("call", "linear:proton", false, 3);
     await meter.count("call", "googlecalendar:personal", true, 2);

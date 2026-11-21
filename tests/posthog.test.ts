@@ -4,7 +4,7 @@ import { genericMapper } from "../src/sources/generic.js";
 import { posthogMapper } from "../src/sources/posthog.js";
 
 const NOW = 1_760_000_000_000;
-const posthog: ComposioAccount = { toolkit: "posthog", account: "app", clot: "app", shared: false, audience: "public", apiKey: "k", apiKeyName: "K", triggers: [], region: "us", projectId: 7, events: ["signup"] };
+const posthog: ComposioAccount = { toolkit: "posthog", account: "app", clot: "app", shared: false, audience: "public", apiKey: "k", apiKeyName: "K", triggers: [], selfIsUser: false, region: "us", projectId: 7, events: ["signup"] };
 
 // The shape of Composio's PostHog trigger, per its published payload schema.
 const captured = {
@@ -50,7 +50,7 @@ describe("posthogMapper", () => {
 });
 
 describe("genericMapper", () => {
-  const slack: ComposioAccount = { toolkit: "slack", account: "work", shared: true, audience: "team", apiKey: "k", apiKeyName: "K", triggers: [{ slug: "SLACK_RECEIVE_MESSAGE", config: {} }] };
+  const slack: ComposioAccount = { toolkit: "slack", account: "work", shared: true, audience: "team", apiKey: "k", apiKeyName: "K", triggers: [{ slug: "SLACK_RECEIVE_MESSAGE", config: {} }], selfIsUser: false };
 
   it("makes a trigger event of the toolkit's source, from an outsider, keyed on the delivery", () => {
     const mapped = genericMapper(slack, "SLACK_RECEIVE_MESSAGE", { text: "hello", user: "U1" }, "msg_9", NOW)!;

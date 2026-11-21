@@ -11,6 +11,7 @@ import { LINEAR } from "./toolkits/linear.js";
 import { NOTION } from "./toolkits/notion.js";
 import { INVERSES } from "./undo.js";
 import { userOf } from "./toolkits/index.js";
+import { fillKey } from "../paths.js";
 
 /** The limits of `composio_run`. */
 export const LIMITS = { argsChars: 6_000, perTurn: 30, perClotDay: 300, outsiderReviewsPerClotDay: 10, resultChars: 4_000, logArgsChars: 200 };
@@ -116,6 +117,22 @@ export class ComposioActions {
     ].join("\n");
   }
 
+  /**
+   * Counts one Composio call against this turn's and this Clot's day's limits. Undefined when it may go ahead; else the
+   * refusal. `composio_run` counts each call here, and so does each read `composio_try` makes on the account.
+   */
+  countCall(ctx: ActionContext): string | undefined {
+    const { store } = this.d;
+    const turnCount = (this.perTurn.get(ctx) ?? 0) + 1;
+    if (turnCount > LIMITS.perTurn) return `Refused: ${LIMITS.perTurn} Composio calls were made in this turn, which is the limit.`;
+    const dayKey = `composio.calls.${ctx.clot}.${day(this.d.now())}`;
+    const today = Number(store.getState(dayKey) ?? "0") + 1;
+    if (today > LIMITS.perClotDay) return `Refused: ${LIMITS.perClotDay} Composio calls were made today by this Clot, which is the limit.`;
+    this.perTurn.set(ctx, turnCount);
+    store.setState(dayKey, String(today));
+    return undefined;
+  }
+
   async run(ctx: ActionContext, a: { account: string; tool: string; args: Record<string, unknown> }): Promise<string> {
     const { composio, store } = this.d;
     const account = composio.account(a.account);
@@ -142,19 +159,11 @@ export class ComposioActions {
       outcome("refused");
       return `Refused: the arguments are too large to show the user in full (over ${LIMITS.argsChars.toLocaleString("en-US")} characters); split the call.`;
     }
-    const turnCount = (this.perTurn.get(ctx) ?? 0) + 1;
-    if (turnCount > LIMITS.perTurn) {
+    const limit = this.countCall(ctx);
+    if (limit !== undefined) {
       outcome("refused");
-      return `Refused: ${LIMITS.perTurn} Composio calls were made in this turn, which is the limit.`;
+      return limit;
     }
-    const dayKey = `composio.calls.${ctx.clot}.${day(this.d.now())}`;
-    const today = Number(store.getState(dayKey) ?? "0") + 1;
-    if (today > LIMITS.perClotDay) {
-      outcome("refused");
-      return `Refused: ${LIMITS.perClotDay} Composio calls were made today by this Clot, which is the limit.`;
-    }
-    this.perTurn.set(ctx, turnCount);
-    store.setState(dayKey, String(today));
 
     if (reads) {
       const result = await composio.run(account, tool.slug, args);
@@ -266,7 +275,10 @@ export class ComposioActions {
     const target = targetOf(o.args);
     const verb = slug.toUpperCase().split("_")[1] ?? "";
     const createdIds = WRITE_CREATES.includes(verb) ? [...ids] : [];
-    store.composio.finishWrite(id, { outcome: "ran", result: result.data, touched: [...new Set([...ids, ...(target ? [target] : [])])], created: createdIds });
+    // A service that does not mark its writes with an ID field (a Slack post answers `channel` and `ts`) says, in its recipe, which IDs to record.
+    const own = composio.recipe(o.account.toolkit)?.ownWrites?.find((w) => w.tool === slug);
+    const ownIds = own === undefined ? [] : own.ids.flatMap((template) => fillKey(template, { args: o.args, result: result.data }) ?? []);
+    store.composio.finishWrite(id, { outcome: "ran", result: result.data, touched: [...new Set([...ids, ...(target ? [target] : []), ...ownIds])], created: createdIds });
     const made = inverse?.build({ args: o.args, result: result.data, before });
     if (made !== undefined) store.composio.setWriteInverse(id, made);
 

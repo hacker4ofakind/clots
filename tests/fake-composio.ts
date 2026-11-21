@@ -1,4 +1,9 @@
+import fs from "node:fs";
 import type { ComposioApi, Connection, ExecResult, ToolInfo, TriggerInstance } from "../src/composio/api.js";
+import type { AuthChoice, ToolkitInfo } from "../src/composio/auth.js";
+
+/** Composio's recorded metadata for a toolkit (tests/fixtures/composio/meta). */
+export const toolkitMeta = (slug: string): { info: ToolkitInfo; triggers: { slug: string; type: string; config?: unknown }[] } => JSON.parse(fs.readFileSync(new URL(`./fixtures/composio/meta/${slug}.json`, import.meta.url), "utf8"));
 
 /** A fake of the Composio API that records what it is asked and keeps what it is given, for every test above the seam. */
 export class FakeComposioApi implements ComposioApi {
@@ -36,11 +41,29 @@ export class FakeComposioApi implements ComposioApi {
     return this.calls.filter((c) => c === method || c.startsWith(`${method}:`));
   }
 
-  async ensureAuthConfig(toolkit: string, scheme: "API_KEY" | "MANAGED"): Promise<string> {
+  /** Toolkits whose metadata is read from a fixture; a test can put its own in `meta`. */
+  meta = new Map<string, ToolkitInfo>();
+  /** Auth configs deleted, by ID. */
+  deletedAuthConfigs: string[] = [];
+
+  async toolkitInfo(slug: string): Promise<ToolkitInfo> {
+    this.enter("toolkitInfo", slug);
+    return this.meta.get(slug) ?? toolkitMeta(slug).info;
+  }
+
+  async ensureAuthConfig(toolkit: string, choice: AuthChoice, _secrets: Record<string, string>): Promise<string> {
+    const scheme = choice.kind === "key" ? choice.scheme : choice.kind === "managed" ? "MANAGED" : "OAUTH_APP";
     this.enter("ensureAuthConfig", `${toolkit}/${scheme}`);
     const key = `${toolkit}/${scheme}`;
+    // An OAuth app's auth config is the account's own, made anew each time; the others are adopted.
+    if (choice.kind === "oauthApp") return this.id("ac");
     if (!this.authConfigs.has(key)) this.authConfigs.set(key, this.id("ac"));
     return this.authConfigs.get(key)!;
+  }
+
+  async deleteAuthConfig(id: string): Promise<void> {
+    this.enter("deleteAuthConfig", id);
+    this.deletedAuthConfigs.push(id);
   }
 
   async findConnection(user: string, toolkit: string): Promise<Connection | undefined> {
@@ -50,9 +73,10 @@ export class FakeComposioApi implements ComposioApi {
     return c && { id: c.id, status: c.status };
   }
 
-  async connectWithKey(user: string, _authConfigId: string, key: string, extra?: Record<string, string>): Promise<Connection> {
-    this.enter("connectWithKey", `${user}${extra ? " " + JSON.stringify(extra) : ""}`);
-    const c = { id: this.id("ca"), status: "active" as const, user, key, toolkit: user.split(":")[0] };
+  async connectWithKey(user: string, _authConfigId: string, scheme: string, fields: Record<string, string>): Promise<Connection> {
+    const { generic_api_key: key, ...extra } = fields;
+    this.enter("connectWithKey", `${user}${Object.keys(extra).length > 0 || scheme !== "API_KEY" || key === undefined ? " " + JSON.stringify({ ...(scheme === "API_KEY" ? {} : { scheme }), ...extra, ...(key === undefined ? {} : { generic_api_key: "…" }) }) : ""}`);
+    const c = { id: this.id("ca"), status: "active" as const, user, key: key ?? JSON.stringify(fields), toolkit: user.split(":")[0] };
     this.connections.set(c.id, c);
     return { id: c.id, status: c.status };
   }
@@ -130,6 +154,26 @@ export class FakeComposioApi implements ComposioApi {
   async search(toolkit: string, query: string): Promise<ToolInfo[]> {
     this.enter("search", `${toolkit} ${query}`);
     return [...this.tools.values()].filter((t) => t.toolkit === toolkit && (t.slug + t.name + t.description).toLowerCase().includes(query.toLowerCase()));
+  }
+
+  /** Trigger types by toolkit, when a test wants others than the recorded ones. */
+  triggerTypes = new Map<string, { slug: string; type: "webhook" | "poll" }[]>();
+  /** Trigger type details by slug. */
+  triggerDetails = new Map<string, { slug: string; name: string; type: string; config: unknown; payload: unknown }>();
+
+  async toolkitTools(toolkit: string, limit: number): Promise<ToolInfo[]> {
+    this.enter("toolkitTools", toolkit);
+    return [...this.tools.values()].filter((t) => t.toolkit === toolkit).slice(0, limit);
+  }
+
+  async toolkitTriggers(toolkit: string): Promise<{ slug: string; type: "webhook" | "poll" }[]> {
+    this.enter("toolkitTriggers", toolkit);
+    return this.triggerTypes.get(toolkit) ?? toolkitMeta(toolkit).triggers.map((t) => ({ slug: t.slug, type: t.type === "poll" ? ("poll" as const) : ("webhook" as const) }));
+  }
+
+  async triggerType(slug: string): Promise<{ slug: string; name: string; type: string; config: unknown; payload: unknown } | undefined> {
+    this.enter("triggerType", slug);
+    return this.triggerDetails.get(slug);
   }
 
   async execute(user: string, toolkit: string, slug: string, args: Record<string, unknown>): Promise<ExecResult> {

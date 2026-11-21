@@ -16,7 +16,7 @@ const NOW = Date.UTC(2026, 10, 19, 17, 40, 0);
 const fixture = JSON.parse(fs.readFileSync("tests/fixtures/composio/linear/01-composio.trigger.message.LINEAR_PRIVATE_TEAM_ISSUE_CREATED.json", "utf8"));
 const RAW: string = fixture.raw;
 
-const base = { shared: false, audience: "team" as const, triggers: [] };
+const base = { shared: false, audience: "team" as const, triggers: [], selfIsUser: false };
 const linear: ComposioAccount = { ...base, toolkit: "linear", account: "proton", shared: true, apiKey: "k", apiKeyName: "K" };
 const slack: ComposioAccount = { ...base, toolkit: "slack", account: "work", shared: true, apiKey: "k", apiKeyName: "K", triggers: [{ slug: "SLACK_MSG", config: {} }] };
 const notion: ComposioAccount = { ...base, toolkit: "notion", account: "main", shared: true, apiKey: "k", apiKeyName: "K" };
@@ -177,6 +177,70 @@ describe("composioHandler", () => {
     const ignored = JSON.stringify({ ...fixture.body, metadata: { ...fixture.body.metadata, connected_account_id: "ca_notion" } });
     store.composio.setAccount("notion:main", { connectionId: "ca_notion" });
     expect(await handlerFor()(request(ignored, sign(ignored)))).toEqual({ status: 200, text: "ignored" });
+  });
+
+  describe("the deliveries it keeps", () => {
+    const slackBody = (id: string) => JSON.stringify({ ...fixture.body, metadata: { ...fixture.body.metadata, trigger_slug: "SLACK_MSG", toolkit_slug: "slack", connected_account_id: "ca_slack" }, data: { text: id } });
+    const withKeep = (extra: Partial<Parameters<typeof composioHandler>[0]> = {}) =>
+      composioHandler({
+        composio,
+        secret: () => SECRET,
+        mappers: { linear: linearMapper, generic: genericMapper },
+        insertEvent: (e) => (stored.some((s) => s.id === e.id) ? false : (stored.push(e), true)),
+        now: () => NOW,
+        log: () => {},
+        keep: (d) => store.composio.keepDelivery(d),
+        transaction: (fn) => store.inTransaction(fn),
+        ...extra,
+      });
+
+    it("keeps a delivery of a toolkit with no built-in mapper, with the ID of the event it became", async () => {
+      store.composio.setAccount("slack:work", { connectionId: "ca_slack" });
+      const body = slackBody("one");
+      await withKeep()(request(body, sign(body)));
+      const row = store.composio.samples("slack:work")[0];
+      expect(row).toMatchObject({ slug: "SLACK_MSG", eventId: `composio:${fixture.headers["webhook-id"]}`, user: "slack:work" });
+      expect(JSON.parse(row.payload)).toEqual({ text: "one" });
+    });
+
+    it("keeps none of a built-in toolkit's: Linear's events already say what they are", async () => {
+      await withKeep()(request(RAW, sign(RAW)));
+      expect(store.composio.samples("linear:proton")).toEqual([]);
+    });
+
+    it("keeps a delivery nothing mapped, with no event ID, so it can still be a sample", async () => {
+      store.composio.setAccount("slack:work", { connectionId: "ca_slack" });
+      const body = slackBody("two");
+      const answer = await withKeep({ mappers: { linear: linearMapper } })(request(body, sign(body)));
+      // The account names triggers but no generic mapper is wired here: nothing is stored.
+      expect(answer).toEqual({ status: 200, text: "ignored" });
+      expect(store.composio.samples("slack:work")[0].eventId).toBe("");
+    });
+
+    it("keeps a repeat of an event with no event ID, so the first delivery stays the event's", async () => {
+      store.composio.setAccount("slack:work", { connectionId: "ca_slack" });
+      const body = slackBody("three");
+      await withKeep()(request(body, sign(body, { id: "msg_a" })));
+      // The same event again under another webhook ID: the generic mapper keys on the delivery, so it is a new event; use a mapper keyed on the payload instead.
+      const keyed = withKeep({ mappers: { generic: (a, s, d, w, r) => ({ ...genericMapper(a, s, d, w, r)!, event: { ...genericMapper(a, s, d, w, r)!.event, id: "slack:work:same" } }) } });
+      await keyed(request(body, sign(body, { id: "msg_b" })));
+      await keyed(request(body, sign(body, { id: "msg_c" })));
+      expect(store.composio.delivery("msg_b")!.eventId).toBe("slack:work:same");
+      expect(store.composio.delivery("msg_c")!.eventId).toBe("");
+      expect(store.composio.deliveryByEvent("slack:work:same")!.webhookId).toBe("msg_b");
+    });
+
+    it("stores the event and the delivery together, or neither", async () => {
+      store.composio.setAccount("slack:work", { connectionId: "ca_slack" });
+      const body = slackBody("four");
+      const failing = withKeep({
+        insertEvent: () => {
+          throw new Error("disk full");
+        },
+      });
+      await expect(failing(request(body, sign(body)))).rejects.toThrow("disk full");
+      expect(store.composio.samples("slack:work")).toEqual([]);
+    });
   });
 
   it("ignores a trigger the mapper does not map", async () => {

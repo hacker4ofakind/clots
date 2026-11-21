@@ -11,10 +11,14 @@
 //   exec <toolkit> <slug> [argsJson]        runs one tool through a session with the sandbox off
 //   calendar                     assumption 6: creates a repeating event, lists occurrences, cancels one, deletes the series, deletes everything it made
 //   triggers                     lists the trigger instances of every spike user
-//   cleanup                      deletes every trigger, connection and auth config the spike made
+//   cleanup [toolkit]            deletes every trigger, connection and auth config the spike made
+// Follow-up (any toolkit) steps:
+//   toolkit <slug> [--save]      prints Composio's metadata for a toolkit as the daemon reads it (ToolkitInfo, trigger types, one trigger's payload schema); --save writes tests/fixtures/composio/meta/<slug>.json
+//   link <slug> [triggerSlug configJson]   makes a managed sign-in link for user spike:<slug>, waits for the sign-in, makes the trigger when one is given, and waits for you to press Ctrl+C; then deletes its trigger, connection and the sign-in's leftovers
 import crypto from "node:crypto";
 import fs from "node:fs";
 import { AuthScheme, Composio, ToolRouterCreateSessionConfigSchema } from "@composio/core";
+import { toolkitInfoFrom } from "../src/composio/auth.js";
 
 const OUT = ".spike-2e";
 fs.mkdirSync(OUT, { recursive: true });
@@ -99,8 +103,10 @@ async function session(toolkit: string) {
   return composio.create(userOf(toolkit), config);
 }
 
-const step = process.argv[2];
-const [toolkit, slug, json] = process.argv.slice(3);
+const save = process.argv.includes("--save");
+const args = process.argv.filter((a) => a !== "--save");
+const step = args[2];
+const [toolkit, slug, json] = args.slice(3);
 
 if (step === "offline") {
   const secret = "whsec_test";
@@ -235,7 +241,7 @@ if (step === "offline") {
       console.log("deleted trigger", i.id);
     }
   }
-  for (const t of TOOLKITS) {
+  for (const t of [...TOOLKITS, toolkit].filter((x): x is string => Boolean(x))) {
     const list = await composio.connectedAccounts.list({ userIds: [userOf(t)] });
     for (const c of list.items ?? []) {
       await attempt(`delete connection ${c.id}`, () => composio.connectedAccounts.delete(c.id));
@@ -243,6 +249,52 @@ if (step === "offline") {
     }
   }
   console.log("Auth configs are left in place (the daemon adopts them); delete them in the dashboard if you want a clean project.");
+} else if (step === "toolkit") {
+  if (!apiKey) throw new Error("COMPOSIO_API_KEY is not set in .env");
+  const raw: any = await composio.toolkits.get(toolkit);
+  const info = toolkitInfoFrom(raw);
+  show("toolkit info", info);
+  const types: any = await attempt("trigger types", () => composio.triggers.listTypes({ toolkits: [toolkit], limit: 100 }));
+  const triggers = ((types as any)?.items ?? []).map((x: any) => ({ slug: x.slug, type: x.type, config: x.config }));
+  show("trigger types (slug, type)", triggers.map((t: any) => `${t.slug} ${t.type}`));
+  let payloadField: string | undefined;
+  if (triggers[0]) {
+    const detail: any = await attempt("trigger type detail", () => composio.triggers.getType(triggers[0].slug));
+    payloadField = ["payload", "payloadSchema", "payload_schema"].find((f) => detail?.[f] !== undefined);
+    console.log(`getType(${triggers[0].slug}) keys: ${Object.keys(detail ?? {}).join(", ")}; payload schema field: ${payloadField ?? "none"}`);
+  }
+  if (save) {
+    const dir = "tests/fixtures/composio/meta";
+    fs.mkdirSync(dir, { recursive: true });
+    const keepConfig = toolkit === "slack";
+    fs.writeFileSync(`${dir}/${toolkit}.json`, JSON.stringify({ info, triggers: triggers.map((t: any) => ({ slug: t.slug, type: t.type, ...(keepConfig ? { config: t.config } : {}) })), ...(payloadField ? { payloadSchemaField: payloadField } : {}) }, null, 2) + "\n");
+    console.log(`saved ${dir}/${toolkit}.json`);
+  }
+} else if (step === "link") {
+  if (!apiKey) throw new Error("COMPOSIO_API_KEY is not set in .env");
+  const user = userOf(toolkit);
+  const existing: any = await composio.authConfigs.list({ toolkit });
+  const found = (existing.items ?? []).find((c: any) => c.isComposioManaged === true && c.status !== "DISABLED");
+  const authConfigId = found?.id ?? (await composio.authConfigs.create(toolkit, { type: "use_composio_managed_auth" })).id;
+  const request = await composio.connectedAccounts.link(user, authConfigId);
+  console.log(`\nSIGN IN HERE: ${request.redirectUrl}\n(waiting up to 10 minutes; use the Clots' own account if there is one)`);
+  const account = await composio.connectedAccounts.waitForConnection(request.id, 10 * 60_000);
+  show("connection", { id: account.id, status: account.status });
+  let triggerId: string | undefined;
+  if (slug) {
+    const created: any = await attempt("trigger create", () => composio.triggers.create(user, slug, { connectedAccountId: account.id, triggerConfig: json ? JSON.parse(json) : {} }));
+    triggerId = created?.triggerId;
+    show("trigger instance", created);
+  }
+  console.log("Connected. Run scripts/capture-2e.ts to record deliveries; press Ctrl+C here to clean up.");
+  const cleanup = async () => {
+    if (triggerId) await attempt("delete trigger", () => composio.triggers.delete(triggerId!));
+    await attempt("delete connection", () => composio.connectedAccounts.delete(account.id));
+    console.log("cleaned up");
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void cleanup());
+  setInterval(() => {}, 1 << 30); // keeps the process alive until Ctrl+C
 } else {
   console.log("Unknown step. See the header of this file.");
 }

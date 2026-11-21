@@ -1,9 +1,15 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { Composio } from "../src/composio/component.js";
+import { composioHub } from "../src/composio/hub.js";
+import type { ComposioAccount } from "../src/config.js";
+import { Supervisor } from "../src/listeners.js";
+import { FakeComposioApi, tool } from "./fake-composio.js";
 import type { ClotEvent } from "../src/events/types.js";
 import type { ToolInfo, ToolResult } from "../src/mcp/hub.js";
-import type { WatchRecipe } from "../src/rulebook.js";
+import { parseWatch, watchTarget, type WatchRecipe } from "../src/rulebook.js";
 import { Store } from "../src/store.js";
-import { compare, fillPaths, itemsOf, MAX_ITEMS, pathGet, readResult, tryRecipe, watchEvent, Watcher } from "../src/watch.js";
+import { fillPaths, pathGet } from "../src/paths.js";
+import { compare, itemsOf, MAX_ITEMS, readResult, tryRecipe, watchEvent, Watcher } from "../src/watch.js";
 
 const recipe: WatchRecipe = { name: "notion-feedback", server: "notion", tool: "search", arguments: { query: "Feedback" }, items: "results", id: "id", title: "{title}", url: "{url}", ignore: ["last_seen"], every: 5, report: "added" };
 const result = (items: unknown[]): ToolResult => ({ text: JSON.stringify({ results: items }), isError: false });
@@ -86,7 +92,7 @@ describe("Watcher", () => {
     listTools: async () => tools,
     callTool: async () => result(items),
   };
-  const watcher = (r: WatchRecipe = recipe) => new Watcher({ recipe: r, hub, store, deliver: (event) => void delivered.push(event), now: () => 1000 });
+  const watcher = (r: WatchRecipe = recipe) => new Watcher({ recipe: r, hubFor: () => hub, store, deliver: (event) => void delivered.push(event), now: () => 1000 });
 
   beforeEach(() => {
     store = new Store(":memory:");
@@ -147,20 +153,93 @@ describe("Watcher", () => {
   it("says once when a call gives the most items it compares", async () => {
     const told: string[] = [];
     items = Array.from({ length: MAX_ITEMS + 5 }, (_, i) => page(`p${i}`, "t"));
-    const capped = () => new Watcher({ recipe, hub, store, deliver: () => undefined, now: () => 1000, tell: async (text) => void told.push(text) });
+    const capped = () => new Watcher({ recipe, hubFor: () => hub, store, deliver: () => undefined, now: () => 1000, tell: async (text) => void told.push(text) });
     await capped().run();
     await capped().run();
     expect(told).toEqual([`The watch recipe notion-feedback found ${MAX_ITEMS} items or more; only the first ${MAX_ITEMS} are compared.`]);
   });
 
   it("can be tried without recording anything", async () => {
-    const text = await tryRecipe(hub, recipe);
+    const text = await tryRecipe(() => hub, recipe);
     expect(text).toContain("1 item");
     expect(text).toContain('"title":"A"');
     expect(store.statesWithPrefix("watch:")).toEqual([]);
     tools = [{ name: "search", description: "", readOnly: false }];
-    expect(await tryRecipe(hub, recipe)).toContain("Refused");
+    expect(await tryRecipe(() => hub, recipe)).toContain("Refused");
     // notReadOnly is the user's yes to a saved recipe; a draft that says it is still refused.
-    expect(await tryRecipe(hub, { ...recipe, notReadOnly: true })).toContain("Refused");
+    expect(await tryRecipe(() => hub, { ...recipe, notReadOnly: true })).toContain("Refused");
+  });
+});
+
+describe("a watch on a Composio account", () => {
+  const reddit = { name: "new-posts", account: "reddit:me", tool: "REDDIT_GET_NEW_POSTS", arguments: { subreddit: "typescript" }, items: "posts", id: "id", title: "{title}", url: "{url}", ignore: [], every: 15, report: "added" as const };
+  const post = (id: string, title: string) => ({ id, title, url: `https://reddit.com/${id}` });
+  const accounts: ComposioAccount[] = [{ toolkit: "reddit", account: "me", shared: true, audience: "private", triggers: [], selfIsUser: false }];
+  let store: Store;
+  let api: FakeComposioApi;
+  let composio: Composio;
+  let delivered: ClotEvent[];
+  let posts: unknown[];
+
+  beforeEach(() => {
+    store = new Store(":memory:");
+    api = new FakeComposioApi();
+    composio = new Composio({ api, store, accounts, publicUrl: "https://x.example", tell: async () => {}, tellHome: async () => {}, now: () => 1000, schedule: () => () => {}, supervisor: new Supervisor({ schedule: () => () => {} }), log: () => {} });
+    delivered = [];
+    posts = [post("t3_a", "First")];
+    api.tools.set("REDDIT_GET_NEW_POSTS", tool("REDDIT_GET_NEW_POSTS", ["readOnlyHint"]));
+    api.answers.set("REDDIT_GET_NEW_POSTS", () => ({ ok: true, data: { posts } }));
+  });
+
+  const watcher = (r = reddit, extra: { active?: () => boolean } = {}) => new Watcher({ recipe: r, hubFor: () => composioHub(composio), store, deliver: (e) => void delivered.push(e), now: () => 1000, ...extra });
+
+  it("reports new items as item_added, from an outsider, with the account as the place", async () => {
+    await watcher().run();
+    expect(delivered).toEqual([]);
+    posts = [post("t3_b", "Second"), post("t3_a", "First")];
+    await watcher().run();
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ kind: "item_added", source: "new-posts", place: "reddit:me", title: "Second", url: "https://reddit.com/t3_b", outsider: true, automated: true });
+    expect(api.of("execute")[0]).toContain('{"subreddit":"typescript"}');
+  });
+
+  it("refuses a write tool at run, as a non-read MCP tool is, and calls nothing", async () => {
+    api.tools.set("REDDIT_CREATE_POST", tool("REDDIT_CREATE_POST", ["createHint"]));
+    await expect(watcher({ ...reddit, tool: "REDDIT_CREATE_POST" }).run()).rejects.toThrow("does not declare itself read-only");
+    expect(api.of("execute")).toEqual([]);
+  });
+
+  it("refuses a tool of another toolkit or one Composio does not know", async () => {
+    await expect(watcher({ ...reddit, tool: "REDDIT_NO_SUCH_TOOL" }).run()).rejects.toThrow("reddit:me has no tool named REDDIT_NO_SUCH_TOOL");
+    api.tools.set("SLACK_LIST_ALL_USERS", tool("SLACK_LIST_ALL_USERS", ["readOnlyHint"]));
+    await expect(watcher({ ...reddit, tool: "SLACK_LIST_ALL_USERS" }).run()).rejects.toThrow("has no tool named");
+  });
+
+  it("skips the run while the account is not signed in, and fails the run when the call fails", async () => {
+    await watcher(reddit, { active: () => false }).run();
+    expect(api.of("execute")).toEqual([]);
+    api.answers.set("REDDIT_GET_NEW_POSTS", { ok: false, error: "rate limited", reason: "cap" });
+    await expect(watcher().run()).rejects.toThrow("the tool reported an error: rate limited");
+  });
+
+  it("can be tried: shows the items, refuses a write tool", async () => {
+    expect(await tryRecipe(() => composioHub(composio), reddit)).toContain("1 item");
+    api.tools.set("REDDIT_CREATE_POST", tool("REDDIT_CREATE_POST", ["createHint"]));
+    expect(await tryRecipe(() => composioHub(composio), { ...reddit, tool: "REDDIT_CREATE_POST" })).toContain("Refused");
+  });
+
+  it("is checked by the schema: an interval under 15 minutes, notReadOnly, a tool of another toolkit, and server with account", () => {
+    expect(parseWatch(reddit).every).toBe(15);
+    expect(() => parseWatch({ ...reddit, every: 5 })).toThrow("every 15 minutes or less often");
+    expect(() => parseWatch({ ...reddit, notReadOnly: true })).toThrow("notReadOnly does not apply");
+    expect(() => parseWatch({ ...reddit, tool: "SLACK_LIST_ALL_USERS" })).toThrow("begins REDDIT_");
+    expect(() => parseWatch({ ...reddit, server: "notion" })).toThrow("either server");
+    expect(() => parseWatch({ ...reddit, account: undefined })).toThrow("either server");
+    expect(() => parseWatch({ ...reddit, account: "reddit" })).toThrow("<toolkit>:<account>");
+  });
+
+  it("names its target as the account, for an event's place and the baseline", () => {
+    expect(watchTarget(reddit)).toBe("reddit:me");
+    expect(watchTarget(recipe)).toBe("notion");
   });
 });

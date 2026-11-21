@@ -4,7 +4,7 @@ import { DAEMON_TOOL_PREFIX, lockDecision, lockHookAnswer } from "../src/agent/c
 describe("the lock and the daemon's tools", () => {
   it("approves every tool of the daemon's own server", () => {
     expect(DAEMON_TOOL_PREFIX).toBe("mcp__clots__");
-    for (const name of ["rulebook_show", "rulebook_prefilter", "rulebook_guidance", "rulebook_standing", "send_from_template", "start_session", "message_worker", "composio_find", "composio_run", "stop_worker"]) {
+    for (const name of ["rulebook_show", "rulebook_prefilter", "rulebook_guidance", "rulebook_standing", "send_from_template", "start_session", "message_worker", "composio_find", "composio_run", "composio_toolkit", "composio_samples", "composio_try", "rulebook_composio", "stop_worker"]) {
       expect(lockDecision(`mcp__clots__${name}`, {})).toEqual({ ok: true });
       expect(lockHookAnswer(`mcp__clots__${name}`, {})).toEqual({});
     }

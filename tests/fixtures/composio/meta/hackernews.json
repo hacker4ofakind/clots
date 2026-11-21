@@ -1,0 +1,10 @@
+{
+  "info": {
+    "slug": "hackernews",
+    "name": "Hacker News",
+    "managed": [],
+    "schemes": [],
+    "noAuth": true
+  },
+  "triggers": []
+}

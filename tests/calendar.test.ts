@@ -10,7 +10,7 @@ import { wallClock } from "../src/time.js";
 import { FakeComposioApi } from "./fake-composio.js";
 
 const ZONE = "Europe/Zurich";
-const account: CalendarAccount = { toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], leadMinutes: [1440], pollMinutes: 5 };
+const account: CalendarAccount = { toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], selfIsUser: false, leadMinutes: [1440], pollMinutes: 5 };
 const at = (iso: string) => new Date(iso);
 const zurich = (day: string, time: string) => ({ dateTime: `${day}T${time}:00+02:00`, timeZone: ZONE });
 

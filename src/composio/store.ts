@@ -33,7 +33,46 @@ CREATE TABLE IF NOT EXISTS composio_writes (
   created TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS composio_writes_clot ON composio_writes (clot, id);
+CREATE TABLE IF NOT EXISTS composio_deliveries (
+  webhook_id TEXT PRIMARY KEY,
+  user TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  clipped INTEGER NOT NULL DEFAULT 0,
+  received_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS composio_deliveries_event ON composio_deliveries (event_id);
+CREATE INDEX IF NOT EXISTS composio_deliveries_user ON composio_deliveries (user, slug, received_at);
+CREATE TABLE IF NOT EXISTS composio_reads (
+  account TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  args_hash TEXT NOT NULL,
+  data TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (account, tool, args_hash)
+);
 `;
+
+/** How many payloads of each trigger of each account are kept, and for how long. A delivery younger than the grace is never pruned, so its enrichment can still read it. */
+export const DELIVERY_KEEP = { perTrigger: 5, maxAgeMs: 7 * 86_400_000, graceMs: 60 * 60_000, payloadChars: 64_000 };
+/** A recipe read's data is served from the store for this long. */
+export const READ_CACHE_MS = 24 * 3_600_000;
+
+/** A trigger delivery kept for samples and for enrichment. */
+export interface DeliveryRow {
+  webhookId: string;
+  /** `<toolkit>:<account>` */
+  user: string;
+  slug: string;
+  /** The event the delivery became, or "" when none was stored. */
+  eventId: string;
+  /** The delivery's `data` as JSON text, clipped at 64,000 characters. */
+  payload: string;
+  /** The payload was longer and has been cut: it is no longer JSON. */
+  clipped: boolean;
+  receivedAt: number;
+}
 
 export interface ComposioAccountRow {
   /** `<toolkit>:<account>`: the Composio user. */
@@ -97,6 +136,10 @@ function toWrite(r: any): ComposioWriteRow {
     touched: JSON.parse(r.touched),
     created: JSON.parse(r.created),
   };
+}
+
+function toDelivery(r: any): DeliveryRow {
+  return { webhookId: r.webhook_id, user: r.user, slug: r.slug, eventId: r.event_id, payload: r.payload, clipped: r.clipped === 1, receivedAt: r.received_at };
 }
 
 function toTrigger(r: any): ComposioTriggerRow {
@@ -211,6 +254,75 @@ export class ComposioStore {
   /** Whether a Clot's own write created the object. */
   createdByClot(account: string, objectId: string): boolean {
     return this.db.prepare("SELECT 1 FROM composio_writes, json_each(composio_writes.created) WHERE account = ? AND json_each.value = ? LIMIT 1").get(account, objectId) !== undefined;
+  }
+
+  /**
+   * Keeps a trigger delivery (once per webhook ID), then prunes: per account and trigger the newest 5 stay, with anything
+   * younger than an hour; anything older than 7 days goes. `payload` is clipped to 64,000 characters.
+   */
+  keepDelivery(d: Omit<DeliveryRow, "payload" | "clipped"> & { payload: unknown }): void {
+    const text = typeof d.payload === "string" ? d.payload : JSON.stringify(d.payload ?? null);
+    const clipped = text.length > DELIVERY_KEEP.payloadChars;
+    this.db
+      .prepare("INSERT OR IGNORE INTO composio_deliveries (webhook_id, user, slug, event_id, payload, clipped, received_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(d.webhookId, d.user, d.slug, d.eventId, clipped ? text.slice(0, DELIVERY_KEEP.payloadChars) : text, clipped ? 1 : 0, d.receivedAt);
+    this.pruneDeliveries(d.receivedAt);
+  }
+
+  /** The delivery an event came from, by the event's ID. */
+  deliveryByEvent(eventId: string): DeliveryRow | undefined {
+    if (eventId === "") return undefined;
+    const r = this.db.prepare("SELECT * FROM composio_deliveries WHERE event_id = ? ORDER BY received_at LIMIT 1").get(eventId);
+    return r ? toDelivery(r) : undefined;
+  }
+
+  /** The kept deliveries of an account, newest first, at most 5 per trigger; of one trigger when `slug` is given. */
+  samples(user: string, slug?: string): DeliveryRow[] {
+    const rows = (slug === undefined
+      ? this.db.prepare("SELECT * FROM composio_deliveries WHERE user = ? ORDER BY received_at DESC, rowid DESC").all(user)
+      : this.db.prepare("SELECT * FROM composio_deliveries WHERE user = ? AND slug = ? ORDER BY received_at DESC, rowid DESC").all(user, slug)) as any[];
+    const perSlug = new Map<string, number>();
+    return rows.map(toDelivery).filter((r) => {
+      const n = (perSlug.get(r.slug) ?? 0) + 1;
+      perSlug.set(r.slug, n);
+      return n <= DELIVERY_KEEP.perTrigger;
+    });
+  }
+
+  /** One kept delivery by its webhook ID. */
+  delivery(webhookId: string): DeliveryRow | undefined {
+    const r = this.db.prepare("SELECT * FROM composio_deliveries WHERE webhook_id = ?").get(webhookId);
+    return r ? toDelivery(r) : undefined;
+  }
+
+  /** Prunes by the rules of `keepDelivery`. Runs on each insert and in the daily check. */
+  pruneDeliveries(now: number): void {
+    this.db.prepare("DELETE FROM composio_deliveries WHERE received_at < ?").run(now - DELIVERY_KEEP.maxAgeMs);
+    this.db
+      .prepare(
+        `DELETE FROM composio_deliveries WHERE received_at < ? AND webhook_id IN (
+           SELECT webhook_id FROM (
+             SELECT webhook_id, ROW_NUMBER() OVER (PARTITION BY user, slug ORDER BY received_at DESC, rowid DESC) AS n FROM composio_deliveries
+           ) WHERE n > ?
+         )`,
+      )
+      .run(now - DELIVERY_KEEP.graceMs, DELIVERY_KEEP.perTrigger);
+  }
+
+  /** A recipe read's data, when it was read within the last 24 hours. */
+  cachedRead(account: string, tool: string, argsHash: string, now: number): unknown | undefined {
+    const r: any = this.db.prepare("SELECT data, at FROM composio_reads WHERE account = ? AND tool = ? AND args_hash = ?").get(account, tool, argsHash);
+    return r !== undefined && now - r.at < READ_CACHE_MS ? JSON.parse(r.data) : undefined;
+  }
+
+  keepRead(account: string, tool: string, argsHash: string, data: unknown, now: number): void {
+    this.db
+      .prepare("INSERT INTO composio_reads (account, tool, args_hash, data, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(account, tool, args_hash) DO UPDATE SET data = excluded.data, at = excluded.at")
+      .run(account, tool, argsHash, JSON.stringify(data ?? null), now);
+  }
+
+  pruneReads(now: number): void {
+    this.db.prepare("DELETE FROM composio_reads WHERE at < ?").run(now - READ_CACHE_MS);
   }
 
   /** This Clot's newest write that ran, has an inverse and is not undone. */

@@ -1,0 +1,47 @@
+{
+  "info": {
+    "slug": "googlecalendar",
+    "name": "Google Calendar",
+    "managed": [
+      "OAUTH2"
+    ],
+    "schemes": [
+      {
+        "scheme": "OAUTH2",
+        "required": [],
+        "optional": [],
+        "creationRequired": [
+          "client_id",
+          "client_secret"
+        ]
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "slug": "GOOGLECALENDAR_ATTENDEE_RESPONSE_CHANGED_TRIGGER",
+      "type": "poll"
+    },
+    {
+      "slug": "GOOGLECALENDAR_EVENT_CANCELED_DELETED_TRIGGER",
+      "type": "poll"
+    },
+    {
+      "slug": "GOOGLECALENDAR_EVENT_STARTING_SOON_TRIGGER",
+      "type": "poll"
+    },
+    {
+      "slug": "GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_CREATED_TRIGGER",
+      "type": "poll"
+    },
+    {
+      "slug": "GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_SYNC_TRIGGER",
+      "type": "poll"
+    },
+    {
+      "slug": "GOOGLECALENDAR_GOOGLE_CALENDAR_EVENT_UPDATED_TRIGGER",
+      "type": "poll"
+    }
+  ],
+  "payloadSchemaField": "payload"
+}
