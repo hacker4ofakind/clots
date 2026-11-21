@@ -71,28 +71,38 @@ async function timed<T>(what: string, work: Promise<T>, ms = CALL_TIMEOUT_MS): P
   }
 }
 
+/** Composio's own monthly quota wording: the plan's allowance is used up. A per-minute rate limit is not it. */
+const MONTHLY_QUOTA = /quota|usage limit|monthly|plan limit|limit (has been )?reached/i;
+
 /**
- * How a thrown error reads to the daemon. A rate limit or quota is `cap`; a rejected key, an expired
- * connection or a session with no active connection is `auth`; the network, a timeout and a 5xx are
- * `unreachable`; anything else, a refusal.
+ * How a thrown error reads to the daemon. Composio's monthly quota is `cap`; a rejected key, an expired
+ * connection or a session with no active connection is `auth`; the network, a timeout, a 5xx and Composio's
+ * own per-minute rate limit (a 429 that is not the quota) are `unreachable`, to be tried again later; anything
+ * else, a refusal.
  */
 export function classifyComposioError(e: unknown): FailureReason {
   const text = e instanceof Error ? e.message : String(e);
   const status = Number((e as { status?: unknown } | null)?.status ?? (e as { statusCode?: unknown } | null)?.statusCode);
   if (e instanceof TimeoutError) return "unreachable";
-  if (status === 429 || /rate.?limit|quota|usage limit|limit (has been )?(reached|exceeded)/i.test(text)) return "cap";
+  if (MONTHLY_QUOTA.test(text) && !/rate.?limit/i.test(text)) return "cap";
+  if (status === 429 || /rate.?limit|too many requests/i.test(text)) return "unreachable";
   if (status === 401 || status === 403 || /ToolRouterV2_NoActiveConnection|APIKey_Invalid|expired|revoked|no active connection/i.test(text)) return "auth";
   if (status >= 500 || /ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|fetch failed|network|socket hang up/i.test(text)) return "unreachable";
   return "refused";
 }
 
-/** How a tool that answered `failed` reads: the service's own status code decides. */
+/**
+ * How a tool that answered `failed` reads: the service's own status code decides, and none of it is Composio's
+ * monthly cap. A service that rate-limits (429) is only a failed call, to be tried again later, never "Composio's
+ * free monthly limit is reached". A 401 is the service rejecting the connection's credentials (`auth`: replace the
+ * key or sign in again); a 403 is the service refusing this one request (a private subreddit, a missing scope), which
+ * says nothing about the connection, so it is `refused`.
+ */
 export function classifyFailedResult(statusCode: unknown, text: string): FailureReason {
   const status = Number(statusCode);
-  if (status === 429) return "cap";
-  if (status === 401 || status === 403) return "auth";
+  if (status === 401) return "auth";
   if (status >= 500) return "unreachable";
-  return /rate.?limit|quota/i.test(text) ? "cap" : "refused";
+  return "refused";
 }
 
 const toConnection = (item: any): Connection => {

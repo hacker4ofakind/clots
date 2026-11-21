@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Composio as ComposioComponent } from "../src/composio/component.js";
+import type { ComposioAccount } from "../src/config.js";
+import { Supervisor } from "../src/listeners.js";
+import { Store } from "../src/store.js";
 
 /** What the SDK was asked, for the adapter's connection pinning. */
-const seen: { sessions: Record<string, unknown>[]; connections: { id: string; status: string }[] } = { sessions: [], connections: [] };
+const seen: { sessions: Record<string, unknown>[]; connections: { id: string; status: string }[]; execute: () => Promise<unknown> } = { sessions: [], connections: [], execute: async () => ({ resultType: "completed", data: {}, error: null }) };
 
 vi.mock("@composio/core", () => ({
   Composio: class {
@@ -12,7 +16,7 @@ vi.mock("@composio/core", () => ({
     };
     create = async (_user: string, config: Record<string, unknown>) => {
       seen.sessions.push(config);
-      return { execute: async () => ({ resultType: "completed", data: {}, error: null }) };
+      return { execute: () => seen.execute() };
     };
   },
 }));
@@ -24,6 +28,7 @@ const pinned = () => (seen.sessions.at(-1)?.connectedAccounts as Record<string, 
 beforeEach(() => {
   seen.sessions = [];
   seen.connections = [{ id: "ca_old", status: "ACTIVE" }];
+  seen.execute = async () => ({ resultType: "completed", data: {}, error: null });
 });
 
 describe("the SDK adapter's connection pin", () => {
@@ -61,5 +66,67 @@ describe("the SDK adapter's connection pin", () => {
     seen.connections = [{ id: "ca_new", status: "ACTIVE" }];
     await api.execute("slack:work", "slack", "SLACK_TEST_AUTH", {});
     expect(pinned()).toBe("ca_new");
+  });
+});
+
+describe("what a failed call is taken for", () => {
+  const reddit: ComposioAccount = { toolkit: "reddit", account: "me", shared: true, audience: "private", triggers: [], selfIsUser: false };
+  let told: { to: string; text: string }[];
+  let composio: ComposioComponent;
+  let store: Store;
+
+  beforeEach(() => {
+    told = [];
+    store = new Store(":memory:");
+    const schedule = () => () => {};
+    composio = new ComposioComponent({
+      api: sdkComposioApi("key"),
+      store,
+      accounts: [reddit],
+      publicUrl: "https://x.example",
+      tell: async (a, text) => void told.push({ to: `${a.toolkit}:${a.account}`, text }),
+      tellHome: async (text) => void told.push({ to: "home", text }),
+      now: () => Date.UTC(2026, 10, 21),
+      schedule,
+      supervisor: new Supervisor({ schedule }),
+      log: () => {},
+    });
+  });
+
+  const failed = (status: number, error: string) => async () => ({ resultType: "failed", error, data: { status_code: status } });
+
+  it("never posts Composio's monthly-limit notice for a service's own 429, such as Reddit's, and the call fails as a refusal", async () => {
+    seen.execute = failed(429, "Reddit API error for subreddit 'Esperanto': HTTP 429");
+    const result = await composio.run(reddit, "REDDIT_GET_NEW_POSTS", {});
+    expect(result).toMatchObject({ ok: false, reason: "refused" });
+    expect(told).toEqual([]);
+    expect(store.getState("composio.capMonth")).toBeUndefined();
+  });
+
+  it("posts the monthly-limit notice once when Composio itself says the quota is used up", async () => {
+    seen.execute = async () => {
+      throw Object.assign(new Error("429 Monthly usage limit exceeded for this project"), { status: 429 });
+    };
+    expect(await composio.run(reddit, "REDDIT_GET_NEW_POSTS", {})).toMatchObject({ ok: false, reason: "cap" });
+    await composio.run(reddit, "REDDIT_GET_NEW_POSTS", {});
+    expect(told.filter((t) => t.text.includes("free monthly limit is reached"))).toHaveLength(1);
+    expect(told[0].to).toBe("home");
+  });
+
+  it("does not take Composio's own per-minute rate limit for the monthly cap", async () => {
+    seen.execute = async () => {
+      throw Object.assign(new Error("429 Too Many Requests"), { status: 429 });
+    };
+    expect(await composio.run(reddit, "REDDIT_GET_NEW_POSTS", {})).toMatchObject({ ok: false, reason: "unreachable" });
+    expect(told).toEqual([]);
+  });
+
+  it("does not say the connection expired for a service's 403, but does for a 401 that rejects its credentials", async () => {
+    seen.execute = failed(403, "Forbidden: this subreddit is private");
+    expect(await composio.run(reddit, "REDDIT_GET_NEW_POSTS", {})).toMatchObject({ ok: false, reason: "refused" });
+    expect(told).toEqual([]);
+    seen.execute = failed(401, "Invalid token");
+    expect(await composio.run(reddit, "REDDIT_GET_NEW_POSTS", {})).toMatchObject({ ok: false, reason: "auth" });
+    expect(told.filter((t) => t.text.includes("no longer accepting the connection"))).toHaveLength(1);
   });
 });

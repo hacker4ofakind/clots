@@ -630,7 +630,8 @@ const syncWatches = () => {
     // A watch on a Composio account waits for the account to be signed in, as the calendar's poll does.
     const active = recipe.account === undefined ? undefined : () => store.composio.account(recipe.account!)?.status === "active";
     const watcher = new Watcher({ recipe, hubFor: (r) => (r.account === undefined ? mcpHub : composioWatchHub!), store, deliver: (event) => deliver(event), now: () => Date.now(), tell, ...(active ? { active } : {}) });
-    const stop = supervisor.start({ name: `watch recipe ${name}`, everyMs: recipe.every * 60_000, tell, run: () => watcher.run() });
+    // A watch on a Composio account counts every call against the allowance, so a failure is not retried faster than it runs.
+    const stop = supervisor.start({ name: `watch recipe ${name}`, everyMs: recipe.every * 60_000, tell, run: () => watcher.run(), ...(recipe.account === undefined ? {} : { minRetryMs: recipe.every * 60_000 }) });
     running.set(name, { definition: JSON.stringify(recipe), stop });
   }
 };

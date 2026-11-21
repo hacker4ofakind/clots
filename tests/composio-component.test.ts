@@ -672,19 +672,29 @@ describe("classifyComposioError", () => {
   it("reads the errors Composio gave while probing", () => {
     expect(classifyComposioError(e('401 {"error":{"message":"Invalid API key: ck_**x","slug":"APIKey_InvalidAPIKey","status":401}}', 401))).toBe("auth");
     expect(classifyComposioError(e("400 No active connection found for toolkit(s) 'linear' in this session. ToolRouterV2_NoActiveConnection", 400))).toBe("auth");
-    expect(classifyComposioError(e("429 Too Many Requests", 429))).toBe("cap");
     expect(classifyComposioError(e("Monthly usage limit exceeded for this project"))).toBe("cap");
+    expect(classifyComposioError(e("429 quota exceeded for the plan", 429))).toBe("cap");
     expect(classifyComposioError(e("fetch failed"))).toBe("unreachable");
     expect(classifyComposioError(e("502 Bad Gateway", 502))).toBe("unreachable");
     expect(classifyComposioError(new TimeoutError("running X"))).toBe("unreachable");
     expect(classifyComposioError(e('400 TriggerInstance_BadRequest: Auth config does not contain an OAuth client_id', 400))).toBe("refused");
   });
 
-  it("reads a tool that answered failed by the service's own status", () => {
+  it("does not read Composio's own per-minute rate limit as the monthly cap", () => {
+    expect(classifyComposioError(e("429 Too Many Requests", 429))).toBe("unreachable");
+    expect(classifyComposioError(e("Rate limit exceeded, retry in 30 seconds", 429))).toBe("unreachable");
+  });
+
+  it("reads a tool that answered failed by the service's own status, and never as Composio's monthly cap", () => {
     expect(classifyFailedResult(401, "Personal API key found in request Authorization header is invalid.")).toBe("auth");
     expect(classifyFailedResult(410, "Google returned 410 Gone")).toBe("refused");
     expect(classifyFailedResult(503, "")).toBe("unreachable");
-    expect(classifyFailedResult(undefined, "quota exceeded")).toBe("cap");
+    // The service's own limits: Reddit answering 429, or saying quota, is the service rate-limiting, not Composio's cap.
+    expect(classifyFailedResult(429, "Reddit API error for subreddit 'Esperanto': HTTP 429")).toBe("refused");
+    expect(classifyFailedResult(undefined, "quota exceeded")).toBe("refused");
+    expect(classifyFailedResult(undefined, "rate limit")).toBe("refused");
+    // The service refusing one request says nothing about the connection.
+    expect(classifyFailedResult(403, "Forbidden: private subreddit")).toBe("refused");
   });
 });
 

@@ -23,6 +23,8 @@ export interface ListenerOptions {
   everyMs: number;
   /** Posts to the user. Never throws. */
   tell: (text: string) => Promise<void>;
+  /** After a failure the wait before the next try is at least this long: a poll that costs something is not retried faster than it runs. */
+  minRetryMs?: number;
 }
 
 /**
@@ -82,7 +84,7 @@ export class Supervisor {
       state.told = true;
       await o.tell(`${o.name} has failed three times in a row (${why}). I keep trying, waiting longer each time, and will say when it works again.`);
     }
-    this.after(retryWait(state.failures), () => this.loop(o, state));
+    this.after(Math.max(retryWait(state.failures), o.minRetryMs ?? 0), () => this.loop(o, state));
   }
 
   private after(ms: number, fn: () => Promise<void>): void {
