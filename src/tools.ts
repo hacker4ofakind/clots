@@ -149,7 +149,16 @@ export interface ToolDeps {
     connected?(account: string): boolean;
   };
   /** `composio_find` and `composio_run`. Absent when no Composio account is configured. */
-  composio?: { find(ctx: TurnContext, a: { account: string; query: string }): Promise<string>; run(ctx: TurnContext, a: { account: string; tool: string; args: Record<string, unknown> }): Promise<string> };
+  composio?: {
+    find(ctx: TurnContext, a: { account: string; query: string }): Promise<string>;
+    run(ctx: TurnContext, a: { account: string; tool: string; args: Record<string, unknown> }): Promise<string>;
+    /** Counts one Composio call against this turn's and this Clot's day's limits; the refusal text past them. */
+    countCall?(ctx: TurnContext): string | undefined;
+    /** Whether `<toolkit>:<account>` is configured. */
+    hasAccount?(name: string): boolean;
+    /** The configured accounts, for a refusal that names them. */
+    accountNames?(): string[];
+  };
   /** The workers. Absent where nothing can start one. */
   workers?: Pick<Workers, "start" | "message" | "stop">;
   /** The logic of the Composio authoring tools. Absent when no Composio account is configured. */
@@ -290,7 +299,14 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
     ...(d.mcp === undefined ? {} : { mcpList: () => d.mcp!.describe() }),
     ...(d.mcp?.listTools === undefined && d.composioHub === undefined
       ? {}
-      : { watchTry: (recipe: WatchRecipe) => tryRecipe((r) => watchHub(d, r), recipe) }),
+      : {
+          watchTry: async (recipe: WatchRecipe) => {
+            // A try on a Composio account makes a real call: it counts against composio_run's limits, as composio_try's reads do.
+            const limit = recipe.account === undefined ? undefined : d.composio?.countCall?.(ctx);
+            if (limit !== undefined) return limit;
+            return tryRecipe((r) => watchHub(d, r), recipe);
+          },
+        }),
 
     webhook: async ({ action, file, recipe, name }) => {
       if (action === "remove") return name === undefined ? "Not done: give the recipe's name." : submit("webhook", file, { op: "remove_webhook", name });
@@ -307,6 +323,7 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       if (recipe === undefined) return "Not done: give the recipe.";
       try {
         const parsed = parseWatch(recipe);
+        if (parsed.account !== undefined && d.composio?.hasAccount?.(parsed.account) === false) return `Not done: no Composio account ${parsed.account} is configured. The accounts are: ${d.composio.accountNames?.().join(", ") || "none"}.`;
         const over = d.watchBudgetProblem?.(parsed);
         if (over !== undefined) return `Not done: ${over}.`;
         return await submit("watch", file, { op: "set_watch", recipe: parsed });

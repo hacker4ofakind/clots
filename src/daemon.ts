@@ -547,7 +547,13 @@ if (composio !== undefined) {
   }
   toolDeps.composioHub = composioHub(composio);
   toolDeps.composioAuthoring = composioAuthoring;
-  toolDeps.composio = { find: (ctx, a) => composioActions!.find(ctx, a), run: (ctx, a) => composioActions!.run(ctx, a) };
+  toolDeps.composio = {
+    find: (ctx, a) => composioActions!.find(ctx, a),
+    run: (ctx, a) => composioActions!.run(ctx, a),
+    countCall: (ctx) => composioActions!.countCall(ctx),
+    hasAccount: (name) => composio.account(name) !== undefined && name.includes(":"),
+    accountNames: () => composio.accounts().map((a) => composio.userOf(a)),
+  };
   // Last: the webhook, each account and the daily check start as jobs of their own, so nothing here holds up the daemon.
   composio.start();
 }
@@ -598,6 +604,7 @@ if (mcpNames.length > 0) {
 const mcpHub: Hub = { listTools: (server) => hub.listTools(server), callTool: (server, tool, args) => hub.callTool(server, tool, args) };
 const composioWatchHub = composio === undefined ? undefined : composioHub(composio);
 const running = new Map<string, { definition: string; stop: () => void }>();
+const missingWatchAccount = new Set<string>();
 const syncWatches = () => {
   const wanted = new Map(rulebook.watches().map(({ recipe, file }) => [recipe.name, { recipe, file }]));
   for (const [name, entry] of running) {
@@ -610,6 +617,15 @@ const syncWatches = () => {
   for (const [name, { recipe, file }] of wanted) {
     if (running.has(name)) continue;
     const target = watchTarget(recipe);
+    // A saved watch whose account is not in the configuration would be skipped forever: it is reported once, and not started.
+    if (recipe.account !== undefined && composio?.account(recipe.account) === undefined) {
+      const key = `${name}|${JSON.stringify(recipe)}`;
+      if (!missingWatchAccount.has(key)) {
+        missingWatchAccount.add(key);
+        void (file === "global" ? tellHome : (text: string) => say(file, text))(`The watch recipe \`${name}\` names the Composio account ${recipe.account}, which is not in sources.composio, so it does not run.`);
+      }
+      continue;
+    }
     const tell = file === "global" ? (text: string) => (recipe.account === undefined ? tellServer(target, text) : tellComposio(composio?.account(target) ?? {})(text)) : (text: string) => say(file, text);
     // A watch on a Composio account waits for the account to be signed in, as the calendar's poll does.
     const active = recipe.account === undefined ? undefined : () => store.composio.account(recipe.account!)?.status === "active";

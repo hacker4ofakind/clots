@@ -46,7 +46,15 @@ describe("the SDK adapter's connection pin", () => {
     expect(pinned()).toBe("ca_new");
   });
 
-  it("pins the sign-in's connection when there is no other, so a first sign-in works once it is active", async () => {
+  it("keeps calls on the active connection after a daemon restart, when nothing was pinned before the sign-in link", async () => {
+    const api = sdkComposioApi("key");
+    await api.linkManaged("slack:work", "ac_1");
+    seen.connections.push({ id: "ca_new", status: "INITIATING" });
+    await api.execute("slack:work", "slack", "SLACK_TEST_AUTH", {});
+    expect(pinned()).toBe("ca_old");
+  });
+
+  it("finds the sign-in's connection when there is no other, so a first sign-in works once it is active", async () => {
     seen.connections = [];
     const api = sdkComposioApi("key");
     await api.linkManaged("slack:work", "ac_1");

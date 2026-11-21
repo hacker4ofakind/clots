@@ -696,6 +696,41 @@ describe("watch recipe tools", () => {
   });
 });
 
+describe("watch recipes on a Composio account", () => {
+  const onAccount = { name: "new-posts", account: "reddit:me", tool: "REDDIT_GET_NEW_POSTS", arguments: {}, items: "posts", id: "id", ignore: [], every: 15, report: "added" as const };
+  const make = (composio: Partial<NonNullable<ToolDeps["composio"]>>) =>
+    makeTools(
+      {
+        rulebook,
+        writer,
+        asks: { rule: async () => "FILED" },
+        store,
+        senders: {},
+        say: async () => undefined,
+        handOver: async () => "",
+        composio: { find: async () => "", run: async () => "", ...composio },
+        composioHub: { listTools: async () => [{ name: "REDDIT_GET_NEW_POSTS", description: "", readOnly: true }], callTool: async () => ({ text: '{"posts":[{"id":"a"}]}', isError: false }) },
+      },
+      { clot: "graphite", kind: "chat", outsider: false },
+    );
+
+  it("counts watch_try against composio_run's limits, and refuses past them with the same text", async () => {
+    let allowed = true;
+    const t = make({ countCall: () => (allowed ? undefined : "Refused: 30 Composio calls were made in this turn, which is the limit.") });
+    expect(await t.watchTry!(onAccount)).toContain("1 item");
+    allowed = false;
+    expect(await t.watchTry!(onAccount)).toBe("Refused: 30 Composio calls were made in this turn, which is the limit.");
+  });
+
+  it("refuses to set a watch whose account is not configured, naming the accounts", async () => {
+    const t = make({ hasAccount: (name) => name === "slack:work", accountNames: () => ["slack:work"] });
+    expect(await t.watch({ action: "set", file: "own", recipe: onAccount })).toBe("Not done: no Composio account reddit:me is configured. The accounts are: slack:work.");
+    expect(own().watches).toEqual([]);
+    const ok = make({ hasAccount: () => true });
+    expect(await ok.watch({ action: "set", file: "own", recipe: onAccount })).toContain("Applied");
+  });
+});
+
 describe("rulebook_webhook", () => {
   it("applies a recipe at once, and refuses one that does not fit", async () => {
     const recipe = { name: "tracker", verify: { scheme: "token", header: "X-Token", secret: "RECIPE_TRACKER" }, kinds: [{ kind: "ping", when: {} }], event: { title: "{t}" } } as never;

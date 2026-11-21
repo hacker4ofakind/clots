@@ -173,9 +173,9 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
 
     async linkManaged(user, authConfigId) {
       const request: any = await timed("making a sign-in link", composio.connectedAccounts.link(user, authConfigId));
-      // Tool calls stay on the connection already pinned while a replacement sign-in is pending: the pin moves only
-      // when that connection is deleted (the swap is complete), and the next call finds the active one.
-      if (!connectionOf.has(user)) connectionOf.set(user, request.id);
+      // No pin is made here. While a replacement sign-in is pending, a call finds the active connection (the pin is empty
+      // after a restart, and `findConnection` prefers an active one over the initiating one); once the old connection is
+      // deleted the pin is cleared and the next call finds the new one.
       return { redirectUrl: request.redirectUrl, connectionId: request.id };
     },
 
