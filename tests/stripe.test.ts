@@ -96,6 +96,13 @@ describe("stripeEnricher", () => {
     expect(api.of("execute").some((c) => c.includes('"expand":["lines.data.price.product"]'))).toBe(true);
   });
 
+  it("says so when an answer has no Stripe object in it, rather than printing blanks", async () => {
+    api.answers.set(STRIPE.retrieveCustomer, { ok: true, data: { data: { id: "cus_1", name: "Jane Doe" } } });
+    const read = await stripeEnricher(composio)(normalizeStripe(account, "invoice.payment_failed", failedInvoice, NOW)!);
+    expect(read.body).toContain(STRIPE_UNREAD);
+    expect(read.body).not.toContain("a customer since");
+  });
+
   it("says so when Stripe cannot be read", async () => {
     api.answers.set(STRIPE.retrieveCustomer, { ok: false, error: "offline", reason: "unreachable" });
     const read = await stripeEnricher(composio)(normalizeStripe(account, "invoice.payment_failed", failedInvoice, NOW)!);

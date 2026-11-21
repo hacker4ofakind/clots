@@ -133,7 +133,7 @@ export class ComposioUndo {
     };
 
     if (inverse.guard !== undefined) {
-      const read = await composio.run(account, inverse.guard.read.slug, inverse.guard.read.args);
+      const read = await composio.runChecked(account, inverse.guard.read.slug, inverse.guard.read.args);
       if (!read.ok) return read.reason === "refused" ? `Not undone: the object could not be read first (${read.error}). It is skipped; send the command again to step further back.` : again(read.error);
       const changed = Object.entries(inverse.guard.expect).filter(([path, value]) => getPath((read.data as { issue?: unknown })?.issue ?? read.data, path) !== value);
       if (changed.length > 0) return `Not put back: it changed since the Clot's write (${changed.map(([path]) => path).join(", ")}). It is skipped; send the command again to step further back.`;

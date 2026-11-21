@@ -212,12 +212,12 @@ export class ComposioActions {
     try {
       const { composio } = this.d;
       if (account.toolkit === "linear" && typeof (args.issue_id ?? args.issueId) === "string") {
-        const r = await composio.run(account, LINEAR.getIssue, { issue_id: (args.issue_id ?? args.issueId) as string });
+        const r = await composio.runChecked(account, LINEAR.getIssue, { issue_id: (args.issue_id ?? args.issueId) as string });
         const issue = r.ok ? (r.data as { issue?: { creator?: { name?: string } } }).issue : undefined;
         return issue?.creator?.name ? { creator: issue.creator.name } : undefined;
       }
       if (account.toolkit === "notion" && typeof (args.page_id ?? args.block_id) === "string") {
-        const r = await composio.run(account, NOTION.retrievePage, { page_id: (args.page_id ?? args.block_id) as string });
+        const r = await composio.runChecked(account, NOTION.retrievePage, { page_id: (args.page_id ?? args.block_id) as string });
         const page = r.ok ? (r.data as { created_by?: { id?: string }; last_edited_by?: { id?: string } }) : undefined;
         return page ? { creator: page.created_by?.id, lastEditor: page.last_edited_by?.id } : undefined;
       }
@@ -244,7 +244,7 @@ export class ComposioActions {
     let before: unknown;
     const readFirst = inverse?.before?.(o.args);
     if (readFirst !== undefined) {
-      const r = await composio.run(o.account, readFirst.slug, readFirst.args);
+      const r = await composio.runChecked(o.account, readFirst.slug, readFirst.args);
       if (r.ok) before = r.data;
     }
     const id = store.composio.addWrite({ clot: o.clot, account: user, slug, args: o.args, before, at: this.d.now() });

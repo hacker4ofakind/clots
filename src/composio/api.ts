@@ -7,7 +7,8 @@ export type Connection = { id: string; status: "active" | "initiating" | "expire
 export type ToolInfo = { slug: string; toolkit: string; name: string; description: string; inputSchema: unknown; tags: string[] };
 export type FailureReason = "cap" | "auth" | "unreachable" | "refused";
 /** `timedOut`: the call did not answer in time, so a write may or may not have happened. */
-export type ExecResult = { ok: true; data: unknown } | { ok: false; error: string; reason: FailureReason; timedOut?: true };
+/** `drift`: the tool answered, but not in the shape the daemon relies on (see `Composio.runChecked`). */
+export type ExecResult = { ok: true; data: unknown } | { ok: false; error: string; reason: FailureReason; timedOut?: true; drift?: true };
 /** A trigger instance Composio holds. */
 export type TriggerInstance = { id: string; slug: string; connectionId: string; config: Record<string, unknown>; disabled: boolean };
 

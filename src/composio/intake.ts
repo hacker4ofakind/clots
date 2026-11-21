@@ -69,11 +69,14 @@ export function composioHandler(d: ComposioIntakeDeps): Handler {
 
     const type = text(body.type);
     const meta: Record<string, any> = body.metadata ?? {};
-    const connectionId = text(meta.connected_account_id) || text(body.data?.connected_account_id);
+    const data: Record<string, any> = typeof body.data === "object" && body.data !== null ? body.data : {};
+    const connectionId = text(meta.connected_account_id) || text(data.connected_account_id);
 
+    // The lifecycle deliveries, as Composio documents them: a disabled trigger's `data.id` is the trigger instance and
+    // `data.disabled_reason` says why; an expired connection's `data.id` is the connection itself.
     if (type === "composio.trigger.disabled") {
       try {
-        await d.composio.triggerDisabled(text(meta.trigger_id) || text(body.data?.trigger_id) || text(body.data?.id), text(body.data?.reason) || text(body.data?.disabled_reason) || undefined);
+        await d.composio.triggerDisabled(text(data.id) || text(meta.trigger_id) || text(data.trigger_id), text(data.disabled_reason) || text(data.reason) || undefined);
       } catch (e) {
         log(`[composio] handling a disabled trigger failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -81,7 +84,7 @@ export function composioHandler(d: ComposioIntakeDeps): Handler {
     }
     if (type === "composio.connected_account.expired") {
       try {
-        await d.composio.connectionExpired(connectionId);
+        await d.composio.connectionExpired(text(data.id) || connectionId);
       } catch (e) {
         log(`[composio] handling an expired connection failed: ${e instanceof Error ? e.message : String(e)}`);
       }

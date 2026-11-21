@@ -132,7 +132,7 @@ export const NOTION_UNREAD = "[More about this could not be read from Notion.]";
 
 /** What a Notion read through Composio answers: Notion's own object, as `data`. Throws when Composio or Notion refused. */
 async function read(c: Composio, account: NotionAccount, slug: string, args: Record<string, unknown>): Promise<any> {
-  const result = await c.run(account, slug, args);
+  const result = await c.runChecked(account, slug, args);
   if (!result.ok) throw Object.assign(new Error(result.error), { refused: result.reason === "refused" || result.reason === "auth" });
   return result.data;
 }

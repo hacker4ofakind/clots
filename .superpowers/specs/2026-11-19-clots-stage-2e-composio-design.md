@@ -127,7 +127,8 @@ for every toolkit:
 - **Verifying**: `webhook-signature` is `v1,` and a base64 HMAC-SHA256 of
   `<webhook-id>.<webhook-timestamp>.<raw body>` with the subscription's secret,
   compared in constant time. A `webhook-timestamp` more than 300 seconds from the
-  daemon's clock is refused. This is done with the library's `verifyWebhook`.
+  daemon's clock is refused. The daemon does this itself: the library's
+  `verifyWebhook` rejects any body outside its own schema.
 - **Repeats**: the event ID is the one 2c gave each source, built from the
   service's own ID (`stripe:<account>:<evt_…>`, and so on), so a service's retry,
   a recreated trigger, or two triggers reporting one thing make one event. A
@@ -137,6 +138,8 @@ for every toolkit:
   and `composio.connected_account.expired`. A trigger disabled for any reason but
   an expired connection is recreated once (and the user told if that fails); an
   expired connection is told once, with a new sign-in link for the calendar.
+  A disabled trigger's `data.id` is the trigger instance and `data.disabled_reason`
+  says why; an expired connection's `data.id` is the connection.
   The daily check of section 13 stays as a backstop.
 - **The Clot's own writes**: an event about an object one of the Clot's
   Composio writes created or changed in the last 10 minutes is dropped as
@@ -398,10 +401,12 @@ recorded payloads are removed. New recorded Composio payloads take their place.
 - **Composio unreachable**: a tool call returns the error to the Clot, which says
   what it could not do. Enrichment goes on with a line saying so. Webhooks simply
   stop arriving.
-- **A trigger silently disabled** (for example, a Stripe destination deleted in
-  Stripe, which Composio does not notice): once a day the daemon reads each
-  trigger instance's status, and recreates one that is disabled or missing. One it
-  cannot recreate is reported once in its Clot's channel.
+- **A trigger silently disabled**: once a day the daemon reads each trigger
+  instance's status, and recreates one that is disabled or missing. One it cannot
+  recreate is reported once in its Clot's channel. A Stripe destination deleted in
+  Stripe is not noticed (Composio does not hear of it and has no tool that lists
+  Stripe's webhook endpoints); removing the account from the configuration,
+  restarting and adding it back makes it again.
 - **A connection expired or revoked**: reported once in its Clot's channel: for
   the calendar with a new sign-in link, for a key with the `.env` key to replace.
   Its tool calls and enrichment fail until then.
@@ -415,7 +420,8 @@ recorded payloads are removed. New recorded Composio payloads take their place.
   retried by the daemon, and has no undo.
 - **Composio answers in an unexpected shape**: the daemon's own calls check the
   fields they rely on; on a mismatch enrichment says it could not read, a
-  calendar change is refused, and the user is told once.
+  calendar change is refused, and the daily check tells the user once per tool
+  and account per start, in the account's Clot channel.
 - **The allowance runs low**: the daemon counts its tool calls and deliveries
   each month and warns once at 70% and once at 90% of each Hobby allowance. The
   calendars' polling may use at most 10,000 calls a month in all, checked when

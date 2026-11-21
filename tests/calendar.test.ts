@@ -256,6 +256,23 @@ describe("the calendar over Composio", () => {
     expect(isMissing(down)).toBe(false);
   });
 
+  it("refuses to read the calendar, remove or change an event, or take a created one, when an answer is not Google's shape, and never calls it a missing event", async () => {
+    const drifted = { ok: true as const, data: { data: { id: "solo" } } };
+    api.answers.set(CALENDAR.get, drifted);
+    const check = await cal().call({ action: "check", uid: "solo" });
+    expect(check).toMatchObject({ ok: false, reached: true, reason: expect.stringContaining("unexpected shape") });
+    expect(isMissing(check)).toBe(false);
+    expect(await cal().call({ action: "remove", uid: "solo" })).toMatchObject({ ok: false, reached: true });
+    expect(await cal().call({ action: "update", uid: "solo", title: "x" })).toMatchObject({ ok: false, reached: true });
+    expect(calls.filter((c) => c.slug === CALENDAR.delete || c.slug === CALENDAR.patch)).toEqual([]);
+
+    api.answers.set(CALENDAR.create, { ok: true, data: { response_data: { summary: "no id" } } });
+    expect(await cal().call({ action: "create", title: "x", start: "2026-11-25T07:00:00.000Z", end: "2026-11-25T08:00:00.000Z" })).toMatchObject({ ok: false, reason: expect.stringContaining("unexpected shape") });
+
+    api.answers.set(CALENDAR.list, { ok: true, data: { events: [] } });
+    await expect(cal().list(new Date("2026-10-01T00:00:00Z"), new Date("2026-11-01T00:00:00Z"))).rejects.toThrow(/could not be read.*unexpected shape/);
+  });
+
   it("creates a timed event in the user's zone without a Meet link, without guests, and without telling anyone", async () => {
     const made = await cal().call({ action: "create", title: "Composio check", start: "2026-11-25T07:00:00.000Z", end: "2026-11-25T08:00:00.000Z", description: "d", location: "Room 2" });
     expect(calls.at(-1)!.args).toEqual({ calendar_id: "primary", summary: "Composio check", start_datetime: "2026-11-25T08:00:00", end_datetime: "2026-11-25T09:00:00", timezone: ZONE, description: "d", location: "Room 2", create_meeting_room: false, exclude_organizer: true, send_updates: "none" });

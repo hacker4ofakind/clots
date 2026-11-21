@@ -18,6 +18,8 @@ export const NOTION = {
 } as const;
 
 const WhoAmI = z.object({ data: z.object({ id: z.string().min(1) }) });
+const text = z.string().nullish();
+const richText = z.array(z.looseObject({})).nullish();
 
 export const notionDef: ToolkitDef = {
   toolkit: "notion",
@@ -26,8 +28,16 @@ export const notionDef: ToolkitDef = {
     return [];
   },
   async identity(a, host) {
-    const result = await host.run(a, NOTION.whoAmI, {});
+    const result = await host.runChecked(a, NOTION.whoAmI, {});
     if (!result.ok) throw new Error(`reading who the Notion connection is failed: ${result.error}`);
     return WhoAmI.parse(result.data).data.id;
+  },
+  responseChecks: {
+    [NOTION.whoAmI]: WhoAmI,
+    // Notion's own objects, as `data`: a page, a list of comments, a list of blocks, a user.
+    [NOTION.retrievePage]: z.looseObject({ properties: z.record(z.string(), z.unknown()), created_by: z.looseObject({ id: text }).nullish(), last_edited_by: z.looseObject({ id: text }).nullish() }),
+    [NOTION.fetchComments]: z.looseObject({ results: z.array(z.looseObject({ id: text, discussion_id: text, rich_text: richText })) }),
+    [NOTION.fetchBlocks]: z.looseObject({ results: z.array(z.looseObject({ type: text })) }),
+    [NOTION.getUser]: z.looseObject({ name: text }),
   },
 };

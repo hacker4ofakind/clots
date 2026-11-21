@@ -122,9 +122,10 @@ const NOT_THERE = /\b(404|410)\b|not found|has been deleted|gone/i;
 export function calendarOverComposio(c: Composio, account: CalendarAccount, timeZone: string): { call(req: CalRequest): Promise<CalResult>; list(from: Date, to: Date): Promise<Occurrence[]> } {
   /** One tool call; a failure is told as `reached` (the calendar answered no) or not (it could not be asked). */
   async function tool(slug: string, args: Record<string, unknown>): Promise<{ ok: true; data: any } | Extract<CalResult, { ok: false }>> {
-    const r = await c.run(account, slug, args);
+    const r = await c.runChecked(account, slug, args);
     if (r.ok) return r as { ok: true; data: any };
-    const missing = r.reason === "refused" && NOT_THERE.test(r.error);
+    // A shape that drifted is not "the event is not there": it is a refusal, and the daily check tells the user.
+    const missing = r.reason === "refused" && r.drift !== true && NOT_THERE.test(r.error);
     return { ok: false, reason: missing ? "there is no event with that ID" : r.error, reached: r.reason === "refused", ...(missing ? { missing: true as const } : {}) };
   }
 

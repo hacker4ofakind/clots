@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { classifyComposioError, classifyFailedResult, TimeoutError } from "../src/composio/api.js";
 import { Composio } from "../src/composio/component.js";
 import { Meter } from "../src/composio/meter.js";
@@ -361,6 +362,7 @@ describe("lifecycle deliveries", () => {
     const row = store.composio.triggers("linear:proton")[0];
     api.calls = [];
     await composio.triggerDisabled(row.triggerId, "connection_expired");
+    await composio.triggerDisabled(row.triggerId, "Connected account authentication expired.");
     expect(api.of("upsertTrigger")).toEqual([]);
     api.triggers.delete(row.triggerId);
     await composio.triggerDisabled(row.triggerId, "other");
@@ -431,6 +433,67 @@ describe("run", () => {
     await composio.tool("LINEAR_ARCHIVE_ISSUE");
     expect(api.of("tool")).toHaveLength(1);
     expect((await composio.find(linear, "archive")).map((t) => t.slug)).toEqual(["LINEAR_ARCHIVE_ISSUE"]);
+  });
+});
+
+describe("response checks", () => {
+  const goodIssue = { issue: { id: "i-1", creator: { name: "Ann" } } };
+
+  it("passes an answer of the shape the call relies on through unchanged", async () => {
+    make([linear]);
+    api.answers.set(LINEAR.getIssue, { ok: true, data: goodIssue });
+    expect(await composio.runChecked(linear, LINEAR.getIssue, { issue_id: "x" })).toEqual({ ok: true, data: goodIssue });
+    await composio.checkDaily();
+    expect(told).toEqual([]);
+  });
+
+  it("fails closed, as a refused result, when the answer has another shape, and says where", async () => {
+    make([linear]);
+    api.answers.set(LINEAR.getIssue, { ok: true, data: { data: { issue: { id: "i-1" } } } });
+    const result = await composio.runChecked(linear, LINEAR.getIssue, { issue_id: "x" });
+    expect(result).toMatchObject({ ok: false, reason: "refused", drift: true });
+    expect(result.ok === false && result.error).toContain("LINEAR_GET_LINEAR_ISSUE answered in an unexpected shape at issue");
+    expect(logs.some((l) => l.includes("answered in an unexpected shape"))).toBe(true);
+  });
+
+  it("leaves a failure as it was, and a tool with no check unchecked", async () => {
+    make([linear]);
+    api.answers.set(LINEAR.getIssue, { ok: false, error: "down", reason: "unreachable" });
+    expect(await composio.runChecked(linear, LINEAR.getIssue, {})).toEqual({ ok: false, error: "down", reason: "unreachable" });
+    api.answers.set("LINEAR_SOMETHING_ELSE", { ok: true, data: "anything" });
+    expect(await composio.runChecked(linear, "LINEAR_SOMETHING_ELSE", {})).toEqual({ ok: true, data: "anything" });
+  });
+
+  it("takes the caller's own check over the toolkit's", async () => {
+    make([linear]);
+    api.answers.set(LINEAR.getIssue, { ok: true, data: { odd: true } });
+    expect((await composio.runChecked(linear, LINEAR.getIssue, {}, z.object({ odd: z.boolean() }))).ok).toBe(true);
+    expect((await composio.runChecked(linear, LINEAR.getIssue, {}, z.object({ odd: z.string() }))).ok).toBe(false);
+  });
+
+  it("makes a changed identity answer an unreadable identity, retried, not a crash", async () => {
+    make([linear]);
+    api.answers.set(LINEAR.whoAmI, { ok: true, data: { id: "member-1" } });
+    const { failures } = await composio.reconcile();
+    expect(failures).toEqual([]);
+    expect(composio.identity(linear)).toBe("");
+    expect(logs.some((l) => l.includes("LINEAR_WHO_AM_I answered in an unexpected shape"))).toBe(true);
+  });
+
+  it("is reported by the daily check once per tool and account per start, in the account's channel, naming the tool", async () => {
+    make([linear, notion]);
+    api.answers.set(LINEAR.getIssue, { ok: true, data: {} });
+    api.answers.set("NOTION_RETRIEVE_PAGE", { ok: true, data: {} });
+    await composio.runChecked(linear, LINEAR.getIssue, {});
+    await composio.runChecked(linear, LINEAR.getIssue, {});
+    await composio.runChecked(notion, "NOTION_RETRIEVE_PAGE", {});
+    expect(told).toEqual([]);
+    await composio.checkDaily();
+    await composio.checkDaily();
+    const drift = told.filter((t) => t.text.includes("unexpected shape"));
+    expect(drift.map((t) => t.account)).toEqual(["linear:proton", "notion:main"]);
+    expect(drift[0].text).toContain("LINEAR_GET_LINEAR_ISSUE");
+    expect(drift[1].text).toContain("NOTION_RETRIEVE_PAGE");
   });
 });
 

@@ -1,6 +1,7 @@
 import type { Composio } from "../composio/component.js";
 import type { Mapper } from "../composio/intake.js";
-import { LINEAR } from "../composio/toolkits/linear.js";
+import { LINEAR, LINEAR_GRAPHQL } from "../composio/toolkits/linear.js";
+import type { ZodType } from "zod";
 import type { LinearAccount } from "../config.js";
 import type { Enricher } from "../enrich.js";
 import { appendBody, clip } from "../events/body.js";
@@ -44,9 +45,12 @@ export const linearMapper: Mapper = (account, slug, payload, _webhookId, receive
   return { actorId, objectIds: [text(d.id)], event: { ...base, kind: "comment", title: `Comment on ${ref}: ${text(issue.title)}`, body: clip(text(d.body)) } };
 };
 
-/** Runs a GraphQL operation as the account's own member, through Composio. Throws `refused` when Linear or Composio turned it down. */
-export async function linearGraphql(c: Composio, account: LinearAccount, query: string, variables: Record<string, unknown> = {}): Promise<any> {
-  const result = await c.run(account, LINEAR.graphql, { query_or_mutation: query, variables });
+/**
+ * Runs a GraphQL operation as the account's own member, through Composio. Throws `refused` when Linear or Composio turned it down,
+ * or when the answer did not have the shape `check` (the whole answer, from `LINEAR_GRAPHQL`) says the caller relies on.
+ */
+export async function linearGraphql(c: Composio, account: LinearAccount, query: string, variables: Record<string, unknown> = {}, check?: ZodType): Promise<any> {
+  const result = await c.runChecked(account, LINEAR.graphql, { query_or_mutation: query, variables }, check);
   if (!result.ok) throw Object.assign(new Error(result.error), { refused: result.reason === "refused" || result.reason === "auth" });
   const answer = (result.data as any)?.data;
   const errors = (result.data as any)?.errors;
@@ -71,7 +75,7 @@ export function linearEnricher(c: Composio): Enricher {
     if (!account) return event;
     let issue: any;
     try {
-      issue = (await linearGraphql(c, account, ISSUE_QUERY, { id: event.ref }))?.issue;
+      issue = (await linearGraphql(c, account, ISSUE_QUERY, { id: event.ref }, LINEAR_GRAPHQL.issue))?.issue;
     } catch {
       return appendBody(event, LINEAR_UNREAD);
     }
@@ -111,10 +115,10 @@ export function linearCommentSender(c: Composio): Sender {
     async send(event, body) {
       const account = accountOf(event.account)!;
       try {
-        const found = await linearGraphql(c, account, "query Find($id: String!) { issue(id: $id) { id } }", { id: event.ref });
+        const found = await linearGraphql(c, account, "query Find($id: String!) { issue(id: $id) { id } }", { id: event.ref }, LINEAR_GRAPHQL.issueId);
         const issueId = text(found?.issue?.id);
         if (issueId === "") return { ok: false, refused: true, reason: `Linear has no issue ${event.ref}` };
-        const made = await linearGraphql(c, account, "mutation Comment($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id url } } }", { input: { issueId, body } });
+        const made = await linearGraphql(c, account, "mutation Comment($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id url } } }", { input: { issueId, body } }, LINEAR_GRAPHQL.commentCreate);
         if (made?.commentCreate?.success !== true) return { ok: false, refused: true, reason: "Linear did not create the comment" };
         return { ok: true, url: text(made.commentCreate.comment?.url) || event.url };
       } catch (error: any) {

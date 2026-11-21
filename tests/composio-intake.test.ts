@@ -189,10 +189,12 @@ describe("composioHandler", () => {
     expect(await handlerFor()(request(body, sign(body)))).toEqual({ status: 200, text: "ignored" });
   });
 
-  it("hands trigger.disabled and connected_account.expired deliveries to the component and stores no event", async () => {
-    const disabled = JSON.stringify({ ...fixture.body, type: "composio.trigger.disabled", metadata: { ...fixture.body.metadata, trigger_id: "ti_9" }, data: { reason: "other" } });
+  // The shapes Composio documents for these two deliveries: a disabled trigger's `data.id` is the trigger instance and `data.disabled_reason`
+  // says why; an expired connection's `data.id` is the connection, and the metadata names only the project.
+  it("hands trigger.disabled and connected_account.expired deliveries to the component, as Composio documents them, and stores no event", async () => {
+    const disabled = JSON.stringify({ id: "msg_1", type: "composio.trigger.disabled", timestamp: "2026-11-19T12:00:00Z", metadata: { project_id: "pr_1" }, data: { id: "ti_9", connected_account_id: "ca_x", trigger_name: "LINEAR_PRIVATE_TEAM_ISSUE_CREATED", user_id: "linear:proton", trigger_config: {}, disabled_at: "2026-11-19T12:00:00Z", disabled_reason: "other" } });
     expect(await handlerFor()(request(disabled, sign(disabled)))).toMatchObject({ status: 200 });
-    const expired = JSON.stringify({ ...fixture.body, type: "composio.connected_account.expired", data: {} });
+    const expired = JSON.stringify({ id: "msg_2", type: "composio.connected_account.expired", timestamp: "2026-11-19T12:00:00Z", metadata: { project_id: "pr_1", org_id: "org_1" }, data: { id: fixture.body.metadata.connected_account_id, toolkit: { slug: "linear" }, status: "EXPIRED", status_reason: "expired" } });
     expect(await handlerFor()(request(expired, sign(expired)))).toMatchObject({ status: 200 });
     expect(lifecycle).toEqual(["disabled ti_9 other", `expired ${fixture.body.metadata.connected_account_id}`]);
     expect(stored).toEqual([]);
@@ -202,7 +204,7 @@ describe("composioHandler", () => {
     composio.connectionExpired = async () => {
       throw new Error("boom");
     };
-    const expired = JSON.stringify({ ...fixture.body, type: "composio.connected_account.expired", data: {} });
+    const expired = JSON.stringify({ ...fixture.body, type: "composio.connected_account.expired", data: { id: "ca_x" } });
     expect(await handlerFor()(request(expired, sign(expired)))).toMatchObject({ status: 200 });
   });
 

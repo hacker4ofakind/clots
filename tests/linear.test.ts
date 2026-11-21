@@ -146,6 +146,17 @@ describe("Linear's enricher", () => {
     expect((await linearEnricher(composio)(event)).body).toContain(LINEAR_UNREAD);
   });
 
+  it("says the issue could not be read when Linear's answer is not the shape the enricher reads, instead of guessing", async () => {
+    const event = linearMapper(account, LINEAR.issueCreated, issueCreated, "m", NOW)!.event;
+    // A state that is a string, not an object; comments that are not a list; and an answer with no operation data at all.
+    graphql({ "issue(id": { issue: { identifier: "ENC-12", state: "Todo" } } });
+    expect((await linearEnricher(composio)(event)).body).toContain(LINEAR_UNREAD);
+    graphql({ "issue(id": { issue: { identifier: "ENC-12", comments: { nodes: "none" } } } });
+    expect((await linearEnricher(composio)(event)).body).toContain(LINEAR_UNREAD);
+    api.answers.set(LINEAR.graphql, { ok: true, data: "<html>" });
+    expect((await linearEnricher(composio)(event)).body).toContain(LINEAR_UNREAD);
+  });
+
   it("leaves an event of an account it does not know as it is", async () => {
     const event = { ...linearMapper(account, LINEAR.issueCreated, issueCreated, "m", NOW)!.event, account: "other" };
     expect(await linearEnricher(composio)(event)).toEqual(event);
@@ -183,6 +194,15 @@ describe("Linear's comment sender", () => {
     expect(await sender.send(event, "x")).toMatchObject({ ok: false, refused: true });
     graphql({ "issue(id": { issue: { id: "uuid-12" } }, commentCreate: { commentCreate: { success: false } } });
     expect(await sender.send(event, "x")).toEqual({ ok: false, refused: true, reason: "Linear did not create the comment" });
+  });
+
+  it("does not take an answer of another shape for a comment that was made", async () => {
+    const sender = linearCommentSender(composio);
+    const event = linearMapper(account, LINEAR.issueCreated, issueCreated, "m", NOW)!.event;
+    graphql({ "issue(id": { issue: { id: "uuid-12" } }, commentCreate: { commentCreated: true } });
+    expect(await sender.send(event, "x")).toMatchObject({ ok: false, refused: true, reason: expect.stringContaining("unexpected shape") });
+    graphql({ "issue(id": { issue: { identifier: "no id" } } });
+    expect(await sender.send(event, "x")).toMatchObject({ ok: false, refused: true, reason: expect.stringContaining("unexpected shape") });
   });
 });
 

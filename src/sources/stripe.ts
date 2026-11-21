@@ -124,7 +124,7 @@ export function stripeEnricher(c: Composio): Enricher {
     const account = c.account(event.account, "stripe") as StripeAccount | undefined;
     if (!account) return event;
     const read = async (slug: string, args: Record<string, unknown>): Promise<any> => {
-      const result = await c.run(account, slug, args);
+      const result = await c.runChecked(account, slug, args);
       if (!result.ok) throw new Error(result.error);
       return result.data;
     };

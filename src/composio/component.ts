@@ -1,3 +1,4 @@
+import type { ZodType } from "zod";
 import type { ComposioAccount } from "../config.js";
 import { retryWait, type Supervisor } from "../listeners.js";
 import type { Store } from "../store.js";
@@ -42,6 +43,8 @@ export class Composio implements ToolkitHost {
   private told = new Set<string>();
   private signingIn = new Set<string>();
   private tools = new Map<string, ToolInfo | undefined>();
+  /** The fixed-purpose calls whose answers did not have the shape they rely on, since the daemon started. */
+  private drift = new Map<string, { account: ComposioAccount; slug: string; where: string }>();
 
   constructor(private d: ComposioDeps) {}
 
@@ -88,6 +91,29 @@ export class Composio implements ToolkitHost {
       else if (result.reason === "auth") await this.tellOnce(`auth:${userOf(a)}`, a, this.connectionText(a));
     }
     return result;
+  }
+
+  /**
+   * `run` for the daemon's own fixed-purpose calls: the answer is checked against the shape the call relies
+   * on (`check`, else the toolkit def's check for this slug). A mismatch fails closed, as a refused result
+   * the callers already handle ("could not be read"; a calendar change is refused), and is noted so that the
+   * daily check tells the user once.
+   */
+  async runChecked(a: ComposioAccount, slug: string, args: Record<string, unknown>, check?: ZodType): Promise<ExecResult> {
+    const result = await this.run(a, slug, args);
+    if (!result.ok) return result;
+    const schema = check ?? defFor(a.toolkit).responseChecks?.[slug];
+    if (schema === undefined) return result;
+    const parsed = schema.safeParse(result.data);
+    if (parsed.success) return result;
+    const issue = parsed.error.issues[0];
+    const where = issue === undefined ? "" : ` at ${issue.path.length > 0 ? issue.path.join(".") : "the top"}: ${issue.message}`;
+    const key = `${userOf(a)}|${slug}`;
+    if (!this.drift.has(key)) {
+      this.drift.set(key, { account: a, slug, where });
+      this.log(`${slug} answered in an unexpected shape for ${userOf(a)}${where}`);
+    }
+    return { ok: false, reason: "refused", drift: true, error: `${slug} answered in an unexpected shape${where}` };
   }
 
   /** Whether a write of the Clots in this account touched the object since a time (Unix milliseconds). */
@@ -351,11 +377,22 @@ export class Composio implements ToolkitHost {
         this.log(`the daily check of ${user} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    await this.reportDrift();
   }
 
-  /** A trigger Composio reports it disabled. One disabled because the connection expired comes back by itself; any other is made again once. */
+  /** Tells, once per tool and account per start, in the account's Clot channel, of a call whose answer changed shape. */
+  private async reportDrift(): Promise<void> {
+    for (const [key, d] of this.drift) {
+      await this.tellOnce(`drift:${key}`, d.account, `Composio's ${d.slug} answered in an unexpected shape${d.where}. What the daemon reads through it for ${userOf(d.account)} is treated as unreadable until it is fixed; Composio or ${d.account.toolkit} may have changed it.`);
+    }
+  }
+
+  /**
+   * A trigger Composio reports it disabled. One disabled because the connection expired comes back by itself
+   * (Composio words that `connection_expired` or "Connected account authentication expired."); any other is made again once.
+   */
   async triggerDisabled(triggerId: string, reason?: string): Promise<void> {
-    if (reason === "connection_expired") return;
+    if (reason !== undefined && /connection_expired|expired/i.test(reason)) return;
     const row = this.d.store.composio.allTriggers().find((t) => t.triggerId === triggerId);
     const a = row && this.d.accounts.find((x) => userOf(x) === row.user);
     const connectionId = row && this.d.store.composio.account(row.user)?.connectionId;

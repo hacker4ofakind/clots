@@ -1,3 +1,4 @@
+import type { ZodType } from "zod";
 import type { ComposioAccount } from "../../config.js";
 import type { ExecResult } from "../api.js";
 import { calendarDef } from "./googlecalendar.js";
@@ -17,6 +18,8 @@ export interface TriggerWant {
 /** What a toolkit's def may use of the Composio component. */
 export interface ToolkitHost {
   run(a: ComposioAccount, slug: string, args: Record<string, unknown>): Promise<ExecResult>;
+  /** `run`, then the answer is checked against the shape the daemon relies on; a mismatch is a failed result and is noted as drift. */
+  runChecked(a: ComposioAccount, slug: string, args: Record<string, unknown>, check?: ZodType): Promise<ExecResult>;
 }
 
 /**
@@ -34,6 +37,11 @@ export interface ToolkitDef {
   identity?(a: ComposioAccount, host: ToolkitHost): Promise<string>;
   /** Fields the connection needs besides the key. */
   connectExtra?(a: ComposioAccount): Record<string, string>;
+  /**
+   * The shape of what each fixed-purpose call of the daemon relies on, by tool slug (enrichment reads,
+   * identity, the calendar's calls). `runChecked` applies it; a call that is not here is not checked.
+   */
+  responseChecks?: Record<string, ZodType>;
 }
 
 const BUILT_IN: Record<string, ToolkitDef> = {

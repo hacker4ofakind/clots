@@ -175,6 +175,16 @@ describe("Notion through Composio", () => {
     expect((await notionEnricher(composio)(event)).body).toContain(NOTION_UNREAD);
   });
 
+  it("says it could not read the page when an answer is not Notion's object, instead of reading it wrongly", async () => {
+    const { event } = normalizeNotion(account, pageCreated, NOW)!;
+    // A page with no properties (the answer is wrapped one level deeper), and a comment list that is not a list.
+    reads({ [NOTION.retrievePage]: { data: page }, [NOTION.getUser]: { name: "Ann" } });
+    expect((await notionEnricher(composio)(event)).body).toContain(NOTION_UNREAD);
+    reads({ [NOTION.retrievePage]: page, [NOTION.fetchComments]: { results: "none" }, [NOTION.getUser]: { name: "Ann" } });
+    const comment = { ...normalizeNotion(account, commentCreated, NOW)!.event, automated: false };
+    expect((await notionEnricher(composio)(comment)).body).toContain(NOTION_UNREAD);
+  });
+
   it("leaves an event of an account it does not know as it is", async () => {
     const { event } = normalizeNotion(account, pageCreated, NOW)!;
     expect(await notionEnricher(composio)({ ...event, account: "other" })).toEqual({ ...event, account: "other" });
