@@ -112,7 +112,7 @@ describe("Clot.keepWarm", () => {
   let clot: Clot;
   let now: Date;
   let log: string[];
-  const router: Router = { decide: async () => ({ effort: "high" }) };
+  const router: Router = { decide: async () => ({ effort: "medium" }) };
 
   beforeEach(async () => {
     store = new Store(":memory:");
@@ -169,14 +169,14 @@ describe("Clot.keepWarm", () => {
 
   it("pings at low effort for that turn only: the turns after it, even after a failed ping, run at their own", async () => {
     await say("hello");
-    expect(runner.calls[0].effort).toBe("high");
+    expect(runner.calls[0].effort).toBe("medium");
     runner.ok = false;
     now = new Date(now.getTime() + KEEP_WARM_AFTER_MS);
     await clot.keepWarm();
     expect(runner.calls[1]).toMatchObject({ prompt: KEEP_WARM_PROMPT, effort: "low" });
     runner.ok = true;
     await say("again");
-    expect(runner.calls[2]).toMatchObject({ prompt: "again", effort: "high" });
+    expect(runner.calls[2]).toMatchObject({ prompt: "again", effort: "medium" });
   });
 
   it("does not ping while a turn runs, and the ping makes a message wait, then run", async () => {
