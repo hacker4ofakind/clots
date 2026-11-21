@@ -103,7 +103,7 @@ describe("Sweeper", () => {
       store,
       now: () => clock,
       enabled,
-      everyMinutes: 90,
+      everyMinutes: 180,
       run,
       clots: () => [{ name: "home", about: "anything that belongs to no project" }],
       skip: () => ["GitHub"],
@@ -143,12 +143,12 @@ describe("Sweeper", () => {
     answers = [ok([], "baseline"), ok([finding()], "second"), ok([finding({ title: "same state, new words" })], "third")];
     const sweeper = build();
     await sweeper.tick();
-    clock += 91 * MIN;
+    clock += 181 * MIN;
     await sweeper.tick();
     expect(delivered).toHaveLength(1);
     expect(store.getState("sweep-record")).toBe("second");
     expect(store.getEvent(delivered[0])?.source).toBe("sweep");
-    clock += 91 * MIN;
+    clock += 181 * MIN;
     await sweeper.tick();
     expect(delivered).toHaveLength(1);
     expect(store.getState("sweep-record")).toBe("third");
@@ -166,14 +166,14 @@ describe("Sweeper", () => {
     await sweeper.tick();
     answers = [{ ok: false, error: "no connector available" }, { ok: true, output: { nope: 1 }, connectors: CONNECTORS }, { ok: false, error: "timed out" }, { ok: false, error: "timed out" }, ok([], "back")];
     for (let i = 0; i < 4; i++) {
-      clock += 91 * MIN;
+      clock += 181 * MIN;
       await sweeper.tick();
     }
     expect(store.getState("sweep-record")).toBe("baseline");
     expect(told).toHaveLength(1);
     expect(told[0]).toContain("failed 3 times in a row");
     expect(Number(store.getState("sweep-failures"))).toBe(4);
-    clock += 91 * MIN;
+    clock += 181 * MIN;
     await sweeper.tick();
     expect(store.getState("sweep-record")).toBe("back");
     expect(told).toHaveLength(2);
@@ -184,7 +184,7 @@ describe("Sweeper", () => {
   it("counts failures across a restart", async () => {
     answers = [{ ok: false, error: "x" }, { ok: false, error: "x" }, { ok: false, error: "x" }];
     for (let i = 0; i < 3; i++) {
-      clock += 91 * MIN;
+      clock += 181 * MIN;
       await build().tick();
     }
     expect(told).toHaveLength(1);
@@ -197,7 +197,7 @@ describe("Sweeper", () => {
     clock += 10 * MIN;
     await sweeper.tick();
     expect(requests).toHaveLength(1);
-    clock += 100 * MIN;
+    clock += 190 * MIN;
     held = true;
     await sweeper.tick();
     expect(requests).toHaveLength(1);
@@ -228,7 +228,7 @@ describe("Sweeper", () => {
     clock += 30 * MIN;
     await build().tick();
     expect(requests).toHaveLength(1);
-    clock += 61 * MIN;
+    clock += 151 * MIN;
     answers = [ok([], "b")];
     await build().tick();
     expect(requests).toHaveLength(2);
@@ -237,7 +237,7 @@ describe("Sweeper", () => {
   it("passes a usage limit on to the pause handler and leaves the record and the failure count alone", async () => {
     answers = [ok([], "a")];
     await build().tick();
-    clock += 91 * MIN;
+    clock += 181 * MIN;
     answers = [{ ok: false, limit: { resetsAt: 123 } }];
     await build().tick();
     expect(limits).toEqual([123]);

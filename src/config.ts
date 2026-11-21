@@ -152,7 +152,7 @@ const FileSchema = z.object({
   // Whether a Clot may ask to send an email, which the daemon sends on the user's yes in a review channel; and how many days a request waits for that answer.
   sendReview: z.strictObject({ enabled: z.boolean().default(true), days: z.number().positive().default(3) }).prefault({}),
   gates: GatesSchema,
-  sweep: z.strictObject({ enabled: z.boolean().default(true), everyMinutes: z.number().int().min(15).default(90) }).prefault({}),
+  sweep: z.strictObject({ enabled: z.boolean().default(true), everyMinutes: z.number().int().min(15).default(180) }).prefault({}),
   // An explicit {} means no warning.
   spend: z.strictObject({ weeklyWarnUsd: z.number().positive().optional() }).default({ weeklyWarnUsd: 50 }),
   sources: SourcesSchema,
