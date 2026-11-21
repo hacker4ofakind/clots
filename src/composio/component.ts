@@ -249,8 +249,17 @@ export class Composio implements ToolkitHost {
     const hash = keyHash(a.apiKey!);
     const row = store.composio.account(user);
     if (row?.connectionId !== undefined && row.keyHash === hash) {
+      const staged = store.getState(this.stagedKey(user))?.split("|")[1];
       // A swap that finished but crashed before clearing its marker.
-      if (store.getState(this.stagedKey(user))?.split("|")[1] === row.connectionId) store.deleteState(this.stagedKey(user));
+      if (staged === row.connectionId) store.deleteState(this.stagedKey(user));
+      else if (staged !== undefined) {
+        // The key went back to the established one after a swap failed: the staged connection is abandoned. Delete it
+        // (throwing so the next try repeats this when it cannot), make the established one the tool target again, and
+        // put the triggers back on it, since the failed swap had moved their rows to the staged connection.
+        if (!(await this.dropStaged(user, row.connectionId))) throw new Error(`could not delete the abandoned connection of ${user} yet`);
+        await api.findConnection(user, a.toolkit);
+        await this.syncTriggers(a, row.connectionId, { verify: false, force: true });
+      }
       return row.connectionId;
     }
 

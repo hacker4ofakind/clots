@@ -251,6 +251,45 @@ describe("reconcile", () => {
     expect(store.composio.triggers("linear:proton")).toHaveLength(4);
   });
 
+  it("goes back to the established connection when the key is put back after a failed swap, deleting the staged one and restoring the triggers", async () => {
+    make([linear]);
+    await composio.reconcile();
+    const established = store.composio.account("linear:proton")!.connectionId!;
+    make([{ ...linear, apiKey: "lin_api_NEWKEY" }]);
+    // The swap fails at its last step: the triggers already moved to the staged connection.
+    api.failNext.set("deleteConnection", new Error("down"));
+    await composio.reconcile();
+    const [, staged] = store.getState("composio.staged.linear:proton")!.split("|");
+    expect([...api.triggers.values()].every((t) => t.connectionId === staged)).toBe(true);
+
+    make([linear]);
+    api.calls = [];
+    expect((await composio.reconcile()).failures).toEqual([]);
+    expect(api.connections.has(staged)).toBe(false);
+    expect(api.connections.has(established)).toBe(true);
+    expect(store.getState("composio.staged.linear:proton")).toBeUndefined();
+    expect(store.composio.account("linear:proton")?.connectionId).toBe(established);
+    expect([...api.triggers.values()].map((t) => t.connectionId)).toEqual([established, established, established, established]);
+    expect(store.composio.triggers("linear:proton")).toHaveLength(4);
+    expect(store.composio.triggers("linear:proton").every((t) => api.triggers.has(t.triggerId))).toBe(true);
+    const names = api.calls.map((c) => c.split(":")[0]);
+    expect(names.indexOf("findConnection")).toBeGreaterThan(names.indexOf("deleteConnection"));
+  });
+
+  it("keeps trying to delete the abandoned staged connection when the key is put back and the delete fails", async () => {
+    make([linear]);
+    await composio.reconcile();
+    make([{ ...linear, apiKey: "lin_api_NEWKEY" }]);
+    api.failNext.set("deleteConnection", new Error("down"));
+    await composio.reconcile();
+    make([linear]);
+    api.failNext.set("deleteConnection", new Error("still down"));
+    expect((await composio.reconcile()).failures).toHaveLength(1);
+    expect(store.getState("composio.staged.linear:proton")).toBeDefined();
+    expect((await composio.reconcile()).failures).toEqual([]);
+    expect(store.getState("composio.staged.linear:proton")).toBeUndefined();
+  });
+
   it("finishes a swap whose old connection was already deleted before the crash", async () => {
     make([linear]);
     await composio.reconcile();
