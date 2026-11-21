@@ -18,8 +18,15 @@ holds the connections, sends their events to one webhook, and runs their tools.
   need a Notion OAuth app that an API-key connection does not have; its reads and
   comments go through Composio.
 - PostHog, specified in 2c and not yet built, is connected through Composio too.
-- Any other service Composio has a toolkit for can be added as an account, with
-  its triggers as events and its tools for the Clot.
+- Any other service Composio has a toolkit for can be added as an account with
+  one entry in the configuration, whatever its auth scheme (an API key, a key
+  of several fields, Composio's managed OAuth app, or an OAuth app of the
+  user's own), with its triggers as events and its tools for the Clot.
+- The Clots extend this themselves (section 11): a Clot researches a toolkit,
+  writes a Composio recipe (declarative data, never code) that turns its trigger
+  payloads into proper events with enrichment and the self-caused drop, tries it
+  on real payloads, and hands the user the configuration entry to add. A toolkit
+  with no triggers gets its events from a watch recipe on one of its read tools.
 - The Clot can act in these services. Reads run in every turn. A write is decided
   by the account's audience (private, team or public), Composio's tags on the
   tool, a fixed list of what always asks, and, for destructive writes in a team
@@ -40,6 +47,8 @@ full:
 - **Intake** (parent section 9): the Composio webhook and the sources moved to it.
 - **Permissions** (parent section 7): account audiences, the rating of Composio
   tools, and the reviewer.
+- **Recipes** (2c sections 14 and 15): a third kind, the Composio recipe, and
+  watch recipes on Composio read tools.
 - **Stages** (parent section 16): 2e comes after 2d and before stage 3, whose
   onboarding checklist includes Composio connections.
 
@@ -63,16 +72,33 @@ full:
 - **Auth configs and connections are made by the daemon**, not in Composio's
   dashboard. At startup, for each account in the configuration, it makes sure an
   auth config exists for the toolkit and a connected account exists for the
-  account's user:
-  - an account with a key: an auth config with the `API_KEY` scheme, and a
-    connection made with `connectedAccounts.initiate` and the key read from
-    `.env`, active at once. When the key in `.env` changes, the connection is
-    replaced.
-  - the calendar: Composio's managed Google app. The connection is made with
-    `connectedAccounts.link`; the daemon posts the sign-in link in the channel of
-    the Clot the account is bound to (the home Clot's, for a shared account), as
-    it does for an OAuth MCP server (2c section 13), and waits for it to become
-    active.
+  account's user. Nothing in this is specific to a toolkit: the daemon reads
+  the toolkit's auth schemes, whether Composio manages one, and the exact fields
+  a connection needs from Composio (`toolkits.get`,
+  `getConnectedAccountInitiationFields`), and the account's entry (section 4)
+  says which way it connects:
+  - **a key** (`apiKey` or `fields`): an auth config with the toolkit's key
+    scheme (`API_KEY`, `BEARER_TOKEN`, `BASIC` and so on; `scheme` picks one when
+    the toolkit has several), and a connection made with
+    `connectedAccounts.initiate` and the fields read from `.env`, active at once.
+    `apiKey` fills the scheme's one required field under that field's own name.
+    When a value in `.env` changes, the connection is replaced.
+  - **Composio's managed OAuth app** (neither a key nor `oauthApp`), when
+    Composio offers one for the toolkit: the calendar, Slack, Reddit and most
+    OAuth services. The connection is made with `connectedAccounts.link`; the
+    daemon posts the sign-in link, naming the toolkit by Composio's display name,
+    in the channel of the Clot the account is bound to (the home Clot's, for a
+    shared account), as it does for an OAuth MCP server (2c section 13), and
+    waits for it to become active.
+  - **an OAuth app of the user's own** (`oauthApp`): an auth config with the
+    `OAUTH2` scheme and the app's client ID and secret from `.env`, then the same
+    sign-in link. For a toolkit Composio has no managed app for, or whose webhook
+    triggers need the user's own app.
+  - The configuration is checked against what Composio says when the account
+    first connects: a toolkit with no scheme the entry fits, or a required field
+    the entry does not give, is reported once in the account's Clot channel,
+    naming the schemes the toolkit accepts and each one's fields. The account
+    stays unconnected; nothing else is held up.
 - **Trigger instances are made by the daemon** too: for each account, the
   triggers its source section names, created when missing and removed when the
   account leaves the configuration. Each instance's ID is stored with its account.
@@ -89,31 +115,51 @@ for every toolkit:
     { "toolkit": "notion", "account": "main", "shared": true, "audience": "private", "apiKey": "NOTION_CONNECTION_API_KEY" },
     { "toolkit": "stripe", "account": "encryptify", "clot": "encryptify", "audience": "public", "apiKey": "STRIPE_ENCRYPTIFY_KEY" },
     { "toolkit": "googlecalendar", "account": "personal", "shared": true, "audience": "private", "leadTimes": ["24h"], "pollMinutes": 5 },
-    { "toolkit": "posthog", "account": "encryptify", "clot": "encryptify", "audience": "public", "apiKey": "POSTHOG_ENCRYPTIFY_KEY", "region": "us", "projectId": 123456, "events": ["signup"] }
+    { "toolkit": "posthog", "account": "encryptify", "clot": "encryptify", "audience": "public", "apiKey": "POSTHOG_ENCRYPTIFY_KEY", "region": "us", "projectId": 123456, "events": ["signup"] },
+    { "toolkit": "slack", "account": "work", "shared": true, "audience": "team", "triggers": [{ "slug": "SLACK_CHANNEL_MESSAGE_RECEIVED", "config": { "channel_id": "C0123" } }] },
+    { "toolkit": "supabase", "account": "encryptify", "clot": "encryptify", "audience": "team", "fields": { "full": "SUPABASE_ENCRYPTIFY_URL", "bearer_token": "SUPABASE_ENCRYPTIFY_KEY" } }
   ]
 }
 ```
 
 - **`toolkit`**: Composio's toolkit slug. The four in sections 7 to 10 and PostHog
   have events and enrichment specified here. Any other toolkit gives the Clot its
-  tools, and events from the triggers named in `triggers`.
+  tools, and events from the triggers named in `triggers`, mapped by its
+  Composio recipe when there is one (section 11).
 - **`account`**, **`clot`** or **`shared`**: as for every source (2c section 5).
   Routing is unchanged: a bound account's events go to its Clot; a shared
   account's go through routing rules, the routing call and the home Clot. In
   routing rules and events, `source` is the toolkit's name as Clots knows it
   (`stripe`, `linear`, `notion`, `calendar`, `posthog`), or the toolkit slug for
   any other.
-- **`audience`**: `private`, `team` or `public` (section 11). Default `public`.
+- **`audience`**: `private`, `team` or `public` (section 12). Default `public`.
 - **`apiKey`**: the `.env` key of the service's key. Absent for the calendar.
+- **`fields`** (any other toolkit only, in place of `apiKey`): the connection's
+  fields as Composio names them, each mapped to the `.env` key holding its value,
+  for a key scheme of more than one field (Supabase's `full` and
+  `bearer_token`).
+- **`scheme`** (any other toolkit only): which key scheme, when the toolkit has
+  more than one. Without it, the only key scheme the toolkit has.
+- **`oauthApp`** (any other toolkit only): `{ "clientId": "<.env key>",
+  "clientSecret": "<.env key>" }`, the user's own OAuth app. Not given with a key.
+- An entry with no `apiKey`, `fields` or `oauthApp` connects through Composio's
+  managed OAuth app (section 3). The sign-in should be made as the Clots' own
+  account at the service, as Linear's key is the Clots' member's.
+- **`selfIsUser`** (any other toolkit only): `true` when the connection is the
+  user's own account at the service, not the Clots'. Then the recipe's
+  `identity` is not used: the user's own messages are not dropped as the Clot's,
+  and only the drop of what the Clots' own writes touched applies. Default
+  `false`.
 - **`region`, `projectId`, `events`** (PostHog only): `us` (the default) or `eu`; the
   project to watch; and the names of the analytics events that become events here.
   The key needs the `hog_function:write` scope, which Composio uses to register its
   destination.
 - **`triggers`** (any other toolkit only): a list of Composio trigger slugs, each
-  with its `config`. Their events are of kind `trigger`, titled by the trigger's
-  name and carrying the payload as their body. Since the daemon cannot tell who
-  wrote what such a payload carries, these events are marked as from an
-  outsider.
+  with its `config`. A trigger the toolkit's Composio recipe maps becomes the
+  event the recipe describes (section 11). Any other becomes an event of kind
+  `trigger`, titled by the trigger's name and carrying the payload as its body.
+  Since the daemon cannot tell who wrote what such a payload carries, both are
+  marked as from an outsider.
 - `sources.stripe`, `sources.linear`, `sources.notion` and `sources.calendar` no
   longer exist. A configuration that still has one fails to load, naming the key
   and pointing at `sources.composio`.
@@ -132,7 +178,8 @@ for every toolkit:
 - **Repeats**: the event ID is the one 2c gave each source, built from the
   service's own ID (`stripe:<account>:<evt_…>`, and so on), so a service's retry,
   a recreated trigger, or two triggers reporting one thing make one event. A
-  generic toolkit's event is `composio:<webhook-id>`. A stored ID is
+  recipe's event is `<toolkit>:<account>:<its filled id>`; an unmapped trigger's,
+  or a recipe's whose id fills empty, is `composio:<webhook-id>`. A stored ID is
   acknowledged and ignored, as for every source.
 - **Lifecycle events**: the subscription also takes `composio.trigger.disabled`
   and `composio.connected_account.expired`. A trigger disabled for any reason but
@@ -140,7 +187,7 @@ for every toolkit:
   expired connection is told once, with a new sign-in link for the calendar.
   A disabled trigger's `data.id` is the trigger instance and `data.disabled_reason`
   says why; an expired connection's `data.id` is the connection.
-  The daily check of section 13 stays as a backstop.
+  The daily check of section 14 stays as a backstop.
 - **The Clot's own writes**: an event about an object one of the Clot's
   Composio writes created or changed in the last 10 minutes is dropped as
   self-caused, whoever the service names as its actor.
@@ -150,7 +197,12 @@ for every toolkit:
   connections. An unknown one is logged, acknowledged and discarded.
 - **Mapping**: each trigger slug has a function that turns its payload into the
   common event (parent section 3); the source sections give each. A trigger with
-  no mapping, on a toolkit sections 7 to 10 cover, is logged and discarded.
+  no mapping, on a toolkit sections 7 to 10 cover, is logged and discarded. Any
+  other toolkit is mapped by its Composio recipe, or else generically
+  (section 4).
+- **Samples**: for every toolkit without a built-in mapping, the daemon keeps the
+  last 5 payloads of each trigger of each account, for 7 days, so a recipe is
+  written against real deliveries (section 11).
 - From there the pipeline is unchanged: self-caused drop, enrichment, pre-filters,
   routing, hold, triage.
 
@@ -182,7 +234,7 @@ for every toolkit:
 - **Kinds, the event and enrichment**: as in 2c section 8. `actor` is the
   customer's email address, or `stripe`. Every Stripe event is automated.
 - **Writes**: every Stripe tool that is not read-only is on the fixed list
-  (section 11): money is at stake. The key cannot write anything else anyway.
+  (section 12): money is at stake. The key cannot write anything else anyway.
 
 ## 8. Linear
 
@@ -238,12 +290,127 @@ managed app. No Google Cloud project, no iCal address and no Apps Script.
   message started, the outsider limits, the log of what each change replaced, the
   check that a removed event is gone before it is created again, and
   `&calendar undo`. These two tools keep their own ratings in code; the rating of
-  section 11 does not apply to them.
+  section 12 does not apply to them.
 - The calendar's account has an audience like any other, but it only matters for
   the calendar tools Composio offers beyond these: any other calendar tool goes
-  through `composio_run` (section 11).
+  through `composio_run` (section 12).
 
-## 11. Acting through Composio
+## 11. Any other toolkit: what the Clots set up themselves
+
+A new service should need no work in this repository. A Clot does the research
+and writes what the daemon needs as data; the user adds one entry to
+`clots.config.json` and, for a key, its `.env` lines. The daemon never loads or
+runs anything a Clot wrote: it holds `COMPOSIO_API_KEY`, which reaches every
+connected account, and the Clots read outsider text. A Composio recipe is a
+schema-checked description, like the webhook and watch recipes of 2c, and does
+only what the schema allows.
+
+### Composio recipes
+
+A Composio recipe describes one toolkit's trigger payloads and applies to every
+account of that toolkit:
+
+```yaml
+composio:
+  - name: slack
+    toolkit: slack
+    identity: { tool: SLACK_AUTH_TEST, path: user_id }
+    triggers:
+      SLACK_CHANNEL_MESSAGE_RECEIVED:
+        kind: message
+        id: "{payload.channel}:{payload.ts}"
+        actorId: "{payload.user}"
+        actor: "{enrich.user.user.real_name}"
+        title: "Message in #{enrich.channel.channel.name}"
+        body: "{payload.text}"
+        url: ""
+        ref: "{payload.ts}"
+        place: "{payload.channel}"
+        subject: "slack:{payload.channel}:{payload.thread_ts}"
+        objects: ["{payload.channel}:{payload.ts}"]
+        automatedWhen: { payload.subtype: bot_message }
+        enrich:
+          - { as: channel, tool: SLACK_CONVERSATIONS_INFO, args: { channel: "{payload.channel}" } }
+          - { as: user, tool: SLACK_USERS_INFO, args: { user: "{payload.user}" } }
+```
+
+- **Templates** fill `{path}` as the other recipes do (a missing path gives
+  nothing). They read `payload`, the trigger's payload, and `enrich.<as>`, the
+  data of each of the recipe's own reads. Nothing else is in reach.
+- **`kind`**, **`title`**: required. `kind` follows the rulebook's rule for kinds.
+  Every other field is optional and falls back as for the generic mapping: the
+  `id` to the delivery's, the `actor` to `unknown`, the `body` to the payload,
+  the `subject` to `<toolkit>:<slug>`, `url`, `ref` and `place` to empty.
+- **`identity`**: a read tool and the path of the connection's own user ID in its
+  data. With it and `actorId`, events whose actor is the connection are dropped as
+  self-caused (section 6), and standing rules wait for it as they do for the
+  built-in sources. Not used for an account with `selfIsUser` (section 4).
+- **`objects`**: the service's IDs of the objects the event is about, for the drop
+  of what the Clots' own writes touched (section 5).
+- **`automatedWhen`**: as in a webhook recipe, path-and-value pairs that make the
+  event automated.
+- **`enrich`**: at most 3 reads per trigger, run in order on the account's own
+  session before the event is stored; a later read's arguments may use an earlier
+  read's data. Only a tool that the rating (section 12) counts as a read may be
+  named, checked when the recipe is set and again before each call; each call
+  counts against the allowance. A read that fails leaves a line saying so in the
+  body, and the event goes on with that read's data empty.
+- **Outsider**: a recipe's events are always an outsider's. A recipe cannot change
+  that, nor how any write is rated.
+- **Limits**: a recipe cannot name a toolkit that has a built-in mapping (Stripe,
+  Linear, Notion, Google Calendar, PostHog). A trigger the recipe does not list
+  is mapped generically. Two recipes for one toolkit: the first in file order is
+  in force and the other is reported, as for two recipes of one name.
+- **Where it lives**: in `global.yaml` or a Clot's own file, under `composio:`,
+  and is added, replaced and removed as webhook recipes are (2c section 15):
+  applied and posted with its undo, or put to the user when the turn came from an
+  outsider's text. Its events are routed by the account's binding, not the file
+  it is in.
+
+### Watch recipes on Composio read tools
+
+A toolkit with no triggers (Reddit has none) gets events from a watch recipe (2c
+section 14) that names a Composio account (`account: reddit:me`) in place of an
+MCP server, and one of its read tools. Everything else about watch recipes holds.
+The interval is at least 15 minutes, and every run counts against the allowance;
+the configuration's load checks the watches' calls per month with the calendars'
+(section 14).
+
+### The Clot's tools
+
+In the main session, with the rulebook tools:
+
+| Tool | Effect |
+|---|---|
+| `composio_toolkit(toolkit)` | What Composio says of a toolkit, connected or not: its auth schemes, whether Composio manages one, each scheme's connection fields, its triggers with their type (webhook or polled), config schema and payload schema, and its tools with their tags. Only reads. |
+| `composio_samples(account, trigger?)` | The kept payloads of an account's triggers (section 5), newest first, wrapped as untrusted data. |
+| `composio_recipe_try(recipe, sample or payload)` | Runs a draft recipe on a kept sample or on a payload the Clot gives, including its enrichment reads on a connected account, and shows the event it would make, or why it does not fit. Records nothing. |
+| `composio_recipe(action, file, recipe)` | Sets or removes a Composio recipe, as `webhook_recipe` does. |
+
+### The skill
+
+The daemon installs a skill, `composio-integration`, into each Clot's
+`~/.claude/skills` whenever the Clot's container starts, replacing what is there,
+so it changes with the daemon. (The home folder is the Clot's own volume, so a
+file built into the image would be hidden.) It takes the Clot through adding a
+service:
+
+1. Read the toolkit with `composio_toolkit`, and the service's own documentation
+   for what its payloads mean.
+2. Choose the triggers: webhook ones first. When a toolkit has only polled
+   triggers, or none, say so to the user and propose a watch recipe or a polled
+   trigger, with what each costs of the allowance.
+3. Choose the auth: Composio's managed app when there is one; otherwise the key
+   scheme and its fields, or the user's own OAuth app when the triggers need it.
+   Ask whether the Clots have an account of their own at the service; if the
+   connection will be the user's own, the entry gets `selfIsUser`.
+4. Give the user the exact `sources.composio` entry, any `.env` keys to add, the
+   audience it suggests and why, and that a restart applies it.
+5. Once the account is connected and a sample has arrived, write the recipe, try
+   it on every kept sample, and set it.
+6. Report what the Clot will now see from the service, and what it will not.
+
+## 12. Acting through Composio
 
 ### The tools
 
@@ -382,21 +549,23 @@ reviewer's reason). A yes runs exactly what was shown.
 tools on the account the event came from. They are sent under the rule the user
 approved, as in 2b, and are not rated again.
 
-## 12. Components
+## 13. Components
 
 | Component | Responsibility |
 |---|---|
 | Composio | Holds the client and `COMPOSIO_API_KEY`; keeps auth configs, connections, trigger instances and the webhook subscription in step with the configuration; runs tools on an account's session; checks triggers daily. |
 | Composio intake | `/webhooks/composio`: verifies, drops repeats, finds the account, maps the payload to the common event. |
-| Composio rating | Pure code: the order of section 11, the fixed list, the destructive check. |
-| Write reviewer | The Haiku 5.5 call of section 11, behind the model interface. |
+| Composio rating | Pure code: the order of section 12, the fixed list, the destructive check. |
+| Write reviewer | The Haiku 5.5 call of section 12, behind the model interface. |
 | Composio log | Every write, with what its undo needs; `&composio undo`. |
+| Composio recipes | The schema, the mapping and enrichment of section 11, and the kept samples. |
+| Skill installer | Puts `composio-integration` into each Clot's home at container start. |
 
 The Stripe and Linear webhook adapters, the iCal poller and its parser,
 the calendar's Apps Script client, `setup/calendar.gs`, and their tests and
 recorded payloads are removed. New recorded Composio payloads take their place.
 
-## 13. Failure handling
+## 14. Failure handling
 
 - **Composio unreachable**: a tool call returns the error to the Clot, which says
   what it could not do. Enrichment goes on with a line saying so. Webhooks simply
@@ -424,15 +593,23 @@ recorded payloads are removed. New recorded Composio payloads take their place.
   and account per start, in the account's Clot channel.
 - **The allowance runs low**: the daemon counts its tool calls and deliveries
   each month and warns once at 70% and once at 90% of each Hobby allowance. The
-  calendars' polling may use at most 10,000 calls a month in all, checked when
-  the configuration loads.
+  calendars' polling and the watch recipes on Composio read tools may use at most
+  10,000 calls a month in all, checked when the configuration and the rulebook
+  load; a watch that would pass it is refused with the reason.
+- **A recipe that no longer fits its payloads**: a template that fills empty
+  falls back as section 11 says, and an enrichment read that fails is a line in
+  the body, so a changed payload never loses an event. A recipe that does not
+  fit the schema is reported as any rule file is, and its toolkit is mapped
+  generically until it is fixed.
+- **An account whose entry does not fit the toolkit's auth**: reported once with
+  what the toolkit accepts (section 3); its triggers and tools wait.
 - **Startup**: nothing Composio does holds up the daemon's start. Each account
   connects on its own, with its own retries.
 - **Daemon down**: nothing relies on Composio retrying a delivery; one it gives up
   on is lost, as with any webhook. The calendar's reminders are made at startup
   as in 2c.
 
-## 14. Testing
+## 15. Testing
 
 - The rating, against a table: tags (read-only, destructive, both missing) ×
   audience × fixed list × outsider turn, with the expected outcome of each row.
@@ -449,8 +626,21 @@ recorded payloads are removed. New recorded Composio payloads take their place.
 - `&composio undo` for a create and for an update.
 - The calendar's rules of parent section 7, against a fake Composio calendar.
 - The configuration: old source keys refused, a missing `.env` key named.
+- Choosing the auth, against recorded toolkit metadata (Slack, Reddit, Supabase,
+  and one with no managed app): managed sign-in, a one-field key under its own
+  field name, a two-field key, the user's own OAuth app, and each mismatch with
+  its message.
+- Composio recipes: the schema (a built-in toolkit, a write tool in `enrich`, more
+  than 3 reads refused), the mapping of a recorded Slack payload with its
+  enrichment against a fake Composio, each fallback, the self-caused drop through
+  `identity` and `actorId`, and the intake routing a recipe's trigger and an
+  unlisted one.
+- `composio_recipe_try` on a kept sample, and the samples' 5-per-trigger and
+  7-day limits.
+- A watch recipe on a Composio read tool, and the monthly limit refusing one.
+- The skill is installed into a container's home and replaced on the next start.
 
-## 15. Done when
+## 16. Done when
 
 - A Linear issue, a Notion comment, a Stripe test-mode failed payment and a
   calendar reminder each reach the Clot through Composio, routed and triaged as
@@ -463,8 +653,17 @@ recorded payloads are removed. New recorded Composio payloads take their place.
 - The Clot adds, moves and removes a calendar event through Composio under the
   existing rules, and `&calendar undo` reverses each.
 - A trigger disabled by hand is noticed and recreated by the daily check.
+- Slack is connected with only a configuration entry, through Composio's managed
+  sign-in. Following the skill, the home Clot writes and sets a Slack recipe from
+  a kept sample, and a message in the watched channel then reaches it as a
+  `message` event with the channel's and author's names, while the Clot's own
+  message in that channel does not.
+- Supabase connects with its two-field key from `fields`, and the Clot reads
+  through its tools.
+- Reddit connects through the managed sign-in, and a watch recipe on its read
+  tool for a subreddit's new posts makes events.
 
-## 16. Checked live before building
+## 17. Checked live before building
 
 Each of these was checked live with `scripts/spike-2e.ts`, against the Clots' own
 Composio project, before anything was built on it:
@@ -482,17 +681,29 @@ Composio project, before anything was built on it:
 5. Composio's tags are set on every tool of the five toolkits. A few tools that
    write carry `readOnlyHint` (`NOTION_CREATE_VIEW_QUERY`,
    `STRIPE_CREATE_REPORT_RUN`, PostHog's `CREATE_…_QUERY` tools), which is why
-   section 11 does not trust that tag alone. Linear's delete, archive and remove
+   section 12 does not trust that tag alone. Linear's delete, archive and remove
    tools carry only `updateHint`, so the destructive check also reads the slug.
 6. Composio's calendar list returns expanded occurrences with their series' ID
    (`recurringEventId`) and original start; a deleted event reads back with
    `status: "cancelled"`, and deleting it again fails with a 410.
+7. Composio's metadata says enough to connect any toolkit without code of its
+   own: `toolkits.get` gives each toolkit's auth schemes and the ones Composio
+   manages, and each scheme's connection fields. Slack has only OAuth, managed,
+   and nine triggers, all webhook ones. Reddit has managed OAuth and no triggers.
+   Supabase has managed OAuth, or an API key whose connection needs two fields,
+   `full` and `bearer_token`, so a key cannot always be sent as
+   `generic_api_key`. `triggers.listTypes` gives each trigger's type and config
+   schema.
 
-## 17. Not in 2e
+## 18. Not in 2e
 
 - Moving GitHub or email to Composio.
 - Composio's Notion triggers, and Linear's webhook triggers (each needs an OAuth
-  app), and the two Stripe kinds Composio has no trigger for.
+  app), and the two Stripe kinds Composio has no trigger for. `oauthApp` makes
+  them reachable, but their built-in mappings are written for what they use now.
+- Recipes that change how a toolkit's writes are rated, or add inverses for
+  `&composio undo`: both would let a Clot widen what it may do unasked.
+- Code written by a Clot, run by the daemon (section 11).
 - Sentry and Vercel (Composio has no triggers for them; 2c section 16 stands).
 - Composio's remote sandbox, and the computers some toolkits offer (Orgo, Browser
   Use): the Clots have their own (parent section 10).
