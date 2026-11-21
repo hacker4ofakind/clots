@@ -37,6 +37,11 @@ export interface MainTurnRequest extends TurnBase {
   role: "main";
   /** The daemon's tools for this turn. They run in the daemon, and are made for the turn so that they know what kind it is. */
   tools?: DaemonTools;
+  /**
+   * A keep-warm turn: every tool call is refused. The tools stay in the request so that its prefix is the one
+   * the Clot's other turns send, which is what the ping keeps cached.
+   */
+  noTools?: boolean;
 }
 
 /** A worker's turn: it works freely in its own directory, behind the worker guard. */
@@ -109,6 +114,7 @@ export interface OneOffResult {
 
 export const ONE_OFF_MAX_TURNS = 30;
 
+const KEEP_WARM_REFUSAL = "Refused: this turn only keeps the cache warm. Reply with the word ok.";
 const CWD = "/workspace/repo";
 const MAX_STEP = 120;
 
@@ -218,8 +224,21 @@ export function turnOptions(req: TurnRequest, o: RunnerOptions): Options {
     settings: { attribution: { pr: PR_ATTRIBUTION } },
     // AskUserQuestion: its prompts cannot be shown in chat; the Clot asks in plain text instead.
     disallowedTools: ["AskUserQuestion", ...LOCK_REMOVED_TOOLS],
-    hooks: { PreToolUse: [{ hooks: [async (hook) => (hook.hook_event_name === "PreToolUse" ? lockHookAnswer(hook.tool_name, hook.tool_input, o.testCommand) : {})] }] },
+    hooks: {
+      PreToolUse: [
+        {
+          hooks: [
+            async (hook) => {
+              if (hook.hook_event_name !== "PreToolUse") return {};
+              if (req.noTools) return { hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: KEEP_WARM_REFUSAL } };
+              return lockHookAnswer(hook.tool_name, hook.tool_input, o.testCommand);
+            },
+          ],
+        },
+      ],
+    },
     canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
+      if (req.noTools) return { behavior: "deny" as const, message: KEEP_WARM_REFUSAL };
       const verdict = lockDecision(toolName, toolInput, o.testCommand);
       return verdict.ok ? { behavior: "allow" as const, updatedInput: toolInput } : { behavior: "deny" as const, message: verdict.reason };
     },

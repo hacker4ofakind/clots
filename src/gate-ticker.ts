@@ -14,12 +14,14 @@ export interface GateTickerDeps {
   wakeWorkers: () => void;
   /** Runs the sweep when it is due. Not waited for. */
   sweep: () => Promise<void>;
+  /** Pings the Clots whose prompt cache is about to expire. Not waited for. Absent: none. */
+  keepWarm?: () => Promise<void>;
 }
 
 /**
  * The daemon's one-minute clock. It keeps the usage reading fresh during a lead-in window, notices when
- * the gate starts or stops holding and wakes the Clots and the worker queue when it does, and starts
- * the sweep when it is due. Every step catches its own errors: one that escaped would end the process.
+ * the gate starts or stops holding and wakes the Clots and the worker queue when it does, starts
+ * the sweep when it is due, and pings the Clots whose prompt cache is about to expire. Every step catches its own errors: one that escaped would end the process.
  */
 export class GateTicker {
   private last: GateState["holds"] | undefined;
@@ -55,6 +57,11 @@ export class GateTicker {
       void this.d.sweep().catch((error) => console.error("the sweep failed:", error));
     } catch (error) {
       console.error("starting the sweep failed:", error);
+    }
+    try {
+      void this.d.keepWarm?.().catch((error) => console.error("keeping the caches warm failed:", error));
+    } catch (error) {
+      console.error("starting the keep-warm pings failed:", error);
     }
   }
 }

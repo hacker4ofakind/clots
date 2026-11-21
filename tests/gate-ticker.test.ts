@@ -26,6 +26,14 @@ function make(over: Partial<ConstructorParameters<typeof GateTicker>[0]> = {}) {
 }
 
 describe("GateTicker", () => {
+  it("starts the keep-warm pings on every tick without waiting for them", async () => {
+    const keepWarm = vi.fn(() => new Promise<void>(() => undefined));
+    const { ticker } = make({ keepWarm });
+    await ticker.tick();
+    await ticker.tick();
+    expect(keepWarm).toHaveBeenCalledTimes(2);
+  });
+
   it("wakes everything at startup and when the gate starts or stops, not on every tick", async () => {
     const { ticker, clock, d } = make();
     await ticker.tick();
