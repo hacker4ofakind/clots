@@ -196,6 +196,94 @@ describe("reconcile", () => {
     expect(api.connections.size).toBe(1);
   });
 
+  it("keeps the staged marker and makes no new connection when the staged one cannot be read just now", async () => {
+    make([linear]);
+    await composio.reconcile();
+    make([{ ...linear, apiKey: "lin_api_NEWKEY" }]);
+    api.failNext.set("upsertTrigger", new Error("down"));
+    await composio.reconcile();
+    const marker = store.getState("composio.staged.linear:proton");
+    expect(marker).toBeDefined();
+    api.calls = [];
+    api.failNext.set("connection", new Error("timed out"));
+    const { failures } = await composio.reconcile();
+    expect(failures).toHaveLength(1);
+    expect(store.getState("composio.staged.linear:proton")).toBe(marker);
+    expect(api.of("connectWithKey")).toEqual([]);
+    expect(api.of("deleteConnection")).toEqual([]);
+    expect((await composio.reconcile()).failures).toEqual([]);
+    expect(api.of("connectWithKey")).toEqual([]);
+  });
+
+  it("makes a new connection when the staged one is confirmed gone, and keeps the marker when it cannot be deleted", async () => {
+    make([linear]);
+    await composio.reconcile();
+    make([{ ...linear, apiKey: "lin_api_NEWKEY" }]);
+    api.failNext.set("upsertTrigger", new Error("down"));
+    await composio.reconcile();
+    const [, staged] = store.getState("composio.staged.linear:proton")!.split("|");
+    api.connections.get(staged)!.status = "failed";
+    const marker = store.getState("composio.staged.linear:proton");
+    api.failNext.set("deleteConnection", new Error("timed out"));
+    expect((await composio.reconcile()).failures).toHaveLength(1);
+    expect(store.getState("composio.staged.linear:proton")).toBe(marker);
+    expect(api.connections.has(staged)).toBe(true);
+    expect((await composio.reconcile()).failures).toEqual([]);
+    expect(api.connections.has(staged)).toBe(false);
+    expect(api.connections.size).toBe(1);
+  });
+
+  it("never deletes the account's own connection because a marker names it, and clears that marker", async () => {
+    make([linear]);
+    await composio.reconcile();
+    const current = store.composio.account("linear:proton")!.connectionId!;
+    store.setState("composio.staged.linear:proton", `oldhash|${current}`);
+    await composio.reconcile();
+    expect(store.getState("composio.staged.linear:proton")).toBeUndefined();
+    expect(api.connections.has(current)).toBe(true);
+    // And on a later key change the marker does not make the swap delete the connection before the new one is ready.
+    store.setState("composio.staged.linear:proton", `oldhash|${current}`);
+    make([{ ...linear, apiKey: "lin_api_NEWKEY" }]);
+    api.calls = [];
+    expect((await composio.reconcile()).failures).toEqual([]);
+    const names = api.calls.map((c) => c.split(":")[0]);
+    expect(names.indexOf("connectWithKey")).toBeLessThan(names.indexOf("deleteConnection"));
+    expect(store.composio.triggers("linear:proton")).toHaveLength(4);
+  });
+
+  it("finishes a swap whose old connection was already deleted before the crash", async () => {
+    make([linear]);
+    await composio.reconcile();
+    const first = store.composio.account("linear:proton")!.connectionId!;
+    make([{ ...linear, apiKey: "lin_api_NEWKEY" }]);
+    api.failNext.set("upsertTrigger", new Error("down"));
+    await composio.reconcile();
+    api.connections.delete(first);
+    expect((await composio.reconcile()).failures).toEqual([]);
+    expect(store.composio.account("linear:proton")?.keyHash).not.toBeUndefined();
+    expect(api.connections.has(store.composio.account("linear:proton")!.connectionId!)).toBe(true);
+  });
+
+  it("deletes a staged connection when its account leaves the configuration, keeping the established one, and retries when it cannot", async () => {
+    make([linear, notion]);
+    await composio.reconcile();
+    const established = store.composio.account("linear:proton")!.connectionId!;
+    make([{ ...linear, apiKey: "lin_api_NEWKEY" }, notion]);
+    api.failNext.set("upsertTrigger", new Error("down"));
+    await composio.reconcile();
+    const [, staged] = store.getState("composio.staged.linear:proton")!.split("|");
+    make([notion]);
+    api.failNext.set("deleteConnection", new Error("timed out"));
+    await composio.reconcileRemoved();
+    expect(store.composio.account("linear:proton")).toBeDefined();
+    expect(store.getState("composio.staged.linear:proton")).toBeDefined();
+    await composio.reconcileRemoved();
+    expect(store.composio.account("linear:proton")).toBeUndefined();
+    expect(store.getState("composio.staged.linear:proton")).toBeUndefined();
+    expect(api.connections.has(staged)).toBe(false);
+    expect(api.connections.has(established)).toBe(true);
+  });
+
   it("deletes the triggers of an account that left the configuration, leaving its connection", async () => {
     make([linear, notion]);
     await composio.reconcile();

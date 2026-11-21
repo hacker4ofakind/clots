@@ -2,9 +2,12 @@ import type { ZodType } from "zod";
 import type { ComposioAccount } from "../config.js";
 import { retryWait, type Supervisor } from "../listeners.js";
 import type { Store } from "../store.js";
-import { configKey, keyHash, type ComposioApi, type ExecResult, type ToolInfo } from "./api.js";
+import { configKey, keyHash, type ComposioApi, type Connection, type ExecResult, type ToolInfo } from "./api.js";
 import type { Meter } from "./meter.js";
 import { defFor, userOf, type ToolkitHost, type TriggerWant } from "./toolkits/index.js";
+
+/** Whether an error says the thing is not there (Composio answers 404), as opposed to a failure to ask. */
+const isNotFound = (e: unknown): boolean => Number((e as { status?: unknown } | null)?.status) === 404 || /404|not found/i.test(e instanceof Error ? e.message : String(e));
 
 const DAY_MS = 86_400_000;
 /** The first daily check comes this long after startup. */
@@ -196,8 +199,29 @@ export class Composio implements ToolkitHost {
         }
         this.d.store.composio.deleteTrigger(row.user, t.slug, t.key);
       }
+      // A connection a failed key swap staged has no account left to retry or clear it, so it goes too. The account's
+      // established connection stays. When it cannot be deleted now, the account's row stays and the next start tries again.
+      if (!(await this.dropStaged(row.user, row.connectionId))) continue;
       this.d.store.composio.deleteAccount(row.user);
     }
+  }
+
+  /** Deletes the connection a failed key swap staged for a user, and its marker. False when that could not be done yet. */
+  private async dropStaged(user: string, current: string | undefined): Promise<boolean> {
+    const staged = this.d.store.getState(this.stagedKey(user));
+    if (staged === undefined) return true;
+    const id = staged.split("|")[1];
+    try {
+      // Never the account's own connection: a crash can leave a marker that names it.
+      if (id && id !== current) await this.d.api.deleteConnection(id);
+    } catch (e) {
+      if (!isNotFound(e)) {
+        this.log(`deleting an abandoned connection of ${user} failed: ${e instanceof Error ? e.message : String(e)}`);
+        return false;
+      }
+    }
+    this.d.store.deleteState(this.stagedKey(user));
+    return true;
   }
 
   /** Brings one account up: auth config, connection, identity, triggers. Idempotent. */
@@ -224,7 +248,11 @@ export class Composio implements ToolkitHost {
     const user = userOf(a);
     const hash = keyHash(a.apiKey!);
     const row = store.composio.account(user);
-    if (row?.connectionId !== undefined && row.keyHash === hash) return row.connectionId;
+    if (row?.connectionId !== undefined && row.keyHash === hash) {
+      // A swap that finished but crashed before clearing its marker.
+      if (store.getState(this.stagedKey(user))?.split("|")[1] === row.connectionId) store.deleteState(this.stagedKey(user));
+      return row.connectionId;
+    }
 
     const extra = defFor(a.toolkit).connectExtra?.(a);
     if (row?.connectionId === undefined) {
@@ -252,7 +280,12 @@ export class Composio implements ToolkitHost {
         this.log(`deleting an old trigger of ${user} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
-    await api.deleteConnection(oldConnection);
+    try {
+      await api.deleteConnection(oldConnection);
+    } catch (e) {
+      // Gone already, such as after a crash between this and storing the account: the swap is still done.
+      if (!isNotFound(e)) throw e;
+    }
     store.composio.setAccount(user, { connectionId: made.id, keyHash: hash, status: made.status });
     store.deleteState(this.stagedKey(user));
     return made.id;
@@ -264,33 +297,41 @@ export class Composio implements ToolkitHost {
 
   /**
    * The connection a changed key is moving to. It is remembered (by the key's hash) until the swap is complete, so
-   * a swap that fails midway and is retried reuses it instead of making another and stranding this one. One staged
-   * for a key that has since changed again is deleted.
+   * a swap that fails midway and is retried reuses it instead of making another and stranding this one. A staged
+   * connection that is unusable, or made for a key that has since changed again, is deleted first. A failure to read
+   * or delete it that is not "it is not there" is thrown with the marker kept, so the next try looks again; a new
+   * connection is made only once the staged one is confirmed gone. A marker that names the account's own connection
+   * (a crash after the swap) is just cleared, never acted on.
    */
   private async stagedConnection(a: ComposioAccount, authConfigId: string, hash: string, extra?: Record<string, string>): Promise<{ id: string; status: "active" | "initiating" | "expired" | "failed" }> {
     const { api, store } = this.d;
     const user = userOf(a);
-    const staged = store.getState(this.stagedKey(user));
+    const marker = this.stagedKey(user);
+    const staged = store.getState(marker);
     if (staged !== undefined) {
       const [stagedHash, id] = staged.split("|");
-      if (stagedHash === hash && id) {
+      if (!id || id === store.composio.account(user)?.connectionId) {
+        store.deleteState(marker);
+      } else {
+        let found: Connection | undefined;
         try {
-          const found = await api.connection(id);
-          if (found.status === "active") return found;
-        } catch {
-          // It is gone, so a new one is made.
-        }
-      }
-      if (id) {
-        try {
-          await api.deleteConnection(id);
+          found = await api.connection(id);
         } catch (e) {
-          this.log(`deleting an abandoned connection of ${user} failed: ${e instanceof Error ? e.message : String(e)}`);
+          if (!isNotFound(e)) throw e;
         }
+        if (found !== undefined && stagedHash === hash && found.status === "active") return found;
+        if (found !== undefined) {
+          try {
+            await api.deleteConnection(id);
+          } catch (e) {
+            if (!isNotFound(e)) throw e;
+          }
+        }
+        store.deleteState(marker);
       }
     }
     const made = await api.connectWithKey(user, authConfigId, a.apiKey!, extra);
-    store.setState(this.stagedKey(user), `${hash}|${made.id}`);
+    store.setState(marker, `${hash}|${made.id}`);
     return made;
   }
 

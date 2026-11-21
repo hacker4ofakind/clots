@@ -67,7 +67,7 @@ export class FakeComposioApi implements ComposioApi {
   async connection(id: string): Promise<Connection> {
     this.enter("connection", id);
     const c = this.connections.get(id);
-    if (!c) throw new Error(`no connection ${id}`);
+    if (!c) throw Object.assign(new Error(`404 Connected account "${id}" not found`), { status: 404 });
     return { id: c.id, status: c.status };
   }
 
