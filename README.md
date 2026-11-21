@@ -126,7 +126,7 @@ During the hours you keep for your own Claude use, the Clots step back. In **sca
   "leadIn": { "mon": "10:00-15:00", "tue": "10:00-15:00", "wed": "10:00-15:00", "thu": "10:00-15:00", "fri": "10:00-15:00" },
   "leadInPercent": 50
 },
-"sweep": { "enabled": true, "everyMinutes": 90 },
+"sweep": { "enabled": true, "everyMinutes": 180 },
 "spend": { "weeklyWarnUsd": 50 }
 ```
 

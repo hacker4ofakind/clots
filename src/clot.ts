@@ -228,7 +228,8 @@ export class Clot {
     // Nothing is cached before the session's first turn, and a paused Clot would only meet the limit again.
     if (!session?.started) return;
     const paused = store.getClot(name)!.pausedUntil;
-    if (paused !== null && paused * 1000 > this.d.now().getTime()) return;
+    // Any pause, even one that has run out: the resume callback clears it and queues the cut-off turn's continuation, and must not meet a running ping.
+    if (paused !== null) return;
     if (this.d.now().getTime() < this.keepWarmRetryAt) return;
     this.draining = true;
     try {
@@ -250,7 +251,8 @@ export class Clot {
       } finally {
         this.live = undefined;
       }
-      this.touch(result);
+      // Only a ping that worked starts the clock again; a failed one is tried again after the retry delay.
+      if (result.ok) this.touch(result);
       await this.d.spend?.book({ clot: name, who: "main", sessionId: session.id, total: result.totalCostUsd }).catch((error) => console.error(`[${name}] booking the keep-warm turn's cost failed:`, error));
       this.d.keepWarmLog?.(name, result.ok ? `reply: ${reply.join(" ").trim() || "(none)"}` : "the turn did not finish");
       if (result.limit) {
@@ -258,6 +260,9 @@ export class Clot {
         await this.pause(session.channelId, result.limit.resetsAt);
       } else if (!result.ok) {
         this.keepWarmRetryAt = this.d.now().getTime() + KEEP_WARM_RETRY_MS;
+      } else if (result.contextPercent >= this.d.rolloverPercent) {
+        // Pings add to the session like any turn, so an idle one rolls over the same way.
+        await this.handoff("context", true);
       }
     } finally {
       this.draining = false;

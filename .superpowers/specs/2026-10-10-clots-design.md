@@ -14,7 +14,7 @@ Grok Bot. Each opted-in project gets one Clot, and an optional "home" Clot takes
 what belongs to no project. A Clot:
 
 - is triggered by events from connected services, by the user's chat messages, and
-  by a 90-minute clock;
+  by a three-hour clock;
 - has one main session that the user talks to and that receives every event. The
   main session never changes anything itself: it triages, investigates under a
   lock, and hands the work to worker sessions, each on its own branch, which carry
@@ -57,7 +57,7 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 
 | Component | Responsibility | Depends on |
 |---|---|---|
-| Intake | Receive webhooks (GitHub's, Composio's and recipes'), hold IMAP IDLE connections, poll the calendar, run watch and webhook recipes, fire the 90-minute tick. Verify each delivery, drop repeats, store the event and answer the source at once. Normalise everything into one event format (section 3). | Tunnel, source credentials |
+| Intake | Receive webhooks (GitHub's, Composio's and recipes'), hold IMAP IDLE connections, poll the calendar, run watch and webhook recipes, fire the three-hour tick. Verify each delivery, drop repeats, store the event and answer the source at once. Normalise everything into one event format (section 3). | Tunnel, source credentials |
 | Rulebook | A folder and git repository of its own, one file for every Clot and one per Clot: pre-filters, routing match rules, triage guidance, urgency markers, standing-rule templates, watch recipes. | None |
 | Hold | Keeps automated events (CI runs, anything from a bot account) back for a minute or two and gathers those about the same pull request or branch into one event. | A timer |
 | Routing call | Haiku 5.5, medium effort, no tools, fixed output schema. Picks the Clot for an event from a shared source that no routing rule matched. | Each Clot's one-line description |
@@ -80,7 +80,7 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Chat adapter | One interface for all chat platforms. Discord is the default and the first built. | Platform bot credentials |
 | Usage meter | Keeps the account's five-hour and seven-day utilization, from turns' rate-limit events and the SDK's usage call. | Agent SDK |
 | Spend log | Books every model call's estimated cost to its Clot, worker, the daemon or the sweep; answers `&spend`; warns once a week per Clot past a set figure. | Store, chat |
-| Sweep | One throwaway session for the whole daemon every 90 minutes: reads the connectors of the claude.ai login and turns what changed into events, routed like a shared source's. | Connectors, routing |
+| Sweep | One throwaway session for the whole daemon every 3 hours: reads the connectors of the claude.ai login and turns what changed into events, routed like a shared source's. | Connectors, routing |
 | Cache keeper | Keeps each Clot's prompt cache from expiring between turns: 55 minutes after a Clot's last turn it sends its session one small message that is answered and logged, never posted. | Runner, store |
 | Re-grounder | A throwaway session at each rollover that checks the recap against the current state. | Recap |
 | `clots` CLI | `clots add`, secret entry, status. Runs on the PC and talks to the daemon. | Network path to the Pi |
@@ -141,7 +141,7 @@ Entry points other than events:
 - **User messages** enter at step 10. Triage does not run on them. A message that
   is a command (section 6) is handled by the daemon and goes no further. A message
   sent while the main session is in a turn is fed into that turn.
-- **The 90-minute tick** starts the sweep (section 9). It is skipped while a gate
+- **The three-hour tick** starts the sweep (section 9). It is skipped while a gate
   holds or the last sweep is still running. Its findings enter at step 3 as
   events from a shared source: pre-filtered, routed and triaged like any other.
 - **The cache keep-warm ping.** Claude Code caches a conversation's prefix for one
@@ -150,18 +150,19 @@ Entry points other than events:
   again. The daemon's one-minute clock sends a Clot's session a small message,
   "keeping the cache warm, reply ok", once 55 minutes have passed since that
   Clot's own last turn that reached the model: a message, an event, a worker's
-  report, a recap or an earlier ping. Each Clot has its own clock, kept across
-  restarts, so a Clot that was busy 25 minutes ago is pinged 30 minutes from now.
-  A ping is a turn of the main session on the same model, with the same tools in
-  the request (so the prefix matches) and every tool call refused. It runs
-  under the Clot's drain, so it never runs beside a turn, and a message that
+  report, a recap or an earlier successful ping. Each Clot has its own clock, kept
+  across restarts, so a Clot that was busy 25 minutes ago is pinged 30 minutes
+  from now. A ping is a turn of the main session on the same model, with the same
+  tools in the request (so the prefix matches) and every tool call refused. It
+  runs under the Clot's drain, so it never runs beside a turn, and a message that
   arrives meanwhile waits for it and then runs. The ping and the reply are
   written to the daemon's log only: not to chat, not to the Clot's tail. The
-  turn's cost is booked, and a usage limit it hits pauses the Clot like any
-  turn's. A Clot with no turn yet in its session, or paused, is not pinged; a
-  ping that fails is tried again after 5 minutes. The sweep is a session of its
-  own and does not warm any Clot's cache, so it does not stand in for a ping.
-  Pings go on for as long as the daemon runs.
+  turn's cost is booked, a usage limit it hits pauses the Clot like any turn's,
+  and a context that reaches the rollover percentage rolls over like any turn's.
+  A Clot with no turn yet in its session, or paused, is not pinged; a ping that
+  fails is tried again after 5 minutes. The sweep is a session of its own and
+  does not warm any Clot's cache, so it does not stand in for a ping. Pings go on
+  for as long as the daemon runs.
 
 Whenever several queued events are delivered together, each is shown with its
 arrival time in the user's configured timezone.
@@ -861,7 +862,7 @@ passes a configured figure.
 | Google Calendar | Polled through Composio's calendar tools; reminders made by the daemon | 1 to 5 minutes |
 | Any other service that sends webhooks | Webhook recipe | Seconds |
 | Any other MCP server | Watch recipe | 1 to 5 minutes |
-| Connectors that exist only in the user's claude.ai account | Sweep | Up to 90 minutes |
+| Connectors that exist only in the user's claude.ai account | Sweep | Up to 3 hours |
 
 - **Webhooks** reach the daemon through Tailscale Funnel, which gives the machine
   a stable public HTTPS address without touching the user's DNS. The intake server
@@ -891,7 +892,7 @@ passes a configured figure.
   rulebook: how its signature is checked, which payloads are kept and which fields
   give the event. The Clot adds one with its undo (section 5); the user sets up
   the webhook and puts its secret in `.env`.
-- **Sweep**: every 90 minutes the daemon starts one fresh Opus 5.5 medium session for
+- **Sweep**: every 3 hours the daemon starts one fresh Opus 5.5 medium session for
   all Clots, in the home Clot's container (or the first Clot's) that has its own
   claude.ai login, with the record
   it returned last time, each Clot's one-line description, and the sources the

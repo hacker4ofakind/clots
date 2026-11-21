@@ -201,9 +201,13 @@ describe("Clot.keepWarm", () => {
 
   it("tries a failed ping again only after the retry delay", async () => {
     await say("hello");
+    const first = clot.lastTurnAt();
     runner.ok = false;
+    now = new Date(now.getTime() + KEEP_WARM_AFTER_MS);
     await clot.keepWarm();
     expect(runner.calls).toHaveLength(2);
+    // A failed ping does not start the clock again.
+    expect(clot.lastTurnAt()).toBe(first);
     await clot.keepWarm();
     expect(runner.calls).toHaveLength(2);
     now = new Date(now.getTime() + KEEP_WARM_RETRY_MS);
