@@ -389,11 +389,13 @@ In the main session, with the rulebook tools:
 
 ### The skill
 
-The daemon installs a skill, `composio-integration`, into each Clot's
-`~/.claude/skills` whenever the Clot's container starts, replacing what is there,
-so it changes with the daemon. (The home folder is the Clot's own volume, so a
-file built into the image would be hidden.) It takes the Clot through adding a
-service:
+The daemon ships a skill, `composio-integration`, in a local plugin of its own
+(`plugin/` in the repository). Whenever a Clot's container starts, the daemon
+copies the plugin into the Clot's home, replacing what is there, so it changes
+with the daemon, and the main session loads it. (The home folder is the Clot's
+own volume, so a file built into the image would be hidden, and the sessions
+load no settings of their own, so a skill in `~/.claude/skills` would not be
+found.) It takes the Clot through adding a service:
 
 1. Read the toolkit with `composio_toolkit`, and the service's own documentation
    for what its payloads mean.
