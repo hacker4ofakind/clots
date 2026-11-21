@@ -77,7 +77,7 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Commands | Messages that start with `&`. Handled by the daemon before routing; never passed to the model. | Session manager |
 | Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container, and are made for each turn, so each call knows what kind of turn it is in. | Rulebook, chat adapter |
 | Global memory | Notices the global memories the home Clot writes, posts each, and copies them into every Clot's memory before its turns. | Chat adapter, Docker |
-| Chat adapter | One interface for all chat platforms. Discord is the default and the first built. | Platform bot credentials |
+| Chat adapter | The interface the daemon talks to chat through. Discord is the one built. | Platform bot credentials |
 | Usage meter | Keeps the account's five-hour and seven-day utilization, from turns' rate-limit events and the SDK's usage call. | Agent SDK |
 | Spend log | Books every model call's estimated cost to its Clot, worker, the daemon or the sweep; answers `&spend`; warns once a week per Clot past a set figure. | Store, chat |
 | Sweep | One throwaway session for the whole daemon every 3 hours: reads the connectors of the claude.ai login and turns what changed into events, routed like a shared source's. | Connectors, routing |
@@ -521,9 +521,6 @@ design is in `.superpowers/specs/2026-10-14-clots-global-memory-design.md`.
   are deleted. Full transcripts remain on disk.
 - No threads in the first version.
 - Sweeps have no channel.
-
-Slack has no categories, so the same structure becomes a channel-name prefix
-(`clot-graphite-1010`).
 
 ### Turn summary
 
@@ -1110,7 +1107,6 @@ Each stage gets its own specification and plan.
 3. **Pi deployment and onboarding**, with Composio's connections in the
    onboarding checklist.
 4. **Browser and live view.**
-5. **Slack adapter.**
 
 ### Stage 1 scope
 
