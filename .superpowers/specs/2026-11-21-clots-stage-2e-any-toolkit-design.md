@@ -316,7 +316,7 @@ The system prompt's Composio lines gain one: to add a service, use the skill.
   file was edited by hand): not called; a line in the body says so.
 - **The plugin cannot be copied**: logged; the Clot starts without the skill.
 - **A service's own limits and refusals** are not Composio's: a failed tool result
-  with the service's 429 or rate-limit text is a refused call, never "Composio's
+  with the service's 429 or rate-limit text is a call to try again later (an undo keeps its place), never "Composio's
   free monthly limit is reached", and a 403 is a refusal of one request, never an
   expired connection (a 401, the service rejecting the connection's credentials,
   still is). Only Composio's own quota wording is the monthly cap.

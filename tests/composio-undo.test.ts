@@ -1,3 +1,4 @@
+import { classifyFailedResult } from "../src/composio/api.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ComposioActions, type ActionContext } from "../src/composio/actions.js";
 import { Composio } from "../src/composio/component.js";
@@ -123,6 +124,14 @@ describe("&composio undo", () => {
     api.answers.set(LINEAR.archiveIssue, { ok: false, error: "Entity not found", reason: "refused" });
     expect(await undo.undo("graphite")).toContain("Could not undo");
     expect(await undo.undo("graphite")).toBe("Nothing to undo.");
+  });
+
+  it("keeps an undo for the next time when the service rate-limits it (a 429 is a call to try again, not a refusal)", async () => {
+    await run("linear:proton", LINEAR.createIssue, { team_id: "t", title: "x" });
+    api.answers.set(LINEAR.archiveIssue, { ok: false, error: "Linear API error: HTTP 429", reason: classifyFailedResult(429, "Linear API error: HTTP 429") });
+    expect(await undo.undo("graphite")).toContain("Not undone just now");
+    api.answers.set(LINEAR.archiveIssue, { ok: true, data: {} });
+    expect(await undo.undo("graphite")).toContain("Undone");
   });
 
   it("does not undo another Clot's write", async () => {

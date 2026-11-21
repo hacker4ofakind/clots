@@ -95,10 +95,10 @@ describe("what a failed call is taken for", () => {
 
   const failed = (status: number, error: string) => async () => ({ resultType: "failed", error, data: { status_code: status } });
 
-  it("never posts Composio's monthly-limit notice for a service's own 429, such as Reddit's, and the call fails as a refusal", async () => {
+  it("never posts Composio's monthly-limit notice for a service's own 429, such as Reddit's, and the call fails as one to try again", async () => {
     seen.execute = failed(429, "Reddit API error for subreddit 'Esperanto': HTTP 429");
     const result = await composio.run(reddit, "REDDIT_GET_NEW_POSTS", {});
-    expect(result).toMatchObject({ ok: false, reason: "refused" });
+    expect(result).toMatchObject({ ok: false, reason: "unreachable" });
     expect(told).toEqual([]);
     expect(store.getState("composio.capMonth")).toBeUndefined();
   });

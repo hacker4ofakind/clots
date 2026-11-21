@@ -690,9 +690,9 @@ describe("classifyComposioError", () => {
     expect(classifyFailedResult(410, "Google returned 410 Gone")).toBe("refused");
     expect(classifyFailedResult(503, "")).toBe("unreachable");
     // The service's own limits: Reddit answering 429, or saying quota, is the service rate-limiting, not Composio's cap.
-    expect(classifyFailedResult(429, "Reddit API error for subreddit 'Esperanto': HTTP 429")).toBe("refused");
-    expect(classifyFailedResult(undefined, "quota exceeded")).toBe("refused");
-    expect(classifyFailedResult(undefined, "rate limit")).toBe("refused");
+    expect(classifyFailedResult(429, "Reddit API error for subreddit 'Esperanto': HTTP 429")).toBe("unreachable");
+    expect(classifyFailedResult(undefined, "quota exceeded")).toBe("unreachable");
+    expect(classifyFailedResult(undefined, "rate limit")).toBe("unreachable");
     // The service refusing one request says nothing about the connection.
     expect(classifyFailedResult(403, "Forbidden: private subreddit")).toBe("refused");
   });

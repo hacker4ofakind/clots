@@ -93,15 +93,16 @@ export function classifyComposioError(e: unknown): FailureReason {
 
 /**
  * How a tool that answered `failed` reads: the service's own status code decides, and none of it is Composio's
- * monthly cap. A service that rate-limits (429) is only a failed call, to be tried again later, never "Composio's
- * free monthly limit is reached". A 401 is the service rejecting the connection's credentials (`auth`: replace the
- * key or sign in again); a 403 is the service refusing this one request (a private subreddit, a missing scope), which
- * says nothing about the connection, so it is `refused`.
+ * monthly cap. A service that rate-limits (429, or says so) is a call to be tried again later, `unreachable`, so an
+ * undo keeps its place for the next time; it is never "Composio's free monthly limit is reached". A 401 is the
+ * service rejecting the connection's credentials (`auth`: replace the key or sign in again); a 403 is the service
+ * refusing this one request (a private subreddit, a missing scope), which says nothing about the connection, so it is
+ * `refused`.
  */
 export function classifyFailedResult(statusCode: unknown, text: string): FailureReason {
   const status = Number(statusCode);
   if (status === 401) return "auth";
-  if (status >= 500) return "unreachable";
+  if (status === 429 || status >= 500 || /rate.?limit|too many requests|quota/i.test(text)) return "unreachable";
   return "refused";
 }
 
