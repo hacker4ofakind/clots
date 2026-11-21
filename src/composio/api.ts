@@ -130,8 +130,10 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
       return item ? remember(user, toConnection(item)) : undefined;
     },
 
+    // `allowMultiple`: a changed key connects the new key while the old connection still exists (the old one is deleted last),
+    // and Composio refuses a second connection for the same user without it.
     async connectWithKey(user, authConfigId, key, extra = {}) {
-      const request: any = await timed("connecting", composio.connectedAccounts.initiate(user, authConfigId, { config: AuthScheme.APIKey({ generic_api_key: key, ...extra } as any) }));
+      const request: any = await timed("connecting", composio.connectedAccounts.initiate(user, authConfigId, { config: AuthScheme.APIKey({ generic_api_key: key, ...extra } as any), allowMultiple: true }));
       const connection = request.status === "ACTIVE" ? toConnection(request) : toConnection(await timed("waiting for the connection", composio.connectedAccounts.waitForConnection(request.id, 20_000)));
       return remember(user, connection);
     },
