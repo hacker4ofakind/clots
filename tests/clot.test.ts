@@ -810,7 +810,26 @@ describe("Clot, stage 2b", () => {
     await rebuild();
     await clot.onMessage(msg("build the page"));
     expect(runner.calls[0]).toMatchObject({ role: "main", model: "claude-opus-5-5", tools: fakeTools });
-    expect(contexts[0]).toEqual({ clot: "graphite", kind: "chat", outsider: false });
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "chat", outsider: false, userText: "build the page" });
+  });
+
+  it("gives a chat turn the user's own words, and adds a message they feed into it while it runs", async () => {
+    await rebuild();
+    runner.script = [{ hold: true }];
+    router.next = [{ effort: "medium" }, { effort: "low" }];
+    const first = clot.onMessage(msg("archive the stale export issue"));
+    await vi.waitFor(() => expect(runner.release).toBeDefined());
+    await clot.onMessage(msg("and say so in a comment"));
+    expect(contexts[0].userText).toBe("archive the stale export issue\n\nand say so in a comment");
+    runner.release!();
+    await first;
+  });
+
+  it("gives no user text to an event or a worker turn", async () => {
+    await rebuild();
+    await clot.queueEvent(event("d-1", { outsider: true }), "Someone reported a bug.");
+    await vi.waitFor(() => expect(contexts).toHaveLength(1));
+    expect(contexts[0].userText).toBeUndefined();
   });
 
   it("gives an outsider's event turn the flag, and keeps it across a usage-limit continuation", async () => {

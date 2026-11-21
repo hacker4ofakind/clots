@@ -230,7 +230,7 @@ const STARTER = [
   "#",
   "# prefilters: events that match a rule are dropped before anything else looks at them.",
   "# A rule matches when every field it names matches. Fields: source, account, kind, place, repo, actor, titleContains.",
-  "# Sources: github, stripe, email, calendar, linear, notion, or a recipe's name.",
+  "# Sources: github, stripe, email, calendar, linear, notion, posthog, a Composio toolkit (by its slug), or a recipe's name.",
   "#",
   "# prefilters:",
   "#   - actor: dependabot[bot]",

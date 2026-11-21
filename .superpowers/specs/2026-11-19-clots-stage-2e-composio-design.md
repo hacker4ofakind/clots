@@ -13,7 +13,10 @@ holds the connections, sends their events to one webhook, and runs their tools.
 
 - Stripe, Linear, Notion and Google Calendar are connected through Composio, with
   the Clots' own keys (the calendar through Composio's managed Google sign-in).
-  Their own webhook adapters, the iCal poller and the Apps Script go.
+  Their own webhook adapters (except Notion's), the iCal poller and the Apps Script go.
+  Notion's events keep stage 2c's own webhook, because Composio's Notion triggers
+  need a Notion OAuth app that an API-key connection does not have; its reads and
+  comments go through Composio.
 - PostHog, specified in 2c and not yet built, is connected through Composio too.
 - Any other service Composio has a toolkit for can be added as an account, with
   its triggers as events and its tools for the Clot.
@@ -86,7 +89,7 @@ for every toolkit:
     { "toolkit": "notion", "account": "main", "shared": true, "audience": "private", "apiKey": "NOTION_CONNECTION_API_KEY" },
     { "toolkit": "stripe", "account": "encryptify", "clot": "encryptify", "audience": "public", "apiKey": "STRIPE_ENCRYPTIFY_KEY" },
     { "toolkit": "googlecalendar", "account": "personal", "shared": true, "audience": "private", "leadTimes": ["24h"], "pollMinutes": 5 },
-    { "toolkit": "posthog", "account": "encryptify", "clot": "encryptify", "audience": "public", "apiKey": "POSTHOG_ENCRYPTIFY_KEY", "region": "eu" }
+    { "toolkit": "posthog", "account": "encryptify", "clot": "encryptify", "audience": "public", "apiKey": "POSTHOG_ENCRYPTIFY_KEY", "region": "us", "projectId": 123456, "events": ["signup"] }
   ]
 }
 ```
@@ -102,6 +105,10 @@ for every toolkit:
   any other.
 - **`audience`**: `private`, `team` or `public` (section 11). Default `public`.
 - **`apiKey`**: the `.env` key of the service's key. Absent for the calendar.
+- **`region`, `projectId`, `events`** (PostHog only): `us` (the default) or `eu`; the
+  project to watch; and the names of the analytics events that become events here.
+  The key needs the `hog_function:write` scope, which Composio uses to register its
+  destination.
 - **`triggers`** (any other toolkit only): a list of Composio trigger slugs, each
   with its `config`. Their events are of kind `trigger`, titled by the trigger's
   name and carrying the payload as their body. Since the daemon cannot tell who
@@ -120,7 +127,8 @@ for every toolkit:
 - **Verifying**: `webhook-signature` is `v1,` and a base64 HMAC-SHA256 of
   `<webhook-id>.<webhook-timestamp>.<raw body>` with the subscription's secret,
   compared in constant time. A `webhook-timestamp` more than 300 seconds from the
-  daemon's clock is refused. This is done with the library's `verifyWebhook`.
+  daemon's clock is refused. The daemon does this itself: the library's
+  `verifyWebhook` rejects any body outside its own schema.
 - **Repeats**: the event ID is the one 2c gave each source, built from the
   service's own ID (`stripe:<account>:<evt_…>`, and so on), so a service's retry,
   a recreated trigger, or two triggers reporting one thing make one event. A
@@ -130,10 +138,14 @@ for every toolkit:
   and `composio.connected_account.expired`. A trigger disabled for any reason but
   an expired connection is recreated once (and the user told if that fails); an
   expired connection is told once, with a new sign-in link for the calendar.
+  A disabled trigger's `data.id` is the trigger instance and `data.disabled_reason`
+  says why; an expired connection's `data.id` is the connection.
   The daily check of section 13 stays as a backstop.
 - **The Clot's own writes**: an event about an object one of the Clot's
   Composio writes created or changed in the last 10 minutes is dropped as
   self-caused, whoever the service names as its actor.
+- **Notion**: its events do not pass here. They arrive at stage 2c's path,
+  `/webhooks/notion/<account>`, with 2c's verification and handshake.
 - **Account**: the payload's connected account ID is looked up in the stored
   connections. An unknown one is logged, acknowledged and discarded.
 - **Mapping**: each trigger slug has a function that turns its payload into the
@@ -158,14 +170,15 @@ for every toolkit:
 
 ## 7. Stripe
 
-- **Triggers**: Composio's Stripe triggers for each event in 2c section 8's table
-  (`invoice.payment_failed`, `payment_intent.payment_failed`,
-  `charge.dispute.created`, `customer.subscription.deleted`,
-  `radar.early_fraud_warning.created`, `payout.failed`, `charge.refunded`,
-  `invoice.overdue`, and `checkout.session.completed` when `checkoutCompleted` is
-  `true`). Composio creates the webhook destination in Stripe itself.
-- **Key**: a restricted key with read access as in 2c, and write access to
-  webhook endpoints, which Composio needs to create its destination.
+- **Triggers**: Composio's Stripe triggers for the events of 2c section 8's table
+  that Composio offers (`invoice.payment_failed`, `payment_intent.payment_failed`,
+  `charge.dispute.created`, `customer.subscription.deleted`, `payout.failed`,
+  `charge.refunded`, and `checkout.session.completed` when `checkoutCompleted` is
+  `true`). Composio has no trigger for `radar.early_fraud_warning.created` or
+  `invoice.overdue`, so those two kinds are not delivered. Composio creates the
+  webhook destination in Stripe itself.
+- **Key**: a restricted key with read access as in 2c, and read and write access to
+  webhook endpoints, which Composio needs to find and create its destination.
 - **Kinds, the event and enrichment**: as in 2c section 8. `actor` is the
   customer's email address, or `stripe`. Every Stripe event is automated.
 - **Writes**: every Stripe tool that is not read-only is on the fixed list
@@ -173,9 +186,12 @@ for every toolkit:
 
 ## 8. Linear
 
-- **Triggers**: issue created and comment created, on public and private teams
-  (`LINEAR_PUBLIC_TEAM_ISSUE_CREATED`, `LINEAR_PUBLIC_TEAM_COMMENT_CREATED`, and
-  their polled `PRIVATE_TEAM` counterparts).
+- **Triggers**: issue created and comment created, for each team the Clots' member
+  belongs to (`LINEAR_PRIVATE_TEAM_ISSUE_CREATED` and
+  `LINEAR_PRIVATE_TEAM_COMMENT_CREATED`). Composio polls these every minute; its
+  webhook triggers need a Linear OAuth app, which a key connection does not have.
+  An issue arrived 26 seconds after it was made. The payload carries the team key,
+  the creator, the issue's URL and identifier.
 - **Key**: the Clots' member's personal API key, as in 2c.
 - **Kinds, the event and enrichment**: as in 2c section 11: `issue_opened` and
   `comment`; `place` is the team's key; the issue with its last ten comments is
@@ -186,14 +202,13 @@ for every toolkit:
 
 ## 9. Notion
 
-- **Triggers**: page created and comment created.
-- **Key**: the internal connection's secret, as in 2c. The pages and databases the
-  Clots should see are shared with the connection.
-- **Ingress**: an internal connection's webhook is set in Notion by hand. The
-  daemon creates Composio's ingress endpoint for the account and prints its
-  address in its log; the user pastes it into the connection's Webhooks tab.
-  Notion then sends its verification token to Composio, and the daemon prints that
-  in its log for the user to paste back. Neither passes through chat.
+- **Events**: stage 2c's webhook, unchanged: the connection's webhook points at
+  `/webhooks/notion/<account>`, Notion's verification token is stored when it
+  arrives, and each delivery is checked against it. Composio's Notion triggers need
+  a Notion OAuth app (a public integration with a client ID and secret) that an
+  API-key connection does not have, so none is made.
+- **Key**: the internal connection's secret, as in 2c, held by Composio. The pages
+  and databases the Clots should see are shared with the connection.
 - **Kinds, the event and enrichment**: as in 2c section 12: `page_created` and
   `comment`; the page's title, properties and first 2,000 characters, the
   comment's discussion, and the author's name are read.
@@ -377,7 +392,7 @@ approved, as in 2b, and are not rated again.
 | Write reviewer | The Haiku 5.5 call of section 11, behind the model interface. |
 | Composio log | Every write, with what its undo needs; `&composio undo`. |
 
-The Stripe, Linear and Notion webhook adapters, the iCal poller and its parser,
+The Stripe and Linear webhook adapters, the iCal poller and its parser,
 the calendar's Apps Script client, `setup/calendar.gs`, and their tests and
 recorded payloads are removed. New recorded Composio payloads take their place.
 
@@ -386,10 +401,12 @@ recorded payloads are removed. New recorded Composio payloads take their place.
 - **Composio unreachable**: a tool call returns the error to the Clot, which says
   what it could not do. Enrichment goes on with a line saying so. Webhooks simply
   stop arriving.
-- **A trigger silently disabled** (for example, a Stripe destination deleted in
-  Stripe, which Composio does not notice): once a day the daemon reads each
-  trigger instance's status, and recreates one that is disabled or missing. One it
-  cannot recreate is reported once in its Clot's channel.
+- **A trigger silently disabled**: once a day the daemon reads each trigger
+  instance's status, and recreates one that is disabled or missing. One it cannot
+  recreate is reported once in its Clot's channel. A Stripe destination deleted in
+  Stripe is not noticed (Composio does not hear of it and has no tool that lists
+  Stripe's webhook endpoints); removing the account from the configuration,
+  restarting and adding it back makes it again.
 - **A connection expired or revoked**: reported once in its Clot's channel: for
   the calendar with a new sign-in link, for a key with the `.env` key to replace.
   Its tool calls and enrichment fail until then.
@@ -403,7 +420,8 @@ recorded payloads are removed. New recorded Composio payloads take their place.
   retried by the daemon, and has no undo.
 - **Composio answers in an unexpected shape**: the daemon's own calls check the
   fields they rely on; on a mismatch enrichment says it could not read, a
-  calendar change is refused, and the user is told once.
+  calendar change is refused, and the daily check tells the user once per tool
+  and account per start, in the account's Clot channel.
 - **The allowance runs low**: the daemon counts its tool calls and deliveries
   each month and warns once at 70% and once at 90% of each Hobby allowance. The
   calendars' polling may use at most 10,000 calls a month in all, checked when
@@ -446,25 +464,35 @@ recorded payloads are removed. New recorded Composio payloads take their place.
   existing rules, and `&calendar undo` reverses each.
 - A trigger disabled by hand is noticed and recreated by the daily check.
 
-## 16. Assumptions to verify first
+## 16. Checked live before building
 
-Before anything is built on them, each is checked live with a script, and any that
-fails is brought to the user before going on:
+Each of these was checked live with `scripts/spike-2e.ts`, against the Clots' own
+Composio project, before anything was built on it:
 
-1. A Linear trigger and a Notion trigger work on a connection made with an API key.
-2. The Clots' Linear member can have Composio register its webhook, or needs to be
-   made a workspace admin.
-3. Notion's ingress and verification work with an internal connection.
-4. A restricted Stripe key with write access to webhook endpoints is enough for
-   Composio's Stripe triggers.
-5. Composio's tags are set on the tools the Clots will use (Linear, Notion and
-   Calendar writes), and `readOnlyHint` is never set on a tool that writes.
-6. Composio's calendar list returns expanded occurrences with their series' ID,
-   and its delete tool can be told apart from a cancelled occurrence.
+1. Linear and Notion triggers on a connection made with an API key: Linear's
+   polled private-team triggers work; every webhook trigger (Linear's public
+   ones, all of Notion's) fails, since Composio registers a webhook only through an
+   OAuth app. Sections 8 and 9 follow from this.
+2. The Clots' Linear member does not need to register a webhook or be an admin:
+   Composio registers none for a key connection.
+3. Notion's ingress needs an OAuth app's client ID, so it is not used.
+4. A restricted Stripe key needs read and write access to webhook endpoints for
+   Composio's Stripe triggers: with read access only, Composio's call to list the
+   endpoints answered 403.
+5. Composio's tags are set on every tool of the five toolkits. A few tools that
+   write carry `readOnlyHint` (`NOTION_CREATE_VIEW_QUERY`,
+   `STRIPE_CREATE_REPORT_RUN`, PostHog's `CREATE_…_QUERY` tools), which is why
+   section 11 does not trust that tag alone. Linear's delete, archive and remove
+   tools carry only `updateHint`, so the destructive check also reads the slug.
+6. Composio's calendar list returns expanded occurrences with their series' ID
+   (`recurringEventId`) and original start; a deleted event reads back with
+   `status: "cancelled"`, and deleting it again fails with a 410.
 
 ## 17. Not in 2e
 
 - Moving GitHub or email to Composio.
+- Composio's Notion triggers, and Linear's webhook triggers (each needs an OAuth
+  app), and the two Stripe kinds Composio has no trigger for.
 - Sentry and Vercel (Composio has no triggers for them; 2c section 16 stands).
 - Composio's remote sandbox, and the computers some toolkits offer (Orgo, Browser
   Use): the Clots have their own (parent section 10).

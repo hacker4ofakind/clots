@@ -14,6 +14,7 @@ export const SOURCE_KINDS = {
   posthog: ["analytics_event"],
   // What the periodic read of the claude.ai connectors found.
   sweep: ["finding"],
+  // A Composio toolkit with no source of its own (slack, say) is a source under its slug, not listed here, and produces `trigger` events.
 } as const satisfies Record<string, readonly string[]>;
 
 export type BuiltinSource = keyof typeof SOURCE_KINDS;

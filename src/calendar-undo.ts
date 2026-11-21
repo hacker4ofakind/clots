@@ -1,10 +1,10 @@
-import { describeScriptEvent, isMissing, type ScriptEvent, type ScriptRequest, type ScriptResult } from "./sources/calendar-script.js";
+import { describeCalEvent, isMissing, type CalEvent, type CalRequest, type CalResult } from "./sources/calendar-composio.js";
 import type { Store } from "./store.js";
 
 export interface CalendarUndoDeps {
   store: Store;
-  /** Calls an account's Apps Script. */
-  call(account: string, req: ScriptRequest): Promise<ScriptResult>;
+  /** Calls an account's calendar through Composio. */
+  call(account: string, req: CalRequest): Promise<CalResult>;
   timeZone: string;
 }
 
@@ -23,13 +23,13 @@ export class CalendarUndo {
   private async undoOne(clot: string): Promise<string> {
     const { store } = this.d;
     const change = store.latestCalendarChange(clot);
-    // Marked before the script is called, so two quick undos reverse it once.
+    // Marked before the calendar is called, so two quick undos reverse it once.
     if (!change || !store.claimCalendarChange(change.id)) return "Nothing to put back.";
-    const before = change.before === null ? undefined : (JSON.parse(change.before) as ScriptEvent);
-    const after = change.after === null ? undefined : (JSON.parse(change.after) as ScriptEvent);
-    const describe = (event: ScriptEvent) => describeScriptEvent(event, this.d.timeZone);
-    let done: ScriptResult;
-    let answer: (event: ScriptEvent) => string;
+    const before = change.before === null ? undefined : (JSON.parse(change.before) as CalEvent);
+    const after = change.after === null ? undefined : (JSON.parse(change.after) as CalEvent);
+    const describe = (event: CalEvent) => describeCalEvent(event, this.d.timeZone);
+    let done: CalResult;
+    let answer: (event: CalEvent) => string;
     if (change.op === "create") {
       done = await this.d.call(change.account, { action: "remove", uid: change.uid });
       answer = (event) => `Removed: ${describe(event)}.`;
@@ -40,15 +40,14 @@ export class CalendarUndo {
     } else {
       const b = before!;
       // A removal whose answer was lost may not have happened: an event still there is not made twice.
-      // One the script confirmed is gone, whatever its check says: Apps Script's getEventById goes on
-      // returning a deleted event for a while.
+      // One the calendar confirmed is gone needs no check.
       if (!change.confirmed) {
         const still = await this.d.call(change.account, { action: "check", uid: change.uid });
         if (still.ok) {
           store.deleteCalendarChange(change.id);
           return `Nothing to put back: ${describe(still.event)} is still in the calendar.`;
         }
-        // Created again only once the script has said the event is not there; any other answer could hide it.
+        // Created again only once the calendar has said the event is not there; any other answer could hide it.
         if (!isMissing(still)) {
           store.releaseCalendarChange(change.id);
           return `Not undone just now: ${still.reason}. Nothing was changed; send the command again.`;
@@ -63,7 +62,7 @@ export class CalendarUndo {
       answer = (event) => `Put back: ${describe(event)}.\n(It is a new copy; links to the old event will not find it.)`;
     }
     if (!done.ok && !done.reached) {
-      // The script could not be asked: it stays the next one to undo.
+      // The calendar could not be asked: it stays the next one to undo.
       store.releaseCalendarChange(change.id);
       return `Not undone just now: ${done.reason}. Nothing was changed; send the command again.`;
     }

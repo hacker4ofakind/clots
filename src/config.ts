@@ -53,9 +53,44 @@ const leadTime = z
   .regex(/^\d+[mhd]$/, 'a lead time is a number followed by m, h or d, such as "24h"')
   .transform((text) => Number(text.slice(0, -1)) * { m: 1, h: 60, d: 1440 }[text.slice(-1) as "m" | "h" | "d"]);
 
+/** Who sees what happens in an account: only the user and the Clots, the user and people they know well, or anyone. */
+export const AUDIENCES = ["private", "team", "public"] as const;
+export type Audience = (typeof AUDIENCES)[number];
+
+const composioFields = { ...accountFields, audience: z.enum(AUDIENCES).default("public") };
+
+/** One strict schema per toolkit the daemon knows; any other toolkit takes its triggers from the configuration. */
+const COMPOSIO_TOOLKITS = {
+  linear: z.strictObject({ ...composioFields, toolkit: z.literal("linear"), apiKey: envKey }),
+  notion: z.strictObject({ ...composioFields, toolkit: z.literal("notion"), apiKey: envKey, verificationToken: envKey.optional() }),
+  stripe: z.strictObject({ ...composioFields, toolkit: z.literal("stripe"), apiKey: envKey, checkoutCompleted: z.boolean().default(false) }),
+  googlecalendar: z.strictObject({
+    ...composioFields,
+    toolkit: z.literal("googlecalendar"),
+    leadTimes: z.array(leadTime).min(1).default([1440]),
+    pollMinutes: z.number().int().min(1).default(5),
+  }),
+  posthog: z.strictObject({
+    ...composioFields,
+    toolkit: z.literal("posthog"),
+    apiKey: envKey,
+    region: z.enum(["us", "eu"]).default("us"),
+    projectId: z.number().int().positive(),
+    events: z.array(z.string().min(1)).min(1),
+  }),
+};
+const GENERIC_TOOLKIT = z.strictObject({
+  ...composioFields,
+  toolkit: z.string().regex(/^[a-z][a-z0-9_]*$/, "a toolkit is Composio's lowercase slug"),
+  apiKey: envKey,
+  triggers: z.array(z.strictObject({ slug: z.string().regex(/^[A-Z][A-Z0-9_]*$/, "a trigger is Composio's uppercase slug"), config: z.record(z.string(), z.unknown()).default({}) })).default([]),
+});
+
+/** The source keys 2e moved into sources.composio. */
+const MOVED_SOURCES = ["stripe", "linear", "notion", "calendar"];
+
 const SourcesSchema = z
   .strictObject({
-    stripe: z.array(z.strictObject({ ...accountFields, webhookSecret: envKey, apiKey: envKey, checkoutCompleted: z.boolean().default(false) })).default([]),
     email: z
       .array(
         z.strictObject({
@@ -71,20 +106,7 @@ const SourcesSchema = z
         }),
       )
       .default([]),
-    calendar: z
-      .array(
-        z.strictObject({
-          ...accountFields,
-          icalUrl: envKey,
-          script: envKey.optional(),
-          scriptSecret: envKey.optional(),
-          leadTimes: z.array(leadTime).min(1).default([1440]),
-          pollMinutes: z.number().int().min(1).default(5),
-        }),
-      )
-      .default([]),
-    linear: z.array(z.strictObject({ ...accountFields, webhookSecret: envKey, apiKey: envKey })).default([]),
-    notion: z.array(z.strictObject({ ...accountFields, token: envKey, verificationToken: envKey.optional() })).default([]),
+    composio: z.array(z.looseObject({ toolkit: z.string() })).default([]),
   })
   .prefault({});
 
@@ -144,11 +166,6 @@ export interface AccountBase {
   shared: boolean;
 }
 export type Endpoint = { host: string; port: number };
-export interface StripeAccount extends AccountBase {
-  webhookSecret: string;
-  apiKey: string;
-  checkoutCompleted: boolean;
-}
 export interface EmailAccount extends AccountBase {
   address: string;
   /** Other addresses delivered into this account, such as support@. */
@@ -161,28 +178,38 @@ export interface EmailAccount extends AccountBase {
   /** Whether the Clots are told the account's addresses, or only its name. */
   tellAddress: boolean;
 }
-export interface CalendarAccount extends AccountBase {
-  icalUrl: string;
-  /** The Apps Script web app that changes events. Without it the calendar is read-only. */
-  script?: { url: string; secret: string };
-  /** How long before an event its reminders come, in minutes. */
-  leadMinutes: number[];
-  pollMinutes: number;
-}
-export interface LinearAccount extends AccountBase {
-  webhookSecret: string;
-  apiKey: string;
-}
-export interface NotionAccount extends AccountBase {
-  token: string;
+/** An account of any Composio toolkit. The fields a toolkit does not take are absent; the narrowed types below say which are present. */
+export interface ComposioAccount extends AccountBase {
+  /** Composio's toolkit slug: `linear`, `googlecalendar`, `slack`... */
+  toolkit: string;
+  audience: Audience;
+  /** The service's key, read from .env. Absent for the calendar, which signs in through Composio. */
+  apiKey?: string;
+  /** The .env key that holds it, for telling the user which key to replace. */
+  apiKeyName?: string;
+  /** Notion: the .env key of Notion's verification token, if set by hand. */
   verificationToken?: string;
+  /** A toolkit with no built-in mapper: the triggers to make, with their config. */
+  triggers: { slug: string; config: Record<string, unknown> }[];
+  /** Calendar: how long before an event its reminders come, in minutes; and how often the calendar is read. */
+  leadMinutes?: number[];
+  pollMinutes?: number;
+  /** Stripe */
+  checkoutCompleted?: boolean;
+  /** PostHog */
+  region?: "us" | "eu";
+  projectId?: number;
+  events?: string[];
 }
+export type StripeAccount = ComposioAccount & { toolkit: "stripe"; apiKey: string; checkoutCompleted: boolean };
+export type LinearAccount = ComposioAccount & { toolkit: "linear"; apiKey: string };
+export type NotionAccount = ComposioAccount & { toolkit: "notion"; apiKey: string };
+export type CalendarAccount = ComposioAccount & { toolkit: "googlecalendar"; leadMinutes: number[]; pollMinutes: number };
+export type PostHogAccount = ComposioAccount & { toolkit: "posthog"; apiKey: string; region: "us" | "eu"; projectId: number; events: string[] };
+export const isCalendar = (a: ComposioAccount): a is CalendarAccount => a.toolkit === "googlecalendar";
 export interface Sources {
-  stripe: StripeAccount[];
   email: EmailAccount[];
-  calendar: CalendarAccount[];
-  linear: LinearAccount[];
-  notion: NotionAccount[];
+  composio: ComposioAccount[];
 }
 export type McpServer = { kind: "stdio"; command: string; args: string[]; env: Record<string, string> } | { kind: "http"; url: string; headers: Record<string, string>; oauth: boolean };
 
@@ -222,6 +249,8 @@ export interface Config {
   /** `weeklyWarnUsd`: a Clot that spends more than this in a week is reported once. Absent: no warning. */
   spend: { weeklyWarnUsd?: number };
   sources: Sources;
+  /** The Composio project's key. Only the daemon reads it; it never enters a container. */
+  composioApiKey: string | undefined;
   mcpServers: Record<string, McpServer>;
 }
 
@@ -233,7 +262,16 @@ function secret(env: Record<string, string | undefined>, key: string): string {
 
 const values = (env: Record<string, string | undefined>, keys: Record<string, string>) => Object.fromEntries(Object.entries(keys).map(([name, key]) => [name, secret(env, key)]));
 
+/** What a failed parse of one Composio account says: the account, then each field and what is wrong with it. */
+function composioIssues(index: number, error: z.ZodError): string {
+  return error.issues.map((issue) => `sources.composio[${index}].${issue.path.join(".") || "(account)"}: ${issue.message}`).join("; ");
+}
+
 export function loadConfig(json: unknown, env: Record<string, string | undefined>): Config {
+  const raw = (json as { sources?: Record<string, unknown> } | null)?.sources;
+  for (const name of MOVED_SOURCES) {
+    if (raw !== undefined && raw !== null && typeof raw === "object" && name in raw) throw new Error(`sources.${name} moved to sources.composio in stage 2e; see clots.config.example.json`);
+  }
   const file = FileSchema.parse(json);
 
   const clotNames = new Set([...file.clots.map((c) => c.name), ...(file.home ? [HOME_CLOT] : [])]);
@@ -242,7 +280,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     if (a.clot !== undefined && !clotNames.has(a.clot)) throw new Error(`${source} account ${a.account}: there is no Clot named ${a.clot}`);
     return { account: a.account, clot: a.clot, shared: a.shared === true };
   };
-  for (const [source, accounts] of Object.entries(file.sources)) {
+  for (const [source, accounts] of Object.entries({ email: file.sources.email })) {
     const seen = new Set<string>();
     for (const a of accounts) {
       if (seen.has(a.account)) throw new Error(`${source} account ${a.account} is named twice`);
@@ -250,8 +288,40 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     }
   }
 
+  const composio: ComposioAccount[] = file.sources.composio.map((entry, index) => {
+    const schema: z.ZodType = COMPOSIO_TOOLKITS[entry.toolkit as keyof typeof COMPOSIO_TOOLKITS] ?? GENERIC_TOOLKIT;
+    const parsed = schema.safeParse(entry);
+    if (!parsed.success) throw new Error(composioIssues(index, parsed.error));
+    const a = parsed.data as Record<string, any>;
+    const triggers: { slug: string; config: Record<string, unknown> }[] = a.triggers ?? [];
+    const slugs = new Set<string>();
+    for (const t of triggers) {
+      if (slugs.has(t.slug)) throw new Error(`${a.toolkit} account ${a.account}: the trigger ${t.slug} is listed twice`);
+      slugs.add(t.slug);
+    }
+    return {
+      toolkit: a.toolkit,
+      ...base(a.toolkit, a as { account: string; clot?: string; shared?: true }),
+      audience: a.audience,
+      ...(a.apiKey === undefined ? {} : { apiKey: secret(env, a.apiKey), apiKeyName: a.apiKey }),
+      ...(a.verificationToken === undefined ? {} : { verificationToken: secret(env, a.verificationToken) }),
+      triggers,
+      ...(a.leadTimes === undefined ? {} : { leadMinutes: a.leadTimes, pollMinutes: a.pollMinutes }),
+      ...(a.checkoutCompleted === undefined ? {} : { checkoutCompleted: a.checkoutCompleted }),
+      ...(a.region === undefined ? {} : { region: a.region, projectId: a.projectId, events: a.events }),
+    };
+  });
+  const seenComposio = new Set<string>();
+  for (const a of composio) {
+    const name = `${a.toolkit}:${a.account}`;
+    if (seenComposio.has(name)) throw new Error(`${a.toolkit} account ${a.account} is named twice`);
+    seenComposio.add(name);
+  }
+  // Composio's free plan allows 10,000 tool calls a month on its own app, which the calendars' polling uses.
+  const calendarCalls = composio.filter(isCalendar).reduce((sum, a) => sum + 43_200 / a.pollMinutes, 0);
+  if (calendarCalls > 10_000) throw new Error(`the calendars would poll ${Math.round(calendarCalls).toLocaleString("en-US")} times a month; the limit across all calendars is 10,000 (raise pollMinutes)`);
+
   const sources: Sources = {
-    stripe: file.sources.stripe.map((a) => ({ ...base("stripe", a), webhookSecret: secret(env, a.webhookSecret), apiKey: secret(env, a.apiKey), checkoutCompleted: a.checkoutCompleted })),
     email: file.sources.email.map((a) => {
       const gmail = a.address.toLowerCase().endsWith("@gmail.com");
       const imap = a.imap ?? (gmail ? { host: "imap.gmail.com", port: 993 } : undefined);
@@ -259,14 +329,9 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
       if (imap === undefined || smtp === undefined) throw new Error(`email account ${a.account}: imap and smtp are needed for an address that is not a Gmail one`);
       return { ...base("email", a), address: a.address.toLowerCase(), addresses: a.addresses.map((x) => x.toLowerCase()), password: secret(env, a.password), imap, smtp, mailboxes: a.mailboxes, tellAddress: a.tellAddress };
     }),
-    calendar: file.sources.calendar.map((a) => {
-      if ((a.script === undefined) !== (a.scriptSecret === undefined)) throw new Error(`calendar account ${a.account}: script and scriptSecret go together`);
-      const script = a.script === undefined || a.scriptSecret === undefined ? undefined : { url: secret(env, a.script), secret: secret(env, a.scriptSecret) };
-      return { ...base("calendar", a), icalUrl: secret(env, a.icalUrl), script, leadMinutes: a.leadTimes, pollMinutes: a.pollMinutes };
-    }),
-    linear: file.sources.linear.map((a) => ({ ...base("linear", a), webhookSecret: secret(env, a.webhookSecret), apiKey: secret(env, a.apiKey) })),
-    notion: file.sources.notion.map((a) => ({ ...base("notion", a), token: secret(env, a.token), verificationToken: a.verificationToken === undefined ? undefined : secret(env, a.verificationToken) })),
+    composio,
   };
+  const composioApiKey = composio.length > 0 ? secret(env, "COMPOSIO_API_KEY") : env.COMPOSIO_API_KEY || undefined;
 
   const mcpServers: Record<string, McpServer> = Object.fromEntries(
     Object.entries(file.mcpServers).map(([name, server]) => [
@@ -276,7 +341,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
   );
 
   const publicUrl = (file.publicUrl ?? "").replace(/\/+$/, "");
-  const reachedFromOutside = sources.stripe.length + sources.linear.length + sources.notion.length > 0 || Object.values(mcpServers).some((server) => server.kind === "http" && server.oauth);
+  const reachedFromOutside = sources.composio.length > 0 || Object.values(mcpServers).some((server) => server.kind === "http" && server.oauth);
   if (reachedFromOutside && publicUrl === "") throw new Error("publicUrl is needed: webhooks and OAuth logins reach the daemon through it (the Tailscale Funnel address)");
 
   return {
@@ -303,6 +368,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     sweep: file.sweep,
     spend: file.spend,
     sources,
+    composioApiKey,
     mcpServers,
   };
 }

@@ -1,4 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import type { Composio } from "../composio/component.js";
+import { NOTION } from "../composio/toolkits/notion.js";
 import type { NotionAccount } from "../config.js";
 import type { Enricher } from "../enrich.js";
 import { appendBody } from "../events/body.js";
@@ -6,9 +8,6 @@ import type { Sender } from "../events/github-comment.js";
 import type { ClotEvent } from "../events/types.js";
 import { jsonBody, storeEvent, type Handler } from "../intake.js";
 import type { Store } from "../store.js";
-
-/** The version of Notion's API the daemon speaks. */
-export const NOTION_VERSION = "2022-06-28";
 
 /** Where an account's verification token is kept, when it did not come from .env. */
 export const verificationKey = (account: string) => `notion-verification:${account}`;
@@ -97,24 +96,6 @@ export function notionHandler(account: NotionAccount, deps: { store: Store; now:
   };
 }
 
-/** Notion's API, as the integration. Throws on an HTTP error, with its status. */
-export function notionApi(token: string, fetchFn: typeof fetch = fetch): (path: string, init?: { method?: string; body?: unknown }) => Promise<any> {
-  return async (path, init = {}) => {
-    const response = await fetchFn(`https://api.notion.com/v1/${path}`, {
-      method: init.method ?? "GET",
-      headers: { authorization: `Bearer ${token}`, "notion-version": NOTION_VERSION, "content-type": "application/json" },
-      ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
-    });
-    if (!response.ok) throw Object.assign(new Error(`Notion answered ${response.status}`), { status: response.status });
-    return response.json();
-  };
-}
-
-/** The integration's own bot user. */
-export async function notionBot(token: string, fetchFn: typeof fetch = fetch): Promise<string> {
-  return text((await notionApi(token, fetchFn)("users/me")).id);
-}
-
 const plain = (richText: unknown): string => (Array.isArray(richText) ? richText.map((part: any) => text(part?.plain_text)).join("") : "");
 
 /** A page property as text. */
@@ -149,23 +130,29 @@ const TEXT_BLOCKS = new Set(["paragraph", "heading_1", "heading_2", "heading_3",
 
 export const NOTION_UNREAD = "[More about this could not be read from Notion.]";
 
+/** What a Notion read through Composio answers: Notion's own object, as `data`. Throws when Composio or Notion refused. */
+async function read(c: Composio, account: NotionAccount, slug: string, args: Record<string, unknown>): Promise<any> {
+  const result = await c.runChecked(account, slug, args);
+  if (!result.ok) throw Object.assign(new Error(result.error), { refused: result.reason === "refused" || result.reason === "auth" });
+  return result.data;
+}
+
 /** Reads what a Notion event is about: the page's title, properties and first text, a comment and its discussion, and who wrote it. */
-export function notionEnricher(accounts: NotionAccount[], fetchFn: typeof fetch = fetch): Enricher {
+export function notionEnricher(c: Composio): Enricher {
   return async (event) => {
-    const account = accounts.find((candidate) => candidate.account === event.account);
+    const account = c.account(event.account, "notion") as NotionAccount | undefined;
     if (!account) return event;
-    const api = notionApi(account.token, fetchFn);
     try {
-      const page = await api(`pages/${event.ref}`);
+      const page = await read(c, account, NOTION.retrievePage, { page_id: event.ref });
       const properties = Object.entries(page.properties ?? {}) as [string, any][];
       const title = properties.map(([, property]) => (property?.type === "title" ? plain(property.title) : "")).find((value) => value !== "") || "(untitled)";
-      const author = await api(`users/${event.actor}`).then((user) => text(user.name), () => "");
+      const author = await read(c, account, NOTION.getUser, { user_id: event.actor }).then((user) => text(user.name), () => "");
       // The delivery names its author by ID only; the name, when it can be read, becomes the actor.
       const actor = author || event.actor;
       const facts = properties.filter(([, property]) => property?.type !== "title").map(([name, property]) => [name, propertyText(property)]).filter(([, value]) => value !== "").map(([name, value]) => `${name}: ${value}`);
       const parts = [`From Notion:\nPage: "${title}"${author ? `\nBy: ${author}` : ""}`, ...(facts.length > 0 ? [facts.join("\n")] : [])];
       if (event.kind === "comment") {
-        const comments: any[] = (await api(`comments?block_id=${event.ref}&page_size=100`)).results ?? [];
+        const comments: any[] = (await read(c, account, NOTION.fetchComments, { block_id: event.ref, page_size: 100 })).results ?? [];
         const commentId = /^Comment ID: (.+)$/m.exec(event.body)?.[1];
         const own = comments.find((comment) => comment.id === commentId);
         const discussion = comments.filter((comment) => own !== undefined && comment.discussion_id === own.discussion_id && comment !== own);
@@ -173,7 +160,7 @@ export function notionEnricher(accounts: NotionAccount[], fetchFn: typeof fetch 
         if (discussion.length > 0) parts.push(`Earlier in the discussion:\n${discussion.map((comment) => `- ${plain(comment.rich_text)}`).join("\n")}`);
         return { ...appendBody(event, parts.join("\n\n")), title: `Comment on "${title}" in Notion`, actor };
       }
-      const blocks: any[] = (await api(`blocks/${event.ref}/children?page_size=100`)).results ?? [];
+      const blocks: any[] = (await read(c, account, NOTION.fetchBlocks, { block_id: event.ref, page_size: 100 })).results ?? [];
       const content = blocks
         .filter((block) => TEXT_BLOCKS.has(block.type))
         .map((block) => plain(block[block.type]?.rich_text))
@@ -189,28 +176,26 @@ export function notionEnricher(accounts: NotionAccount[], fetchFn: typeof fetch 
 
 /**
  * Sends a standing rule's message as a comment on the Notion page the event is about, as the
- * integration. `botId` gives the integration's bot user for an account, or "" while it is not known.
+ * integration, through Composio. Not rated again: the rule is what the user approved. Until the
+ * integration's bot is known its own comment could not be told apart, so nothing is sent.
  */
-export function notionCommentSender(accounts: NotionAccount[], botId: (account: string) => string, fetchFn: typeof fetch = fetch): Sender {
-  const accountOf = (name: string) => accounts.find((candidate) => candidate.account === name);
+export function notionCommentSender(c: Composio): Sender {
+  const accountOf = (name: string) => c.account(name, "notion") as NotionAccount | undefined;
   return {
     reach(event) {
       if (event.source !== "notion") return "this way of sending answers Notion pages, and this event is not one";
       if (!event.subject.startsWith("page:")) return "this event is not about a Notion page";
-      if (!accountOf(event.account)) return `the Notion account ${event.account} is not configured`;
+      const account = accountOf(event.account);
+      if (!account) return `the Notion account ${event.account} is not configured`;
       // Its own comment comes back as an event, and must be told apart from anyone else's, or a rule would answer itself.
-      if (botId(event.account) === "") return "the Notion integration's bot is not known yet, so its own comment could not be told apart; nothing is sent until the daemon has read it";
+      if (c.identity(account) === "") return "the Notion integration's bot is not known yet, so its own comment could not be told apart; nothing is sent until the daemon has read it";
       return undefined;
     },
 
     async send(event, body) {
-      try {
-        await notionApi(accountOf(event.account)!.token, fetchFn)("comments", { method: "POST", body: { parent: { page_id: event.ref }, rich_text: [{ type: "text", text: { content: body } }] } });
-        return { ok: true, url: event.url };
-      } catch (error: any) {
-        const definite = typeof error?.status === "number" && error.status >= 400 && error.status < 500;
-        return { ok: false, refused: definite, reason: error instanceof Error ? error.message : String(error) };
-      }
+      const result = await c.run(accountOf(event.account)!, NOTION.createComment, { parent_page_id: event.ref, comment: { content: body } });
+      if (result.ok) return { ok: true, url: event.url };
+      return { ok: false, refused: result.reason === "refused" || result.reason === "auth", reason: result.error };
     },
   };
 }

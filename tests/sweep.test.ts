@@ -70,8 +70,8 @@ describe("parseSweepOutput", () => {
 
 describe("sweepPrompt and skipList", () => {
   it("builds the skip list from the configuration", () => {
-    expect(skipList({ sources: { stripe: [{}], email: [{ address: "a@x.com" }, { address: "b@x.com" }], calendar: [{}], linear: [], notion: [{}] }, mcpServers: { notion: {}, extra: {} } })).toEqual(["GitHub", "Stripe", "Email (a@x.com, b@x.com)", "Google Calendar", "Notion", "notion", "extra"]);
-    expect(skipList({ sources: { stripe: [], email: [], calendar: [], linear: [], notion: [] }, mcpServers: {} })).toEqual(["GitHub"]);
+    expect(skipList({ sources: { email: [{ address: "a@x.com" }, { address: "b@x.com" }], composio: [{ toolkit: "stripe" }, { toolkit: "googlecalendar" }, { toolkit: "notion" }, { toolkit: "notion" }, { toolkit: "slack" }] }, mcpServers: { notion: {}, extra: {} } })).toEqual(["GitHub", "Email (a@x.com, b@x.com)", "Stripe", "Google Calendar", "Notion", "slack", "notion", "extra"]);
+    expect(skipList({ sources: { email: [], composio: [] }, mcpServers: {} })).toEqual(["GitHub"]);
   });
 
   it("wraps the record as data, or says there is none, and lists the projects, the skip list and the connectors", () => {

@@ -1,10 +1,14 @@
 import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
+import { Composio } from "../src/composio/component.js";
+import { NOTION } from "../src/composio/toolkits/notion.js";
 import type { NotionAccount } from "../src/config.js";
-import { normalizeNotion, notionCommentSender, notionEnricher, notionHandler, pageUrl, verificationKey, verifyNotion } from "../src/sources/notion.js";
+import { Supervisor } from "../src/listeners.js";
+import { NOTION_UNREAD, normalizeNotion, notionCommentSender, notionEnricher, notionHandler, pageUrl, verificationKey, verifyNotion } from "../src/sources/notion.js";
 import { Store } from "../src/store.js";
+import { FakeComposioApi } from "./fake-composio.js";
 
-const account: NotionAccount = { account: "tady", shared: true, token: "ntn_test" };
+const account: NotionAccount = { toolkit: "notion", account: "tady", shared: true, audience: "private", apiKey: "ntn_test", apiKeyName: "K", triggers: [] };
 const NOW = 1_760_000_000_000;
 const PAGE = "1a2b3c4d-0000-4000-8000-000000000001";
 
@@ -112,27 +116,36 @@ describe("notionHandler", () => {
   });
 });
 
-describe("Notion's API", () => {
-  function api(routes: Record<string, unknown>) {
-    const calls: { url: string; init: RequestInit }[] = [];
-    const fetchFn = (async (url: string, init: RequestInit) => {
-      calls.push({ url, init });
-      const key = Object.keys(routes).find((k) => url.includes(k));
-      return key === undefined ? new Response("{}", { status: 404 }) : Response.json(routes[key]);
-    }) as unknown as typeof fetch;
-    return { calls, fetchFn };
+describe("Notion through Composio", () => {
+  let api: FakeComposioApi;
+  let composio: Composio;
+
+  beforeEach(async () => {
+    api = new FakeComposioApi();
+    composio = new Composio({ api, store: new Store(":memory:"), accounts: [account], publicUrl: "https://x.example", tell: async () => {}, tellHome: async () => {}, now: () => NOW, schedule: () => () => {}, supervisor: new Supervisor({ schedule: () => () => {} }), log: () => {} });
+    api.answers.set(NOTION.whoAmI, { ok: true, data: { data: { id: "bot-1" } } });
+    await composio.reconcile();
+  });
+
+  /** Answers Notion's read tools with Notion's own objects, as Composio does. */
+  function reads(answers: Record<string, unknown>) {
+    for (const [slug, data] of Object.entries(answers)) api.answers.set(slug, (args) => ({ ok: true, data: typeof data === "function" ? (data as (a: any) => unknown)(args) : data }));
   }
 
   const page = { id: PAGE, url: "https://www.notion.so/Feedback-1a2b", properties: { Name: { type: "title", title: [{ plain_text: "Export is slow" }] }, Status: { type: "status", status: { name: "New" } }, Tags: { type: "multi_select", multi_select: [{ name: "perf" }, { name: "export" }] } } };
 
-  it("names a new page and adds its properties, its text and its author", async () => {
-    const { fetchFn } = api({
-      [`/pages/${PAGE}`]: page,
-      [`/blocks/${PAGE}/children`]: { results: [{ type: "paragraph", paragraph: { rich_text: [{ plain_text: "Exporting 2 GB takes ten minutes." }] } }, { type: "to_do", to_do: { rich_text: [{ plain_text: "check worker" }] } }] },
-      "/users/person-1": { name: "Ann" },
+  it("learns the integration's bot user from Composio, for telling its own comments apart", () => {
+    expect(composio.identity(account)).toBe("bot-1");
+  });
+
+  it("names a new page and adds its properties, its text and its author, read through Composio", async () => {
+    reads({
+      [NOTION.retrievePage]: page,
+      [NOTION.fetchBlocks]: { results: [{ type: "paragraph", paragraph: { rich_text: [{ plain_text: "Exporting 2 GB takes ten minutes." }] } }, { type: "to_do", to_do: { rich_text: [{ plain_text: "check worker" }] } }] },
+      [NOTION.getUser]: { name: "Ann" },
     });
     const { event } = normalizeNotion(account, pageCreated, NOW)!;
-    const read = await notionEnricher([account], fetchFn)(event);
+    const read = await notionEnricher(composio)(event);
     expect(read.title).toBe('Page created in Notion: "Export is slow"');
     expect(read.url).toBe(event.url);
     expect(read.body).toContain("By: Ann");
@@ -140,34 +153,66 @@ describe("Notion's API", () => {
     expect(read.body).toContain("Status: New");
     expect(read.body).toContain("Tags: perf, export");
     expect(read.body).toContain("Exporting 2 GB takes ten minutes.\ncheck worker");
+    expect(api.of("execute").some((c) => c.includes(`notion:tady ${NOTION.retrievePage} {"page_id":"${PAGE}"}`))).toBe(true);
   });
 
   it("names a comment by its page and adds the comment and its discussion", async () => {
-    const { fetchFn } = api({
-      [`/pages/${PAGE}`]: page,
-      "/comments": { results: [{ id: "comment-0", discussion_id: "d-1", created_by: { id: "person-1" }, rich_text: [{ plain_text: "Is this still slow?" }] }, { id: "comment-1", discussion_id: "d-1", created_by: { id: "person-2" }, rich_text: [{ plain_text: "Yes, since Monday." }] }] },
-      "/users/": { name: "Ann" },
+    reads({
+      [NOTION.retrievePage]: page,
+      [NOTION.fetchComments]: { results: [{ id: "comment-0", discussion_id: "d-1", created_by: { id: "person-1" }, rich_text: [{ plain_text: "Is this still slow?" }] }, { id: "comment-1", discussion_id: "d-1", created_by: { id: "person-2" }, rich_text: [{ plain_text: "Yes, since Monday." }] }] },
+      [NOTION.getUser]: { name: "Ann" },
     });
-    const read = await notionEnricher([account], fetchFn)({ ...normalizeNotion(account, commentCreated, NOW)!.event, automated: false });
+    const read = await notionEnricher(composio)({ ...normalizeNotion(account, commentCreated, NOW)!.event, automated: false });
     expect(read.title).toBe('Comment on "Export is slow" in Notion');
     expect(read.actor).toBe("Ann");
     expect(read.body).toContain("Comment: Yes, since Monday.");
     expect(read.body).toContain("Earlier in the discussion:\n- Is this still slow?");
   });
 
+  it("says it could not read the page when Composio or Notion refuses, and goes on", async () => {
+    api.answers.set(NOTION.retrievePage, { ok: false, error: "Page not found (404)", reason: "refused" });
+    const { event } = normalizeNotion(account, pageCreated, NOW)!;
+    expect((await notionEnricher(composio)(event)).body).toContain(NOTION_UNREAD);
+  });
+
+  it("says it could not read the page when an answer is not Notion's object, instead of reading it wrongly", async () => {
+    const { event } = normalizeNotion(account, pageCreated, NOW)!;
+    // A page with no properties (the answer is wrapped one level deeper), and a comment list that is not a list.
+    reads({ [NOTION.retrievePage]: { data: page }, [NOTION.getUser]: { name: "Ann" } });
+    expect((await notionEnricher(composio)(event)).body).toContain(NOTION_UNREAD);
+    reads({ [NOTION.retrievePage]: page, [NOTION.fetchComments]: { results: "none" }, [NOTION.getUser]: { name: "Ann" } });
+    const comment = { ...normalizeNotion(account, commentCreated, NOW)!.event, automated: false };
+    expect((await notionEnricher(composio)(comment)).body).toContain(NOTION_UNREAD);
+  });
+
+  it("leaves an event of an account it does not know as it is", async () => {
+    const { event } = normalizeNotion(account, pageCreated, NOW)!;
+    expect(await notionEnricher(composio)({ ...event, account: "other" })).toEqual({ ...event, account: "other" });
+  });
+
   it("comments on the page an event is about, as the integration", async () => {
-    const { calls, fetchFn } = api({ "/comments": { id: "comment-9" } });
-    let bot = "bot-1";
-    const sender = notionCommentSender([account], () => bot, fetchFn);
+    reads({ [NOTION.createComment]: { id: "comment-9" } });
+    const sender = notionCommentSender(composio);
     const { event } = normalizeNotion(account, pageCreated, NOW)!;
     expect(sender.reach(event)).toBeUndefined();
     expect(sender.reach({ ...event, source: "email" })).toContain("Notion");
-    // Until the integration's bot is known, its own comment would come back looking like anyone's.
-    bot = "";
-    expect(sender.reach(event)).toContain("not known yet");
-    bot = "bot-1";
+    expect(sender.reach({ ...event, subject: "issue:1" })).toContain("not about a Notion page");
+    expect(sender.reach({ ...event, account: "other" })).toContain("not configured");
     expect(await sender.send(event, "Thanks, noted.")).toEqual({ ok: true, url: event.url });
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ parent: { page_id: PAGE }, rich_text: [{ type: "text", text: { content: "Thanks, noted." } }] });
-    expect((calls[0].init.headers as Record<string, string>)["notion-version"]).toBe("2022-06-28");
+    expect(api.of("execute").at(-1)).toBe(`execute:notion:tady ${NOTION.createComment} {"parent_page_id":"${PAGE}","comment":{"content":"Thanks, noted."}}`);
+  });
+
+  it("sends nothing until the integration's bot is known", async () => {
+    const fresh = new Composio({ api: new FakeComposioApi(), store: new Store(":memory:"), accounts: [account], publicUrl: "https://x.example", tell: async () => {}, tellHome: async () => {}, now: () => NOW, schedule: () => () => {}, supervisor: new Supervisor({ schedule: () => () => {} }), log: () => {} });
+    expect(notionCommentSender(fresh).reach(normalizeNotion(account, pageCreated, NOW)!.event)).toContain("not known yet");
+  });
+
+  it("says a refusal is definite, and a network failure is not", async () => {
+    const sender = notionCommentSender(composio);
+    const { event } = normalizeNotion(account, pageCreated, NOW)!;
+    api.answers.set(NOTION.createComment, { ok: false, error: "Could not find page", reason: "refused" });
+    expect(await sender.send(event, "x")).toEqual({ ok: false, refused: true, reason: "Could not find page" });
+    api.answers.set(NOTION.createComment, { ok: false, error: "fetch failed", reason: "unreachable" });
+    expect(await sender.send(event, "x")).toMatchObject({ ok: false, refused: false });
   });
 });

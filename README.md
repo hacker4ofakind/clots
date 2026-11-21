@@ -9,15 +9,17 @@ This repository implements stages 1 and 2:
 - **Stage 2b**: the rulebook, with standing rules and global memory.
 - **Stage 2c**: more sources: Stripe, email, Google Calendar, Linear, Notion, MCP servers and recipe webhooks.
 - **Stage 2d**: gates, digests, the spend log, the sweep and re-grounding.
+- **Stage 2e**: Composio: Stripe, Linear, Notion, Google Calendar, PostHog and any other service it has a toolkit for, through one layer, with writes rated by the account's audience.
 
 The main session runs at medium effort by default, and at low only for a message it answers without taking any action.
 
 ## Requirements
 
-- Node 22 or later
+- Node 22.22.3 or later
 - Docker (Docker Desktop on Windows; open it before starting)
 - A Claude subscription, a Discord bot, and a GitHub account for the Clots with a classic token, invited to each Clot's repository
-- Tailscale with Funnel, so GitHub's webhooks can reach the daemon
+- Tailscale with Funnel, so GitHub's and Composio's webhooks can reach the daemon
+- A Composio account (the free Hobby plan is enough) for Stripe, Linear, Notion, the calendar and PostHog
 
 ## Setup
 
@@ -59,19 +61,43 @@ Every source is set up under `sources` in `clots.config.json`, one entry per acc
 
 | Source | Set up | Webhook address |
 |---|---|---|
-| Stripe | An endpoint in the Stripe dashboard for the events in the spec, and a restricted key with read access. | `/webhooks/stripe/<account>` |
 | Email | An app password (Gmail) or the account's password; the folders or Gmail labels to watch. Nothing else is read. On Gmail, add each alias standing replies should come from under Settings → Accounts → Send mail as. | none: IMAP |
-| Google Calendar | The calendar's secret iCal address; for changes, the Apps Script in `setup/calendar.gs`, deployed by you. No Google Cloud project. | none: polled |
-| Linear | A member for the Clots with its own API key, and a webhook for issues and comments. | `/webhooks/linear/<account>` |
-| Notion | A connection (an internal integration) added to your pages, and a webhook subscription; the daemon prints the verification token in its log. | `/webhooks/notion/<account>` |
+| GitHub | The repository's webhook, with the secret in `.env`. | `/webhooks/github` |
+| Stripe, Linear, Notion, Google Calendar, PostHog, and any other toolkit | An account under `sources.composio`; see Composio below. | `/webhooks/composio` (Notion's events: `/webhooks/notion/<account>`) |
 | Any MCP server | Under `mcpServers`; an OAuth server gets a login link in chat. Watch recipes in the rulebook call its read-only tools on a timer. | `/oauth/callback` |
 | Any other webhook | A webhook recipe in the rulebook; its secret is an `.env` key beginning `RECIPE_`. | `/webhooks/r/<recipe>` |
 
-Run a source's assumption check before relying on it: `scripts/spike-2c-email.ts`, `scripts/spike-2c-calendar.ts`, `scripts/spike-2c-watch.ts`, and `scripts/capture-2c.ts <source>` to see deliveries arrive.
+Run a source's assumption check before relying on it: `scripts/spike-2c-email.ts`, `scripts/spike-2c-watch.ts`, `scripts/spike-2e.ts` (Composio; see its header), and `scripts/capture-2c.ts <source>` or `scripts/capture-2e.ts` to see deliveries arrive.
 
 A Clot can save email drafts in your Drafts folder, read your calendar, and add, move or remove events without guests, at once; each change is posted, and `&calendar undo` reverses it. A repeating event is never removed. In a turn an outsider's message started, it may only add events (at most 3 a day) and change ones a Clot added. Nothing goes to anyone without your yes: a standing rule you approved, or an email the Clot asks to send (see Asks). Unanswered emails are withdrawn after `sendReview.days` (default 3); `"sendReview": { "enabled": false }` in `clots.config.json` leaves only drafts and standing rules. Sent mail gets a copy in Sent (Gmail files its own). The Clots are told each email account's addresses; set `"tellAddress": false` on an account to show them only its name.
 
-Redeploy `setup/calendar.gs` after updating: newer versions report repeating and missing events, which the daemon checks before removing or putting back an event.
+### Composio
+
+Composio holds the connections, sends their events to one webhook and runs their tools. Make a project at composio.dev under the Clots' own address, create a project API key (it needs: Tools read; Session management read and write; Session tool execution write; Connected accounts read and write; Auth configs read and write; Toolkits read; Triggers read and write; Webhooks read and write; Observability read), and put it in `.env` as `COMPOSIO_API_KEY`. Only the daemon reads it; it never enters a container.
+
+```json
+"sources": {
+  "composio": [
+    { "toolkit": "linear", "account": "proton", "clot": "encryptify", "audience": "team", "apiKey": "LINEAR_PROTON_KEY" },
+    { "toolkit": "notion", "account": "main", "shared": true, "audience": "private", "apiKey": "NOTION_CONNECTION_API_KEY" },
+    { "toolkit": "stripe", "account": "shop", "clot": "encryptify", "audience": "public", "apiKey": "STRIPE_SHOP_KEY" },
+    { "toolkit": "googlecalendar", "account": "personal", "shared": true, "audience": "private", "leadTimes": ["24h"], "pollMinutes": 5 },
+    { "toolkit": "posthog", "account": "app", "clot": "encryptify", "audience": "public", "apiKey": "POSTHOG_APP_KEY", "region": "us", "projectId": 123456, "events": ["signup"] }
+  ]
+}
+```
+
+`audience` says who sees what happens in an account: `private` (only you and the Clots), `team` (you and people you know well), or `public` (anyone: customers, a community; the default). The Clot can act in every account through `composio_find` and `composio_run`. A tool that only reads always runs. In a private or team account a write runs at once and is posted with `&composio undo`; a destructive write in a team account (or any write in a turn an outsider's text started) may go to a Haiku 5.5 reviewer first. A write in a public account, anything that moves money (every Stripe write), reaches people outside the workspace (email, direct messages, sharing, publishing) or changes who can reach the workspace (webhooks, keys, roles) is an ask you answer in `<clot>-ask`. Calendar changes go through `calendar_write` and `calendar_remove` only.
+
+- **Keys.** Each account's key stays in `.env`; change it there and restart, and the daemon replaces the connection. Stripe's restricted key needs read access, and read and write access to webhook endpoints, which Composio uses to make its destination. PostHog's personal API key needs the `hog_function:write` scope (and `region`, `projectId` and the event names under `events`).
+- **Linear.** The Clots' member's key. Composio polls the team's issues and comments every minute (its webhook triggers need a Linear OAuth app).
+- **Notion.** The connection's secret, with the pages shared with it. Its events keep their own webhook: in the connection's Webhooks tab set `<publicUrl>/webhooks/notion/<account>`; the daemon prints the verification token in its log for you to paste back. Composio reads the pages and comments for the enrichment, and sends the comments of standing rules.
+- **Google Calendar.** No Google Cloud project and no iCal address. The first time, the daemon posts `Sign in to Google Calendar for the Clots: <link>` in the channel of the Clot the account is bound to (the home Clot's, for a shared account); open it and approve. The monthly polling of all calendars together may not pass 10,000 calls (`43200 / pollMinutes` each).
+- **The free plan.** Composio's Hobby plan allows 100,000 tool calls and 50,000 trigger events a month (20,000 and 10,000 on its own apps, which is the calendar), and stops at the limit until the next month. The daemon counts them, says so in the home Clot's channel at 70% and 90%, and once when a limit is reached.
+- **When something stops working.** Once a day the daemon checks each connection and trigger and makes again what Composio lost or disabled, and tells the Clot's channel when it cannot. It also tells you, once per start, when a tool it reads answers in a shape it does not expect ("Composio's <tool> answered in an unexpected shape"): what the daemon reads through that tool is then treated as unreadable until the code is updated. One thing it cannot see: a Stripe webhook endpoint deleted in Stripe, since Composio has no tool that lists them. If Stripe's events stop, remove the Stripe account from `sources.composio`, restart, add it back and restart again; that makes the endpoint again.
+- **Any other toolkit.** Add `{ "toolkit": "slack", "account": "work", "shared": true, "audience": "team", "apiKey": "SLACK_KEY", "triggers": [{ "slug": "SLACK_RECEIVE_MESSAGE", "config": {} }] }`. Its tools are the Clot's, and each trigger is an event of kind `trigger` from the source `slack`, treated as written by an outsider.
+
+Upgrading from stage 2c's Stripe, Linear, Notion and calendar sources: `sources.stripe`, `.linear`, `.notion` and `.calendar` no longer exist (the daemon names the key and refuses to start); move each into `sources.composio` as above. Delete the Stripe endpoint and the Linear webhook that pointed at `/webhooks/stripe/…` and `/webhooks/linear/…`; the Notion webhook stays. Then `&close` each Clot, since a resumed session keeps the system prompt it was made with, and the Clots only learn about Composio from the new one. `setup/calendar.gs` and `ical.js` are gone.
 
 ## Asks and choices
 
@@ -81,6 +107,7 @@ Whatever needs your yes is asked in a temporary channel in the Clot's category, 
 |---|---|---|
 | A rule change: any standing rule, or any rulebook edit from a turn an outsider's text started | `<clot>-rule` | yes applies it, no declines it; anything else repeats the question. |
 | An email to send | `<clot>-mail` | yes sends it, no drops it, `draft` saves it in Drafts; anything else is feedback, and the revised email comes back in a new channel. |
+| A write in a Composio account, from `composio_run`, that the rating sent to you: a public account, money, people outside the workspace, access, or the reviewer's `ask` | `<clot>-ask` | yes runs it exactly as shown (every argument is in the post), no declines it; anything else goes to the Clot as feedback and closes it. It never expires. |
 | A merge, from `merge_pull_request` | `<clot>-ask` | yes squash-merges the pull request at the commit shown (GitHub refuses if it moved), no leaves it open; anything else goes to the Clot. New commits or a closed pull request withdraw it. |
 | A choice, from `ask_choice` | `<clot>-choice` | `1`/`one`/`first`, `2`/`two`/`second`, or `your pick`/`go ahead` decide it; anything else goes to the Clot as your answer. |
 | A global memory the home Clot wrote in a turn an outsider's text started | `<clot>-memory` | yes gives it to every Clot; no puts the home Clot's copy back. |
@@ -124,6 +151,7 @@ A message that starts with `&` is handled by the daemon and never reaches the mo
 | `&rules`, `&rules undo` | Lists the rules in force for this Clot, routing rules included; undoes the latest edit made from chat. |
 | `&memory`, `&memory undo` | Lists the global memories in force; undoes the latest change. |
 | `&calendar undo` | Reverses this Clot's latest calendar change: removes an event it added, puts back what it changed, or creates again one it removed. Sent again, it steps further back. |
+| `&composio undo` | Reverses this Clot's latest Composio write that can be undone: archives what it created, or puts back the fields an update changed (unless someone changed them since). Sent again, it steps further back. |
 | `&spend` | This week's estimated spend per Clot and worker, the gate in force, and the five-hour and seven-day usage. Answered at once, even during a turn. |
 
 ## Test

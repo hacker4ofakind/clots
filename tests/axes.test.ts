@@ -21,3 +21,10 @@ describe("the four axes", () => {
     expect(high).toEqual(["emailSend", "mergePullRequest", "standing"]);
   });
 });
+
+describe("the Composio tools' ratings", () => {
+  it("are low: composio_run rates each call itself, in code", () => {
+    expect(isHigh(TOOL_AXES.composioFind)).toBe(false);
+    expect(isHigh(TOOL_AXES.composioRun)).toBe(false);
+  });
+});

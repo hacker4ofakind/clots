@@ -1,0 +1,134 @@
+{
+  "synthetic": "the object of a Stripe event recorded in stage 2c, wrapped as Composio delivers a trigger; Composio's Stripe account had no webhook permission to record a real one",
+  "path": "/webhooks/composio",
+  "headers": {},
+  "raw": "{\"id\":\"msg_synthetic_3\",\"timestamp\":\"2026-10-16T09:00:00.000Z\",\"type\":\"composio.trigger.message\",\"metadata\":{\"log_id\":\"log_3\",\"trigger_slug\":\"STRIPE_CHARGE_REFUNDED\",\"toolkit_slug\":\"stripe\",\"trigger_id\":\"ti_stripe\",\"connected_account_id\":\"ca_stripe\",\"auth_config_id\":\"ac_stripe\",\"user_id\":\"stripe:shop\"},\"data\":{\"id\":\"ch_3UQk7lRKNANwdhdD0B0t0rfC\",\"object\":\"charge\",\"amount\":100,\"amount_captured\":100,\"amount_refunded\":100,\"application\":null,\"application_fee\":null,\"application_fee_amount\":null,\"balance_transaction\":\"txn_3UQk7lRKNANwdhdD0dreligj\",\"billing_details\":{\"address\":{\"city\":null,\"country\":null,\"line1\":null,\"line2\":null,\"postal_code\":null,\"state\":null},\"email\":null,\"name\":null,\"phone\":null,\"tax_id\":null},\"calculated_statement_descriptor\":\"Stripe\",\"captured\":true,\"created\":1792053294,\"currency\":\"usd\",\"customer\":null,\"description\":\"(created by Stripe CLI)\",\"destination\":null,\"dispute\":null,\"disputed\":false,\"failure_balance_transaction\":null,\"failure_code\":null,\"failure_message\":null,\"fraud_details\":{},\"livemode\":false,\"metadata\":{},\"on_behalf_of\":null,\"order\":null,\"outcome\":{\"advice_code\":null,\"network_advice_code\":null,\"network_decline_code\":null,\"network_status\":\"approved_by_network\",\"reason\":null,\"risk_level\":\"normal\",\"risk_score\":12,\"seller_message\":\"Payment complete.\",\"type\":\"authorized\"},\"paid\":true,\"payment_intent\":\"pi_3UQk7lRKNANwdhdD0CNWveHq\",\"payment_method\":\"pm_1UQk7lRKNANwdhdDhuEcUWd0\",\"payment_method_details\":{\"card\":{\"amount_authorized\":100,\"authorization_code\":\"110716\",\"brand\":\"visa\",\"checks\":{\"address_line1_check\":null,\"address_postal_code_check\":null,\"cvc_check\":\"pass\"},\"country\":\"US\",\"electronic_commerce_indicator\":\"07\",\"exp_month\":10,\"exp_year\":2027,\"extended_authorization\":{\"status\":\"disabled\"},\"fingerprint\":\"vHa7c67L15YYy8ra\",\"funding\":\"credit\",\"incremental_authorization\":{\"status\":\"unavailable\"},\"installments\":null,\"last4\":\"4242\",\"mandate\":null,\"multicapture\":{\"status\":\"unavailable\"},\"network\":\"visa\",\"network_token\":{\"used\":false},\"network_transaction_id\":\"118729755995455\",\"overcapture\":{\"maximum_amount_capturable\":100,\"status\":\"unavailable\"},\"regulated_status\":\"unregulated\",\"three_d_secure\":null,\"transaction_link_id\":null,\"wallet\":null},\"type\":\"card\"},\"radar_options\":{},\"receipt_email\":null,\"receipt_number\":null,\"receipt_url\":\"https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVDY5SDVSS05BTndkaGREKLCgwtYGMgaL7hJ41FA6LBZiak4B4kSIPJJD0khkVkArToX4stR49B1xcCUm9z4wS4cxvpuU384I_jIo\",\"refunded\":true,\"review\":null,\"shipping\":null,\"source\":null,\"source_transfer\":null,\"statement_descriptor\":null,\"statement_descriptor_suffix\":null,\"status\":\"succeeded\",\"transfer_data\":null,\"transfer_group\":null}}",
+  "body": {
+    "id": "msg_synthetic_3",
+    "timestamp": "2026-10-16T09:00:00.000Z",
+    "type": "composio.trigger.message",
+    "metadata": {
+      "log_id": "log_3",
+      "trigger_slug": "STRIPE_CHARGE_REFUNDED",
+      "toolkit_slug": "stripe",
+      "trigger_id": "ti_stripe",
+      "connected_account_id": "ca_stripe",
+      "auth_config_id": "ac_stripe",
+      "user_id": "stripe:shop"
+    },
+    "data": {
+      "id": "ch_3UQk7lRKNANwdhdD0B0t0rfC",
+      "object": "charge",
+      "amount": 100,
+      "amount_captured": 100,
+      "amount_refunded": 100,
+      "application": null,
+      "application_fee": null,
+      "application_fee_amount": null,
+      "balance_transaction": "txn_3UQk7lRKNANwdhdD0dreligj",
+      "billing_details": {
+        "address": {
+          "city": null,
+          "country": null,
+          "line1": null,
+          "line2": null,
+          "postal_code": null,
+          "state": null
+        },
+        "email": null,
+        "name": null,
+        "phone": null,
+        "tax_id": null
+      },
+      "calculated_statement_descriptor": "Stripe",
+      "captured": true,
+      "created": 1792053294,
+      "currency": "usd",
+      "customer": null,
+      "description": "(created by Stripe CLI)",
+      "destination": null,
+      "dispute": null,
+      "disputed": false,
+      "failure_balance_transaction": null,
+      "failure_code": null,
+      "failure_message": null,
+      "fraud_details": {},
+      "livemode": false,
+      "metadata": {},
+      "on_behalf_of": null,
+      "order": null,
+      "outcome": {
+        "advice_code": null,
+        "network_advice_code": null,
+        "network_decline_code": null,
+        "network_status": "approved_by_network",
+        "reason": null,
+        "risk_level": "normal",
+        "risk_score": 12,
+        "seller_message": "Payment complete.",
+        "type": "authorized"
+      },
+      "paid": true,
+      "payment_intent": "pi_3UQk7lRKNANwdhdD0CNWveHq",
+      "payment_method": "pm_1UQk7lRKNANwdhdDhuEcUWd0",
+      "payment_method_details": {
+        "card": {
+          "amount_authorized": 100,
+          "authorization_code": "110716",
+          "brand": "visa",
+          "checks": {
+            "address_line1_check": null,
+            "address_postal_code_check": null,
+            "cvc_check": "pass"
+          },
+          "country": "US",
+          "electronic_commerce_indicator": "07",
+          "exp_month": 10,
+          "exp_year": 2027,
+          "extended_authorization": {
+            "status": "disabled"
+          },
+          "fingerprint": "vHa7c67L15YYy8ra",
+          "funding": "credit",
+          "incremental_authorization": {
+            "status": "unavailable"
+          },
+          "installments": null,
+          "last4": "4242",
+          "mandate": null,
+          "multicapture": {
+            "status": "unavailable"
+          },
+          "network": "visa",
+          "network_token": {
+            "used": false
+          },
+          "network_transaction_id": "118729755995455",
+          "overcapture": {
+            "maximum_amount_capturable": 100,
+            "status": "unavailable"
+          },
+          "regulated_status": "unregulated",
+          "three_d_secure": null,
+          "transaction_link_id": null,
+          "wallet": null
+        },
+        "type": "card"
+      },
+      "radar_options": {},
+      "receipt_email": null,
+      "receipt_number": null,
+      "receipt_url": "https://pay.stripe.com/receipts/payment/CAcaFwoVYWNjdF8xVDY5SDVSS05BTndkaGREKLCgwtYGMgaL7hJ41FA6LBZiak4B4kSIPJJD0khkVkArToX4stR49B1xcCUm9z4wS4cxvpuU384I_jIo",
+      "refunded": true,
+      "review": null,
+      "shipping": null,
+      "source": null,
+      "source_transfer": null,
+      "statement_descriptor": null,
+      "statement_descriptor_suffix": null,
+      "status": "succeeded",
+      "transfer_data": null,
+      "transfer_group": null
+    }
+  }
+}

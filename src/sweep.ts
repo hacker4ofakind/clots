@@ -39,15 +39,16 @@ export const SWEEP_SYSTEM_PROMPT = `You are the sweep: a periodic read of the us
 - Then write the new record: a note of what you saw on each connector, enough to tell next time what is new. Keep it under 6,000 characters.
 - Answer with the JSON the schema asks for, and nothing else.`;
 
+/** What a Composio toolkit is called to the sweep, which matches a connector by the service's name. */
+const SERVICE_NAMES: Record<string, string> = { stripe: "Stripe", linear: "Linear", notion: "Notion", googlecalendar: "Google Calendar", posthog: "PostHog" };
+
 /** The sources the daemon already hears from, named so that a connector to the same service is skipped. */
-export function skipList(c: { sources: { stripe: unknown[]; email: { address: string }[]; calendar: unknown[]; linear: unknown[]; notion: unknown[] }; mcpServers: Record<string, unknown> }): string[] {
+export function skipList(c: { sources: { email: { address: string }[]; composio: { toolkit: string }[] }; mcpServers: Record<string, unknown> }): string[] {
+  const services = [...new Set(c.sources.composio.map((a) => SERVICE_NAMES[a.toolkit] ?? a.toolkit))];
   return [
     "GitHub",
-    ...(c.sources.stripe.length > 0 ? ["Stripe"] : []),
     ...(c.sources.email.length > 0 ? [`Email (${c.sources.email.map((a) => a.address).join(", ")})`] : []),
-    ...(c.sources.calendar.length > 0 ? ["Google Calendar"] : []),
-    ...(c.sources.linear.length > 0 ? ["Linear"] : []),
-    ...(c.sources.notion.length > 0 ? ["Notion"] : []),
+    ...services,
     ...Object.keys(c.mcpServers),
   ];
 }
