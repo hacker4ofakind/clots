@@ -6,7 +6,7 @@ import type { DaemonTools, WorkerTools } from "../tools.js";
 import { DAEMON_TOOL_SERVER, hookAnswer, LOCK_REMOVED_TOOLS, lockDecision, lockHookAnswer, regroundDecision, sweepDecision, type Verdict } from "./command-check.js";
 import { connectorTools, settledStatus, type Connectors } from "./connectors.js";
 import { toolServer, WORKER_TOOL_PREFIX, WORKER_TOOL_SERVER, workerToolServer } from "./tool-server.js";
-import { containerName, deleteSession, killSession, makeSpawn, sessionExists } from "./container.js";
+import { containerName, deleteSession, killSession, makeSpawn, PLUGIN_DIR, sessionExists } from "./container.js";
 import { CLOT_SYSTEM_PROMPT, PR_ATTRIBUTION } from "./prompts.js";
 import { InputQueue } from "./input-queue.js";
 import { isSuccessfulResult, isTurnActivity, TurnTracker } from "./turn-tracker.js";
@@ -215,6 +215,8 @@ export function turnOptions(req: TurnRequest, o: RunnerOptions): Options {
   return {
     ...common,
     ...(req.tools ? { mcpServers: { [DAEMON_TOOL_SERVER]: toolServer(req.tools) } } : {}),
+    // The daemon's own skills, installed into the container at its start (the sessions load no settings, so a skill in ~/.claude would not be found).
+    plugins: [{ type: "local" as const, path: PLUGIN_DIR }],
     // The lock has two parts. The hook below is asked before every tool call, ahead of any
     // permission rule, and refuses what the lock does not approve: an allow rule in a settings
     // file cannot get past it. What it lets through goes on to the usual check, where in the

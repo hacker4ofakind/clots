@@ -1,5 +1,5 @@
 import { isScalar, isSeq, parseDocument, YAMLSeq, type Document } from "yaml";
-import { LIST_KEYS, parsePrefilter, parseRouting, parseRuleFile, parseStanding, parseWatch, parseWebhook, problemText, type Prefilter, type RoutingRule, type RuleFile, type StandingRule, type WatchRecipe, type WebhookRecipe } from "./rulebook.js";
+import { LIST_KEYS, parseComposioRecipe, parsePrefilter, parseRouting, parseRuleFile, parseStanding, parseWatch, parseWebhook, problemText, type ComposioRecipe, type Prefilter, type RoutingRule, type RuleFile, type StandingRule, type WatchRecipe, type WebhookRecipe } from "./rulebook.js";
 
 /** Which file an edit is for: the Clot's own, or the one that applies to every Clot. */
 export type RuleScope = "own" | "global";
@@ -21,7 +21,10 @@ export type RuleEdit =
   | { op: "set_watch"; recipe: WatchRecipe; was?: WatchRecipe | null }
   | { op: "remove_watch"; name: string; was?: WatchRecipe }
   | { op: "set_webhook"; recipe: WebhookRecipe; was?: WebhookRecipe | null }
-  | { op: "remove_webhook"; name: string; was?: WebhookRecipe };
+  | { op: "remove_webhook"; name: string; was?: WebhookRecipe }
+  | { op: "set_composio"; recipe: ComposioRecipe; was?: ComposioRecipe | null }
+  /** `name` is the recipe's toolkit: a Composio recipe has no name of its own. */
+  | { op: "remove_composio"; name: string; was?: ComposioRecipe };
 
 /** The edit cannot be made. The message says why, in words for the Clot and the user. */
 export class EditRefused extends Error {}
@@ -55,7 +58,7 @@ export function describeRouting(rule: RoutingRule): string {
 
 /** A watch recipe in full, with a warning in bold when its tool may change things. */
 export function describeWatch(recipe: WatchRecipe): string {
-  const shown = [`\`${recipe.name}\`: every ${recipe.every} minutes, call \`${recipe.tool}\` on \`${recipe.server}\` with ${JSON.stringify(recipe.arguments)}`, `items at \`${recipe.items || "(the result)"}\`, each named by \`${recipe.id}\``, `report ${recipe.report === "added" ? "new items" : "new and changed items"}`];
+  const shown = [`\`${recipe.name}\`: every ${recipe.every} minutes, call \`${recipe.tool}\` on ${recipe.account === undefined ? `\`${recipe.server}\`` : `the Composio account \`${recipe.account}\``} with ${JSON.stringify(recipe.arguments)}`, `items at \`${recipe.items || "(the result)"}\`, each named by \`${recipe.id}\``, `report ${recipe.report === "added" ? "new items" : "new and changed items"}`];
   if (recipe.ignore.length > 0) shown.push(`ignoring ${recipe.ignore.map((path) => `\`${path}\``).join(", ")}`);
   const warning = recipe.notReadOnly ? "\n**This tool does not declare itself read-only. The daemon will call it every few minutes; say yes only if you know it changes nothing.**" : "";
   return `${shown.join("; ")}${warning}`;
@@ -69,6 +72,20 @@ export function describeWebhook(recipe: WebhookRecipe, publicUrl = "<publicUrl>"
     `kinds: ${recipe.kinds.map((entry) => `${entry.kind} when ${JSON.stringify(entry.when)}`).join("; ")}`,
     `title: ${recipe.event.title}`,
     `The secret goes in .env as ${recipe.verify.secret}; the user sets up the webhook in the service.`,
+  ].join("\n");
+}
+
+/** A Composio recipe in full: the toolkit, what each trigger becomes, and the reads and writes it names. */
+export function describeComposioRecipe(recipe: ComposioRecipe): string {
+  const triggers = Object.entries(recipe.triggers).map(([slug, t]) => {
+    const reads = (t.enrich ?? []).map((r) => `\`${r.tool}\` as ${r.as}`);
+    return `- \`${slug}\` becomes a \`${t.kind}\` event titled "${t.title}"${t.actor ? `, actor "${t.actor}"` : ""}${reads.length > 0 ? `; reads before routing: ${reads.join(", ")}` : ""}`;
+  });
+  return [
+    `\`${recipe.toolkit}\`: how its Composio triggers become events (always from an outsider; it cannot rate a write or add an undo)`,
+    ...triggers,
+    ...(recipe.identity ? [`who the connection is: \`${recipe.identity.tool}\`, \`${recipe.identity.path}\``] : []),
+    ...(recipe.ownWrites && recipe.ownWrites.length > 0 ? [`the Clots' own writes it recognises: ${recipe.ownWrites.map((w) => `\`${w.tool}\``).join(", ")}`] : []),
   ].join("\n");
 }
 
@@ -103,6 +120,10 @@ export function describeEdit(edit: RuleEdit): string {
       return `Webhook recipe ${describeWebhook(edit.recipe)}`;
     case "remove_webhook":
       return `Remove webhook recipe \`${edit.name}\``;
+    case "set_composio":
+      return `Composio recipe ${describeComposioRecipe(edit.recipe)}`;
+    case "remove_composio":
+      return `Remove the Composio recipe for \`${edit.name}\``;
   }
 }
 
@@ -293,6 +314,30 @@ export function applyEdit(text: string, edit: RuleEdit): EditResult {
       list(doc, "webhooks").delete(at);
       inverse = { op: "set_webhook", recipe: file.webhooks[at], was: null };
       summary = describeEdit({ op: "remove_webhook", name: edit.name });
+      break;
+    }
+    case "set_composio": {
+      const recipe = checked(() => parseComposioRecipe(edit.recipe));
+      const at = file.composio.findIndex((other) => other.toolkit === recipe.toolkit);
+      if (edit.was !== undefined && JSON.stringify(at < 0 ? null : file.composio[at]) !== JSON.stringify(edit.was)) throw new EditRefused(`the Composio recipe for "${recipe.toolkit}" has been changed since`);
+      summary = describeEdit({ op: "set_composio", recipe });
+      if (at < 0) {
+        list(doc, "composio").add(doc.createNode(recipe));
+        inverse = { op: "remove_composio", name: recipe.toolkit, was: recipe };
+      } else {
+        list(doc, "composio").set(at, doc.createNode(recipe));
+        inverse = { op: "set_composio", recipe: file.composio[at], was: recipe };
+        summary += `\nIt replaces the recipe as it is now:\n${describeComposioRecipe(file.composio[at])}`;
+      }
+      break;
+    }
+    case "remove_composio": {
+      const at = file.composio.findIndex((other) => other.toolkit === edit.name);
+      if (at < 0) throw new EditRefused(`there is no Composio recipe for "${edit.name}" in the file. It holds: ${file.composio.map((other) => other.toolkit).join(", ") || "none"}`);
+      if (edit.was !== undefined && JSON.stringify(file.composio[at]) !== JSON.stringify(edit.was)) throw new EditRefused(`the Composio recipe for "${edit.name}" has been changed since`);
+      list(doc, "composio").delete(at);
+      inverse = { op: "set_composio", recipe: file.composio[at], was: null };
+      summary = describeEdit({ op: "remove_composio", name: edit.name });
       break;
     }
     case "remove_standing": {

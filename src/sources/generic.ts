@@ -2,7 +2,7 @@ import type { Mapper } from "../composio/intake.js";
 import { clip } from "../events/body.js";
 
 /** "SLACK_RECEIVE_MESSAGE" as "Receive message": the trigger's name, without its toolkit. */
-function triggerName(slug: string, toolkit: string): string {
+export function triggerName(slug: string, toolkit: string): string {
   const words = slug.toLowerCase().split("_");
   if (words[0] === toolkit.toLowerCase()) words.shift();
   const name = words.join(" ");

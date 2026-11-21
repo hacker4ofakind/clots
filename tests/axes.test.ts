@@ -26,5 +26,6 @@ describe("the Composio tools' ratings", () => {
   it("are low: composio_run rates each call itself, in code", () => {
     expect(isHigh(TOOL_AXES.composioFind)).toBe(false);
     expect(isHigh(TOOL_AXES.composioRun)).toBe(false);
+    for (const name of ["composioToolkit", "composioSamples", "composioRecipeTry", "composioRecipe"] as const) expect(isHigh(TOOL_AXES[name])).toBe(false);
   });
 });

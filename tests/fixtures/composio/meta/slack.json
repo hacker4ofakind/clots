@@ -1,0 +1,160 @@
+{
+  "info": {
+    "slug": "slack",
+    "name": "Slack",
+    "managed": [
+      "OAUTH2"
+    ],
+    "schemes": [
+      {
+        "scheme": "OAUTH2",
+        "required": [],
+        "optional": [
+          "generic_id"
+        ],
+        "creationRequired": [
+          "client_id",
+          "client_secret"
+        ]
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "slug": "SLACK_CHANNEL_CREATED",
+      "type": "webhook",
+      "config": {
+        "properties": {},
+        "title": "SlackWebhookConfig",
+        "type": "object"
+      }
+    },
+    {
+      "slug": "SLACK_CHANNEL_MESSAGE_RECEIVED",
+      "type": "webhook",
+      "config": {
+        "properties": {
+          "channel_id": {
+            "description": "Specific channel to watch. Null = all channels.",
+            "title": "Channel Id",
+            "type": "string"
+          },
+          "channel_type": {
+            "description": "Filter by channel type. channel = public, group = private, mpim = multi-party IM. Null = all types.",
+            "enum": [
+              "channel",
+              "group",
+              "mpim"
+            ],
+            "title": "Channel Type",
+            "type": "string"
+          },
+          "is_bot_message": {
+            "description": "Filter by message source. true = only bot messages, false = only human messages, null = all.",
+            "title": "Is Bot Message",
+            "type": "boolean"
+          },
+          "is_thread_reply": {
+            "description": "Filter by thread status. true = only thread replies, false = only top-level, null = all.",
+            "title": "Is Thread Reply",
+            "type": "boolean"
+          }
+        },
+        "title": "ChannelMessageReceivedConfig",
+        "type": "object"
+      }
+    },
+    {
+      "slug": "SLACK_DIRECT_MESSAGE_RECEIVED",
+      "type": "webhook",
+      "config": {
+        "properties": {
+          "is_thread_reply": {
+            "description": "Filter by thread status. true = only thread replies, false = only top-level, null = all.",
+            "title": "Is Thread Reply",
+            "type": "boolean"
+          }
+        },
+        "title": "DirectMessageReceivedConfig",
+        "type": "object"
+      }
+    },
+    {
+      "slug": "SLACK_MESSAGE_REACTION_ADDED",
+      "type": "webhook",
+      "config": {
+        "properties": {
+          "channel_id": {
+            "description": "Specific channel to watch. Null = all channels.",
+            "title": "Channel Id",
+            "type": "string"
+          },
+          "emoji_name": {
+            "description": "Filter by emoji short name (e.g. 'thumbsup', 'tada'). Null = all reactions.",
+            "title": "Emoji Name",
+            "type": "string"
+          }
+        },
+        "title": "MessageReactionAddedConfig",
+        "type": "object"
+      }
+    },
+    {
+      "slug": "SLACK_MESSAGE_REACTION_REMOVED",
+      "type": "webhook",
+      "config": {
+        "properties": {
+          "channel_id": {
+            "description": "Specific channel to watch. Null = all channels.",
+            "title": "Channel Id",
+            "type": "string"
+          },
+          "emoji_name": {
+            "description": "Filter by emoji short name (e.g. 'thumbsup', 'tada'). Null = all reactions.",
+            "title": "Emoji Name",
+            "type": "string"
+          }
+        },
+        "title": "MessageReactionRemovedConfig",
+        "type": "object"
+      }
+    },
+    {
+      "slug": "SLACK_REACTION_ADDED",
+      "type": "webhook",
+      "config": {
+        "properties": {},
+        "title": "SlackWebhookConfig",
+        "type": "object"
+      }
+    },
+    {
+      "slug": "SLACK_REACTION_REMOVED",
+      "type": "webhook",
+      "config": {
+        "properties": {},
+        "title": "SlackWebhookConfig",
+        "type": "object"
+      }
+    },
+    {
+      "slug": "SLACK_RECEIVE_BOT_MESSAGE",
+      "type": "webhook",
+      "config": {
+        "properties": {},
+        "title": "SlackWebhookConfig",
+        "type": "object"
+      }
+    },
+    {
+      "slug": "SLACK_RECEIVE_MESSAGE",
+      "type": "webhook",
+      "config": {
+        "properties": {},
+        "title": "SlackWebhookConfig",
+        "type": "object"
+      }
+    }
+  ],
+  "payloadSchemaField": "payload"
+}

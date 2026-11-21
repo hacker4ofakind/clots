@@ -1,0 +1,32 @@
+{
+  "info": {
+    "slug": "supabase",
+    "name": "Supabase",
+    "managed": [
+      "OAUTH2"
+    ],
+    "schemes": [
+      {
+        "scheme": "OAUTH2",
+        "required": [
+          "full"
+        ],
+        "optional": [],
+        "creationRequired": [
+          "client_id",
+          "client_secret"
+        ]
+      },
+      {
+        "scheme": "API_KEY",
+        "required": [
+          "full",
+          "bearer_token"
+        ],
+        "optional": [],
+        "creationRequired": []
+      }
+    ]
+  },
+  "triggers": []
+}

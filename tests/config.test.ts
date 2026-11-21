@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 
 const json = {
@@ -108,7 +108,7 @@ it("reads Composio accounts of every kind, replacing each .env key by its value 
   expect(config.publicUrl).toBe("https://box.example.ts.net");
   expect(config.composioApiKey).toBe("ck");
   const [linear, notion, stripe, calendar, posthog] = config.sources.composio;
-  expect(linear).toEqual({ toolkit: "linear", account: "team", clot: "graphite", shared: false, audience: "team", apiKey: "lk", apiKeyName: "LINEAR_KEY", triggers: [] });
+  expect(linear).toEqual({ toolkit: "linear", account: "team", clot: "graphite", shared: false, audience: "team", apiKey: "lk", apiKeyName: "LINEAR_KEY", triggers: [], selfIsUser: false });
   expect(notion).toMatchObject({ toolkit: "notion", shared: true, audience: "private", apiKey: "nk" });
   expect(stripe).toMatchObject({ toolkit: "stripe", audience: "public", apiKey: "rk_1", checkoutCompleted: false });
   expect(calendar).toMatchObject({ toolkit: "googlecalendar", audience: "private", leadMinutes: [2880, 90], pollMinutes: 10 });
@@ -162,6 +162,63 @@ it("takes triggers for a toolkit with no built-in mapper, once each", () => {
   const slack = { toolkit: "slack", account: "work", shared: true, apiKey: "LINEAR_KEY", triggers: [{ slug: "SLACK_RECEIVE_MESSAGE", config: { channel: "C1" } }] };
   expect(loadConfig(composio(slack), composioKeys).sources.composio[0]).toMatchObject({ toolkit: "slack", triggers: [{ slug: "SLACK_RECEIVE_MESSAGE", config: { channel: "C1" } }] });
   expect(() => loadConfig(composio({ ...slack, triggers: [slack.triggers[0], slack.triggers[0]] }), composioKeys)).toThrow("SLACK_RECEIVE_MESSAGE");
+});
+
+describe("a toolkit without built-in support connects from one entry", () => {
+  const keys = { ...composioKeys, SB_URL: "https://x.supabase.co", SB_KEY: "sb-secret", OA_ID: "client-id", OA_SECRET: "client-secret", SLACK_KEY: "xoxb", RECIPE_X: "r" };
+  const entry = (a: Record<string, unknown>) => composio({ toolkit: "slack", account: "work", shared: true, ...a });
+  const only = (a: Record<string, unknown>, env = keys) => loadConfig(entry(a), env).sources.composio[0];
+
+  it("with no key at all, which is Composio's managed sign-in", () => {
+    expect(only({})).toMatchObject({ toolkit: "slack", selfIsUser: false, triggers: [] });
+    expect(only({}).apiKey).toBeUndefined();
+  });
+
+  it("with fields, each field mapped to the .env key that holds it, read to its value", () => {
+    expect(only({ toolkit: "supabase", fields: { full: "SB_URL", bearer_token: "SB_KEY" } })).toMatchObject({ fieldKeys: { full: "SB_URL", bearer_token: "SB_KEY" }, fields: { full: "https://x.supabase.co", bearer_token: "sb-secret" } });
+  });
+
+  it("with an apiKey and a scheme", () => {
+    expect(only({ apiKey: "SLACK_KEY", scheme: "BEARER_TOKEN" })).toMatchObject({ apiKey: "xoxb", apiKeyName: "SLACK_KEY", scheme: "BEARER_TOKEN" });
+  });
+
+  it("with the user's own OAuth app: the keys are kept by name and by value", () => {
+    expect(only({ oauthApp: { clientId: "OA_ID", clientSecret: "OA_SECRET" } })).toMatchObject({ oauthApp: { clientId: "OA_ID", clientSecret: "OA_SECRET" }, oauthValues: { clientId: "client-id", clientSecret: "client-secret" } });
+  });
+
+  it("with selfIsUser, which defaults to false", () => {
+    expect(only({ selfIsUser: true }).selfIsUser).toBe(true);
+  });
+
+  it("refuses combinations that do not make sense, naming the field", () => {
+    const oauthApp = { clientId: "OA_ID", clientSecret: "OA_SECRET" };
+    expect(() => only({ oauthApp, apiKey: "SLACK_KEY" })).toThrow("oauthApp cannot go with apiKey or fields");
+    expect(() => only({ oauthApp, fields: { a: "SB_URL" } })).toThrow("oauthApp cannot go with apiKey or fields");
+    expect(() => only({ apiKey: "SLACK_KEY", fields: { a: "SB_URL" } })).toThrow("give apiKey or fields, not both");
+    expect(() => only({ scheme: "API_KEY" })).toThrow("scheme goes with apiKey or fields");
+    expect(() => only({ fields: {} })).toThrow("fields names at least one field");
+    expect(() => only({ apiKey: "not an env key" })).toThrow("names a key in .env");
+  });
+
+  it("refuses an .env key the daemon uses for something else", () => {
+    for (const key of ["COMPOSIO_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "DISCORD_BOT_TOKEN", "CLOT_GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "RECIPE_X"]) {
+      const withKey = { ...keys, [key]: "value" };
+      expect(() => only({ apiKey: key }, withKey)).toThrow(key);
+      expect(() => only({ fields: { a: key } }, withKey)).toThrow(key);
+      expect(() => only({ oauthApp: { clientId: key, clientSecret: "OA_SECRET" } }, withKey)).toThrow(key);
+    }
+  });
+
+  it("refuses a key another part of the configuration names: a built-in account's, a mail account's, another toolkit's", () => {
+    expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY" }, { toolkit: "slack", account: "work", shared: true, apiKey: "LINEAR_KEY" }), keys)).toThrow("LINEAR_KEY is already used by linear account team");
+    expect(() => loadConfig(composio({ toolkit: "slack", account: "a", shared: true, apiKey: "SLACK_KEY" }, { toolkit: "reddit", account: "b", shared: true, fields: { x: "SLACK_KEY" } }), keys)).toThrow("already used by slack account a");
+    const mail = { ...withSources({ email: [{ account: "gmail", shared: true, address: "me@gmail.com", password: "SLACK_KEY", mailboxes: ["Clots"] }], composio: [{ toolkit: "slack", account: "work", shared: true, apiKey: "SLACK_KEY" }] }) };
+    expect(() => loadConfig(mail, keys)).toThrow("already used by email account gmail");
+  });
+
+  it("names the .env key that is missing", () => {
+    expect(() => only({ fields: { a: "NOT_THERE" } })).toThrow("NOT_THERE");
+  });
 });
 
 it("refuses calendars that would poll more than 10,000 times a month in all", () => {

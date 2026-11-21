@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import type { ComposioAccount } from "../../config.js";
-import type { ExecResult } from "../api.js";
+import type { ComposioRecipe } from "../../rulebook.js";
+import type { ExecResult, ToolInfo } from "../api.js";
 import { calendarDef } from "./googlecalendar.js";
 import { genericDef } from "./generic.js";
 import { linearDef } from "./linear.js";
@@ -20,6 +21,9 @@ export interface ToolkitHost {
   run(a: ComposioAccount, slug: string, args: Record<string, unknown>): Promise<ExecResult>;
   /** `run`, then the answer is checked against the shape the daemon relies on; a mismatch is a failed result and is noted as drift. */
   runChecked(a: ComposioAccount, slug: string, args: Record<string, unknown>, check?: ZodType): Promise<ExecResult>;
+  /** The Composio recipe in force for a toolkit, if any (the generic def reads its `identity`). */
+  recipe(toolkit: string): ComposioRecipe | undefined;
+  tool(slug: string): Promise<ToolInfo | undefined>;
 }
 
 /**
@@ -33,8 +37,8 @@ export interface ToolkitDef {
   source: string;
   /** The trigger instances an account should have. May read from the service, so it may fail. */
   triggers(a: ComposioAccount, host: ToolkitHost): Promise<TriggerWant[]>;
-  /** The connection's own user ID at the service. Throws when it cannot be read. */
-  identity?(a: ComposioAccount, host: ToolkitHost): Promise<string>;
+  /** The connection's own user ID at the service. Throws when it cannot be read; undefined when the toolkit has no way to say. */
+  identity?(a: ComposioAccount, host: ToolkitHost): Promise<string | undefined>;
   /** Fields the connection needs besides the key. */
   connectExtra?(a: ComposioAccount): Record<string, string>;
   /**

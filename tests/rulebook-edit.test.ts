@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRuleFile, type StandingRule } from "../src/rulebook.js";
+import { parseComposioRecipe, parseRuleFile, type StandingRule } from "../src/rulebook.js";
 import { applyEdit, describeEdit, EditRefused, type RuleEdit } from "../src/rulebook-edit.js";
 
 const HAND_WRITTEN = [
@@ -213,5 +213,59 @@ describe("webhook recipe edits", () => {
     expect(added.summary).toContain("Webhook recipe `tracker`");
     expect(added.summary).toContain("RECIPE_TRACKER");
     expect(parseRuleFile(applyEdit(added.text, added.inverse).text).webhooks).toEqual([]);
+  });
+});
+
+describe("Composio recipe edits", () => {
+  const recipe = parseComposioRecipe({
+    toolkit: "slack",
+    triggers: { SLACK_CHANNEL_MESSAGE_RECEIVED: { kind: "message", title: "Message in #{enrich.channel.channel.name}", enrich: [{ as: "channel", tool: "SLACK_RETRIEVE_CONVERSATION_INFORMATION", args: { channel: "{payload.channel}" } }] } },
+  });
+
+  it("adds a recipe under composio, describes what each trigger becomes and the reads, and the inverse removes it", () => {
+    const added = applyEdit("", { op: "set_composio", recipe });
+    expect(parseRuleFile(added.text).composio).toHaveLength(1);
+    expect(added.summary).toContain("Composio recipe `slack`");
+    expect(added.summary).toContain("`SLACK_CHANNEL_MESSAGE_RECEIVED` becomes a `message` event");
+    expect(added.summary).toContain("reads before routing: `SLACK_RETRIEVE_CONVERSATION_INFORMATION` as channel");
+    expect(added.inverse).toEqual({ op: "remove_composio", name: "slack", was: recipe });
+    expect(parseRuleFile(applyEdit(added.text, added.inverse).text).composio).toEqual([]);
+  });
+
+  it("replaces the recipe of the same toolkit, and the inverse puts the old one back", () => {
+    const first = applyEdit("", { op: "set_composio", recipe });
+    const changed = { ...recipe, triggers: { SLACK_CHANNEL_MESSAGE_RECEIVED: { kind: "message", title: "Other" } } };
+    const second = applyEdit(first.text, { op: "set_composio", recipe: changed });
+    expect(parseRuleFile(second.text).composio).toHaveLength(1);
+    expect(second.summary).toContain("It replaces the recipe as it is now");
+    expect(parseRuleFile(applyEdit(second.text, second.inverse).text).composio[0].triggers.SLACK_CHANNEL_MESSAGE_RECEIVED.title).toContain("Message in");
+  });
+
+  it("refuses an undo over a later change, and a remove of a recipe that is not there", () => {
+    const first = applyEdit("", { op: "set_composio", recipe });
+    const changed = { ...recipe, triggers: { SLACK_CHANNEL_MESSAGE_RECEIVED: { kind: "message", title: "Later" } } };
+    const second = applyEdit(first.text, { op: "set_composio", recipe: changed });
+    expect(() => applyEdit(second.text, first.inverse)).toThrow(EditRefused);
+    expect(() => applyEdit(second.text, first.inverse)).toThrow('has been changed since');
+    expect(() => applyEdit("", { op: "remove_composio", name: "slack" })).toThrow('there is no Composio recipe for "slack"');
+  });
+
+  it("refuses a recipe that does not fit, and leaves hand-written parts of the file alone", () => {
+    expect(() => applyEdit("", { op: "set_composio", recipe: { ...recipe, toolkit: "linear" } as never })).toThrow(EditRefused);
+    const out = applyEdit(HAND_WRITTEN, { op: "set_composio", recipe }).text;
+    expect(out).toContain("# bots we never want to hear from");
+    expect(parseRuleFile(out).composio).toHaveLength(1);
+  });
+
+  it("describes the removal", () => {
+    expect(describeEdit({ op: "remove_composio", name: "slack" })).toBe("Remove the Composio recipe for `slack`");
+  });
+});
+
+describe("watch recipe descriptions", () => {
+  it("name the Composio account a watch calls, or the server", () => {
+    const base = { name: "w", tool: "REDDIT_GET_NEW_POSTS", arguments: {}, items: "posts", id: "id", ignore: [], every: 15, report: "added" as const };
+    expect(describeEdit({ op: "set_watch", recipe: { ...base, account: "reddit:me" } })).toContain("on the Composio account `reddit:me`");
+    expect(describeEdit({ op: "set_watch", recipe: { ...base, server: "notion" } })).toContain("on `notion`");
   });
 });

@@ -1,12 +1,13 @@
+import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { addWorktree, containerName, defaultBranch, ensureContainer, hasOwnLogin, killStrayClaude, prsForBranch, refreshMainCheckout, removeWorktree, sessionEnv, sessionExistsAsync, worktreeExists } from "./agent/container.js";
+import { addWorktree, containerName, defaultBranch, ensureContainer, hasOwnLogin, installPlugin, killStrayClaude, prsForBranch, refreshMainCheckout, removeWorktree, sessionEnv, sessionExistsAsync, worktreeExists } from "./agent/container.js";
 import { DockerMemoryFolders } from "./agent/memory-folder.js";
 import { CLOT_SYSTEM_PROMPT, composioNote, HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
 import { SdkRunner } from "./agent/runner.js";
 import { DiscordChat } from "./chat/discord.js";
 import { Clot } from "./clot.js";
-import { HOME_CLOT, isCalendar, loadConfig, type AccountBase, type NotionAccount } from "./config.js";
+import { calendarPollingCalls, HOME_CLOT, isCalendar, loadConfig, type AccountBase, type NotionAccount } from "./config.js";
 import { githubCommentSender } from "./events/github-comment.js";
 import { isSelfCaused, repoSlug } from "./events/github.js";
 import { enricherBySource, type Enricher } from "./enrich.js";
@@ -15,7 +16,8 @@ import { bindingResolver, EventRouter } from "./routing.js";
 import type { ClotEvent } from "./events/types.js";
 import { inlineCommentReader } from "./events/review-comments.js";
 import { McpHub, oauthCallbackHandler, sdkOpener } from "./mcp/hub.js";
-import { Watcher } from "./watch.js";
+import { Watcher, type Hub } from "./watch.js";
+import { composioHub } from "./composio/hub.js";
 import { readEnvFile } from "./env-file.js";
 import { recipeHandler } from "./webhook-recipe.js";
 import { StoredOAuth } from "./mcp/oauth.js";
@@ -23,10 +25,13 @@ import { CalendarFeed } from "./sources/calendar.js";
 import { calendarOverComposio } from "./sources/calendar-composio.js";
 import { composioKind } from "./asks/composio.js";
 import { ComposioActions } from "./composio/actions.js";
+import { ComposioAuthoring } from "./composio/authoring.js";
 import { sdkComposioApi } from "./composio/api.js";
 import { Composio, WEBHOOK_SECRET_KEY } from "./composio/component.js";
 import { composioHandler } from "./composio/intake.js";
 import { Meter } from "./composio/meter.js";
+import { RecipeReads, recipeEnricher } from "./composio/recipe.js";
+import { isBuiltinToolkit } from "./events/kinds.js";
 import { sdkWriteReviewer } from "./composio/reviewer.js";
 import { defFor } from "./composio/toolkits/index.js";
 import { ComposioUndo } from "./composio/undo.js";
@@ -54,7 +59,7 @@ import { githubHandler, startIntake, type Handler, type PullRequestChange } from
 import { Pipeline } from "./pipeline.js";
 import { SdkRouter } from "./router.js";
 import { RuleWriter } from "./rule-writer.js";
-import { Rulebook } from "./rulebook.js";
+import { Rulebook, watchTarget } from "./rulebook.js";
 import { matchStanding } from "./standing.js";
 import { Store } from "./store.js";
 import { makeTools, showRules, type ToolDeps } from "./tools.js";
@@ -186,6 +191,10 @@ const rulebook = new Rulebook(config.rulebookDir, names, (file, problem) => {
   const affected = file === "global.yaml" ? names : [file.replace(/\.yaml$/, "")];
   for (const name of affected) void say(name, `\`${file}\` in the rulebook could not be used, so its last good version stays in force.\n${problem}`);
 });
+// A watch or webhook recipe cannot take the name of a toolkit that sources.composio names: the toolkit is its events' source.
+rulebook.setReserved(config.sources.composio.map((a) => a.toolkit));
+// The watches on Composio accounts share the month's polling limit with the calendars.
+rulebook.setCalendarCalls(calendarPollingCalls(config.sources.composio));
 rulebook.ensure();
 rulebook.load();
 rulebook.watch();
@@ -264,11 +273,12 @@ const tellHome = (text: string): Promise<void> => say(config.home ? HOME_CLOT : 
 /** An account's own Clot's channel, or the home Clot's for a shared account. */
 const tellComposio = (account: { clot?: string }) => (text: string): Promise<void> => (account.clot === undefined ? tellHome(text) : say(account.clot, text));
 const composioMeter = new Meter({ store, now: () => Date.now(), tellHome });
+const composioApi = config.sources.composio.length === 0 ? undefined : sdkComposioApi(config.composioApiKey!);
 const composio =
-  config.sources.composio.length === 0
+  composioApi === undefined
     ? undefined
     : new Composio({
-        api: sdkComposioApi(config.composioApiKey!),
+        api: composioApi,
         store,
         accounts: config.sources.composio,
         publicUrl: config.publicUrl,
@@ -278,6 +288,7 @@ const composio =
         schedule: after,
         supervisor,
         meter: composioMeter,
+        recipe: (toolkit) => rulebook.composioRecipe(toolkit),
       });
 let composioActions: ComposioActions | undefined;
 const composioAsk = composio === undefined ? undefined : composioKind({ composio, actions: { executeWrite: (o) => composioActions!.executeWrite(o) } });
@@ -301,6 +312,7 @@ const asks = new Asks({
   ignore: (channelId) => waiting.isChannel(channelId),
 });
 asks.onChange(() => waiting.refresh());
+let composioAuthoring: ComposioAuthoring | undefined;
 if (composio !== undefined && composioAsk !== undefined) {
   composioActions = new ComposioActions({
     composio,
@@ -311,6 +323,16 @@ if (composio !== undefined && composioAsk !== undefined) {
     say,
     now: () => Date.now(),
   });
+  composioAuthoring = new ComposioAuthoring({
+    composio,
+    api: composioApi!,
+    store,
+    countCall: (ctx) => composioActions!.countCall(ctx),
+    meter: composioMeter,
+    now: () => Date.now(),
+    recipe: (toolkit) => rulebook.composioRecipe(toolkit),
+    recipeFile: (toolkit) => rulebook.recipeFile(toolkit)?.file,
+  });
 }
 onPullRequest = async (a) => {
   await workers.onPullRequest(a);
@@ -318,6 +340,7 @@ onPullRequest = async (a) => {
 };
 
 const toolDeps: ToolDeps = {
+  watchBudgetProblem: (recipe) => rulebook.watchBudgetProblem(recipe),
   rulebook,
   writer,
   asks: {
@@ -371,11 +394,15 @@ const drafts = config.sources.email.length === 0 ? undefined : new DraftTracker(
 /** The Clots share one GitHub account; its login is what marks an event as caused by a Clot. */
 let clotLogin = "";
 const repoToClot = new Map<string, string>();
+/** The daemon's plugin (skills for the Clots), shipped in the repository next to src/. */
+const PLUGIN_SOURCE = fileURLToPath(new URL("../plugin", import.meta.url));
 
 for (const c of definitions) {
   console.log(`[${c.name}] preparing container`);
   const login = await ensureContainer({ clot: c.name, image: config.image, repoUrl: c.repoUrl, githubToken: config.githubToken });
   if (login) clotLogin = login;
+  // The daemon's own skills go into every container at every start, so they change with the daemon. A failed copy is logged: the Clot starts without them.
+  await installPlugin(containerName(c.name), PLUGIN_SOURCE).catch((error) => console.warn(`[${c.name}] could not install the daemon's plugin; the Clot starts without its skills: ${error instanceof Error ? error.message : String(error)}`));
   if (c.repoUrl !== undefined) repoToClot.set(repoSlug(c.repoUrl)!, c.name);
   // A session a `docker exec` kept alive past the last daemon must not run beside the one resumed now.
   await killStrayClaude(containerName(c.name));
@@ -421,7 +448,7 @@ for (const c of definitions) {
     },
     memory: { list: () => memory.list(), undo: () => memory.undo() },
     ...(calendarUndo ? { calendar: calendarUndo } : {}),
-    ...(composioUndo ? { composio: composioUndo } : {}),
+    ...(composioUndo && composio ? { composio: { undo: (clot: string) => composioUndo.undo(clot), reconnect: (name: string) => composio.reconnect(name) } } : {}),
     makeTools: (ctx) => makeTools(toolDeps, ctx),
     standingFor: (name, event) => matchStanding(rulebook.standingFor(name), event, event.kind === "batch" ? store.eventsMergedInto(event.id) : []),
     rules: {
@@ -475,6 +502,7 @@ if (config.sources.email.length > 0) {
 // each source keeps its enricher and its way of sending, now over Composio's tools. Notion's events still come on
 // its own path, since Composio's Notion triggers need an OAuth app (spec section 9).
 const feeds = new Map<string, CalendarFeed>();
+let recipeEnrich: Enricher | undefined;
 if (composio !== undefined) {
   composioIntake = composioHandler({
     composio,
@@ -483,7 +511,17 @@ if (composio !== undefined) {
     insertEvent,
     now: () => Date.now(),
     meter: composioMeter,
+    recipe: (toolkit) => rulebook.composioRecipe(toolkit),
+    keep: (d) => store.composio.keepDelivery(d),
+    transaction: (fn) => store.inTransaction(fn),
   });
+  // A Composio recipe's reads give an event its actor and title before it is routed; a changed `identity` is learned again.
+  const recipeReads = new RecipeReads({ composio, used: (managed) => composioMeter.used(managed), cached: (a, t, h, n) => store.composio.cachedRead(a, t, h, n), keep: (a, t, h, d, n) => store.composio.keepRead(a, t, h, d, n), now: () => Date.now() });
+  recipeEnrich = recipeEnricher({ reads: recipeReads, composio, recipe: (toolkit) => rulebook.composioRecipe(toolkit), delivery: (eventId) => store.composio.deliveryByEvent(eventId) });
+  const genericToolkits = [...new Set(config.sources.composio.map((a) => a.toolkit).filter((t) => !isBuiltinToolkit(t)))];
+  const recipesChanged = () => genericToolkits.forEach((toolkit) => composio.recipeChanged(toolkit));
+  rulebook.onLoad(recipesChanged);
+  recipesChanged();
   const has = (toolkit: string) => config.sources.composio.some((a) => a.toolkit === toolkit);
   if (has("stripe")) enrichers.stripe = stripeEnricher(composio);
   if (has("linear")) {
@@ -516,7 +554,15 @@ if (composio !== undefined) {
       connected: (account) => store.composio.account(`googlecalendar:${account}`)?.status === "active",
     };
   }
-  toolDeps.composio = { find: (ctx, a) => composioActions!.find(ctx, a), run: (ctx, a) => composioActions!.run(ctx, a) };
+  toolDeps.composioHub = composioHub(composio);
+  toolDeps.composioAuthoring = composioAuthoring;
+  toolDeps.composio = {
+    find: (ctx, a) => composioActions!.find(ctx, a),
+    run: (ctx, a) => composioActions!.run(ctx, a),
+    countCall: (ctx) => composioActions!.countCall(ctx),
+    hasAccount: (name) => composio.account(name) !== undefined && name.includes(":"),
+    accountNames: () => composio.accounts().map((a) => composio.userOf(a)),
+  };
   // Last: the webhook, each account and the daily check start as jobs of their own, so nothing here holds up the daemon.
   composio.start();
 }
@@ -525,7 +571,7 @@ if (composio !== undefined) {
 const mcpNames = Object.keys(config.mcpServers);
 /** Who hears about a server: each Clot with a recipe on it in its own file; otherwise the home Clot, or every Clot when there is none. */
 const tellServer = async (server: string, text: string) => {
-  const owners = [...new Set(rulebook.watches().filter((entry) => entry.recipe.server === server && entry.file !== "global").map((entry) => entry.file))];
+  const owners = [...new Set(rulebook.watches().filter((entry) => watchTarget(entry.recipe) === server && entry.recipe.account === undefined && entry.file !== "global").map((entry) => entry.file))];
   for (const name of owners.length > 0 ? owners : config.home ? [HOME_CLOT] : names) await say(name, text);
 };
 const lastLink = new Map<string, number>();
@@ -564,7 +610,10 @@ if (mcpNames.length > 0) {
 }
 
 // Watch recipes, from the rulebook: started, and restarted or stopped when the files change.
+const mcpHub: Hub = { listTools: (server) => hub.listTools(server), callTool: (server, tool, args) => hub.callTool(server, tool, args) };
+const composioWatchHub = composio === undefined ? undefined : composioHub(composio);
 const running = new Map<string, { definition: string; stop: () => void }>();
+const missingWatchAccount = new Set<string>();
 const syncWatches = () => {
   const wanted = new Map(rulebook.watches().map(({ recipe, file }) => [recipe.name, { recipe, file }]));
   for (const [name, entry] of running) {
@@ -576,9 +625,22 @@ const syncWatches = () => {
   }
   for (const [name, { recipe, file }] of wanted) {
     if (running.has(name)) continue;
-    const tell = file === "global" ? (text: string) => tellServer(recipe.server, text) : (text: string) => say(file, text);
-    const watcher = new Watcher({ recipe, hub, store, deliver: (event) => deliver(event), now: () => Date.now(), tell });
-    const stop = supervisor.start({ name: `watch recipe ${name}`, everyMs: recipe.every * 60_000, tell, run: () => watcher.run() });
+    const target = watchTarget(recipe);
+    // A saved watch whose account is not in the configuration would be skipped forever: it is reported once, and not started.
+    if (recipe.account !== undefined && composio?.account(recipe.account) === undefined) {
+      const key = `${name}|${JSON.stringify(recipe)}`;
+      if (!missingWatchAccount.has(key)) {
+        missingWatchAccount.add(key);
+        void (file === "global" ? tellHome : (text: string) => say(file, text))(`The watch recipe \`${name}\` names the Composio account ${recipe.account}, which is not in sources.composio, so it does not run.`);
+      }
+      continue;
+    }
+    const tell = file === "global" ? (text: string) => (recipe.account === undefined ? tellServer(target, text) : tellComposio(composio?.account(target) ?? {})(text)) : (text: string) => say(file, text);
+    // A watch on a Composio account waits for the account to be signed in, as the calendar's poll does.
+    const active = recipe.account === undefined ? undefined : () => store.composio.account(recipe.account!)?.status === "active";
+    const watcher = new Watcher({ recipe, hubFor: (r) => (r.account === undefined ? mcpHub : composioWatchHub!), store, deliver: (event) => deliver(event), now: () => Date.now(), tell, ...(active ? { active } : {}) });
+    // A watch on a Composio account counts every call against the allowance, so a failure is not retried faster than it runs.
+    const stop = supervisor.start({ name: `watch recipe ${name}`, everyMs: recipe.every * 60_000, tell, run: () => watcher.run(), ...(recipe.account === undefined ? {} : { minRetryMs: recipe.every * 60_000 }) });
     running.set(name, { definition: JSON.stringify(recipe), stop });
   }
 };
@@ -628,7 +690,7 @@ const pipeline = new Pipeline({
   clots,
   route: (event) => eventRouter.route(event),
   selfCaused: (event) => event.source === "github" && isSelfCaused(event, clotLogin),
-  enrich: enricherBySource(enrichers),
+  enrich: enricherBySource(enrichers, (event) => (recipeEnrich === undefined ? Promise.resolve(event) : recipeEnrich(event))),
   hold: config.hold,
   now: () => Date.now(),
   schedule: (ms, fn) => {

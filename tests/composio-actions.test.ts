@@ -10,7 +10,7 @@ import { Store } from "../src/store.js";
 import { FakeComposioApi, tool } from "./fake-composio.js";
 
 const NOW = Date.UTC(2026, 10, 19, 12, 0, 0);
-const base = { shared: false, triggers: [] };
+const base = { shared: false, triggers: [], selfIsUser: false };
 const team: ComposioAccount = { ...base, toolkit: "linear", account: "proton", clot: "graphite", audience: "team", apiKey: "lin_api_SECRET", apiKeyName: "K" };
 const priv: ComposioAccount = { ...base, toolkit: "notion", account: "main", clot: "graphite", audience: "private", apiKey: "ntn_SECRET", apiKeyName: "N" };
 const pub: ComposioAccount = { ...base, toolkit: "stripe", account: "shop", clot: "graphite", audience: "public", apiKey: "rk_test_SECRET", apiKeyName: "S", checkoutCompleted: false };

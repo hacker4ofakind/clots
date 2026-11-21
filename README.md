@@ -9,7 +9,7 @@ This repository implements stages 1 and 2:
 - **Stage 2b**: the rulebook, with standing rules and global memory.
 - **Stage 2c**: more sources: Stripe, email, Google Calendar, Linear, Notion, MCP servers and recipe webhooks.
 - **Stage 2d**: gates, digests, the spend log, the sweep and re-grounding.
-- **Stage 2e**: Composio: Stripe, Linear, Notion, Google Calendar, PostHog and any other service it has a toolkit for, through one layer, with writes rated by the account's audience.
+- **Stage 2e**: Composio: Stripe, Linear, Notion, Google Calendar, PostHog and any other service it has a toolkit for, through one layer, with writes rated by the account's audience. Any toolkit connects from one entry whatever its auth scheme, and the Clots extend the integrations themselves with recipes.
 
 The main session runs at medium effort by default, and at low only for a message it answers without taking any action.
 
@@ -63,8 +63,8 @@ Every source is set up under `sources` in `clots.config.json`, one entry per acc
 |---|---|---|
 | Email | An app password (Gmail) or the account's password; the folders or Gmail labels to watch. Nothing else is read. On Gmail, add each alias standing replies should come from under Settings → Accounts → Send mail as. | none: IMAP |
 | GitHub | The repository's webhook, with the secret in `.env`. | `/webhooks/github` |
-| Stripe, Linear, Notion, Google Calendar, PostHog, and any other toolkit | An account under `sources.composio`; see Composio below. | `/webhooks/composio` (Notion's events: `/webhooks/notion/<account>`) |
-| Any MCP server | Under `mcpServers`; an OAuth server gets a login link in chat. Watch recipes in the rulebook call its read-only tools on a timer. | `/oauth/callback` |
+| Stripe, Linear, Notion, Google Calendar, PostHog, and any other toolkit (Slack, Reddit, Supabase, ...) | An account under `sources.composio`; see Composio below. A Clot can add a service for you. | `/webhooks/composio` (Notion's events: `/webhooks/notion/<account>`) |
+| Any MCP server, or a Composio account | Under `mcpServers`; an OAuth server gets a login link in chat. Watch recipes in the rulebook call a server's read-only tools, or a Composio account's, on a timer. | `/oauth/callback` |
 | Any other webhook | A webhook recipe in the rulebook; its secret is an `.env` key beginning `RECIPE_`. | `/webhooks/r/<recipe>` |
 
 Run a source's assumption check before relying on it: `scripts/spike-2c-email.ts`, `scripts/spike-2c-watch.ts`, `scripts/spike-2e.ts` (Composio; see its header), and `scripts/capture-2c.ts <source>` or `scripts/capture-2e.ts` to see deliveries arrive.
@@ -95,7 +95,36 @@ Composio holds the connections, sends their events to one webhook and runs their
 - **Google Calendar.** No Google Cloud project and no iCal address. The first time, the daemon posts `Sign in to Google Calendar for the Clots: <link>` in the channel of the Clot the account is bound to (the home Clot's, for a shared account); open it and approve. The monthly polling of all calendars together may not pass 10,000 calls (`43200 / pollMinutes` each).
 - **The free plan.** Composio's Hobby plan allows 100,000 tool calls and 50,000 trigger events a month (20,000 and 10,000 on its own apps, which is the calendar), and stops at the limit until the next month. The daemon counts them, says so in the home Clot's channel at 70% and 90%, and once when a limit is reached.
 - **When something stops working.** Once a day the daemon checks each connection and trigger and makes again what Composio lost or disabled, and tells the Clot's channel when it cannot. It also tells you, once per start, when a tool it reads answers in a shape it does not expect ("Composio's <tool> answered in an unexpected shape"): what the daemon reads through that tool is then treated as unreadable until the code is updated. One thing it cannot see: a Stripe webhook endpoint deleted in Stripe, since Composio has no tool that lists them. If Stripe's events stop, remove the Stripe account from `sources.composio`, restart, add it back and restart again; that makes the endpoint again.
-- **Any other toolkit.** Add `{ "toolkit": "slack", "account": "work", "shared": true, "audience": "team", "apiKey": "SLACK_KEY", "triggers": [{ "slug": "SLACK_RECEIVE_MESSAGE", "config": {} }] }`. Its tools are the Clot's, and each trigger is an event of kind `trigger` from the source `slack`, treated as written by an outsider.
+- **Any other toolkit.** See the next section.
+
+#### Any other toolkit
+
+One entry connects any toolkit Composio has, whatever its auth scheme. The daemon reads from Composio how the toolkit connects and what fields it needs, and the entry says which way:
+
+```json
+{ "toolkit": "slack", "account": "work", "shared": true, "audience": "team", "triggers": [{ "slug": "SLACK_CHANNEL_MESSAGE_RECEIVED", "config": { "channel_id": "C0123" } }] },
+{ "toolkit": "supabase", "account": "shop", "clot": "encryptify", "audience": "team", "fields": { "full": "SUPABASE_SHOP_URL", "bearer_token": "SUPABASE_SHOP_KEY" } },
+{ "toolkit": "slack", "account": "big", "shared": true, "audience": "team", "oauthApp": { "clientId": "SLACK_CLIENT_ID", "clientSecret": "SLACK_CLIENT_SECRET" } }
+```
+
+- **No key field** (the Slack entry): Composio's own OAuth app. The daemon posts `Sign in to Slack for the Clots: <link>` in the channel of the Clot the account is bound to (the home Clot's, for a shared account), and says to sign in with the Clots' own account at the service, not yours. Within a minute of approving, the account's identity is read and its triggers are made.
+- **`apiKey`**: the `.env` key holding the one required field of a key scheme, under the field's own name. **`fields`**: for a scheme of several fields (Supabase's `full` and `bearer_token`), each field Composio names mapped to its `.env` key. **`scheme`**: which key scheme, when a toolkit has several. Change a value in `.env` and restart: the connection is replaced.
+- **`oauthApp`**: your own OAuth app (client ID and secret, each an `.env` key). It counts against Composio's larger allowance instead of the smaller one the calendar shares, which matters for a service that sends more than about 100 events a day. Register Composio's redirect URL in the app: `https://backend.composio.dev/api/v1/auth-apps/add`; the scopes come from the toolkit's auth config in Composio. Not with `apiKey` or `fields`.
+- **`selfIsUser`**: `true` when the connection is your own account at the service, not the Clots'. Then your own messages are not dropped as the Clots', and only what the Clots' own writes touched is (`ownWrites` in the recipe).
+- **A mismatch** (a key for a toolkit that has only a sign-in, a missing field) is told once per start in the account's channel, naming what the toolkit accepts; nothing else waits on it. The `.env` keys must be ones nothing else uses (not `COMPOSIO_API_KEY`, a Discord or GitHub token or a `RECIPE_` key).
+- **`&composio reconnect <toolkit>:<account>`** deletes the account's connection and its learned identity and signs in again (a new link, or the `.env` values for a key account): the way to put right a sign-in made with the wrong account.
+
+##### Asking a Clot to add a service
+
+Tell a Clot "I want Slack messages from #general". It uses the `composio-integration` skill (shipped in `plugin/`, copied into every container at `/opt/clots/plugin` at each start, root-owned so a Clot cannot rewrite its own instructions): it reads the toolkit with `composio_toolkit`, prefers webhook triggers, says what a polled trigger or a watch would cost of the monthly allowance and waits for your yes, asks whether the Clots have an account of their own at the service, and gives you the exact entry and `.env` keys. **You** add them to `clots.config.json` and `.env` and restart: a Clot never edits either. Once the account is connected and a message has arrived (the daemon keeps the last 5 payloads of each trigger for 7 days, 64 KB each), the Clot writes a recipe from it, tries it with `composio_try` on every kept payload and sets it with `rulebook_composio`; you are shown it with `&rules undo`.
+
+##### Composio recipes and watches
+
+A **Composio recipe** (`composio:` in `global.yaml` or a Clot's file) turns a toolkit's trigger payloads into proper events: `kind`, `title`, `actor`, `body`, an `id` for dropping repeats, the actor's ID and the objects the event is about (for dropping what the Clots' own writes caused), and up to 3 read-only `enrich` calls per trigger that fill in names (the channel's and the author's) before the event is routed. It is data checked by a schema, never code the daemon runs; it cannot rate a write or add an undo, and its events are always from an outsider. Reads are cached for 24 hours and skipped, with a line in the body, once 80% of the month's allowance is used. An unlisted trigger is mapped generically. A recipe applies to every account of its toolkit, is addressed by the toolkit, and cannot name a toolkit with built-in support or a name another recipe has.
+
+A **watch recipe** may name `account: reddit:me` in place of an MCP server and one of that toolkit's read tools, for a toolkit with no triggers. It runs every 15 minutes or less often, a tool that is not a read is refused, every run counts against the allowance, and the calendars' polling and all such watches together may not pass 10,000 calls a month (a watch that would is refused, with the reason).
+
+After updating, `&close` each Clot: a resumed session keeps the system prompt and the plugin list it was made with, and learns about the skill only from a new one.
 
 Upgrading from stage 2c's Stripe, Linear, Notion and calendar sources: `sources.stripe`, `.linear`, `.notion` and `.calendar` no longer exist (the daemon names the key and refuses to start); move each into `sources.composio` as above. Delete the Stripe endpoint and the Linear webhook that pointed at `/webhooks/stripe/…` and `/webhooks/linear/…`; the Notion webhook stays. Then `&close` each Clot, since a resumed session keeps the system prompt it was made with, and the Clots only learn about Composio from the new one. `setup/calendar.gs` and `ical.js` are gone.
 
@@ -154,6 +183,7 @@ A message that starts with `&` is handled by the daemon and never reaches the mo
 | `&memory`, `&memory undo` | Lists the global memories in force; undoes the latest change. |
 | `&calendar undo` | Reverses this Clot's latest calendar change: removes an event it added, puts back what it changed, or creates again one it removed. Sent again, it steps further back. |
 | `&composio undo` | Reverses this Clot's latest Composio write that can be undone: archives what it created, or puts back the fields an update changed (unless someone changed them since). Sent again, it steps further back. |
+| `&composio reconnect <toolkit>:<account>` | Deletes that Composio account's connection and learned identity and signs in again: a new link, or a fresh connection from the `.env` values for a key account. Answered `No Composio account <name>.` for an unknown one. |
 | `&spend` | This week's estimated spend per Clot and worker, the gate in force, and the five-hour and seven-day usage. Answered at once, even during a turn. |
 
 ## Test

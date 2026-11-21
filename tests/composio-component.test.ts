@@ -13,7 +13,7 @@ const LINEAR_KEY = "lin_api_SECRETVALUE";
 const NOTION_KEY = "ntn_SECRETVALUE";
 const PUBLIC_URL = "https://box.example.ts.net";
 
-const base = { shared: false, audience: "team" as const, triggers: [] };
+const base = { shared: false, audience: "team" as const, triggers: [], selfIsUser: false };
 const linear: ComposioAccount = { ...base, toolkit: "linear", account: "proton", clot: "graphite", apiKey: LINEAR_KEY, apiKeyName: "LINEAR_PROTON_KEY" };
 const notion: ComposioAccount = { ...base, toolkit: "notion", account: "main", shared: true, audience: "private", apiKey: NOTION_KEY, apiKeyName: "NOTION_KEY" };
 const calendar: ComposioAccount = { ...base, toolkit: "googlecalendar", account: "personal", shared: true, audience: "private", leadMinutes: [1440], pollMinutes: 5 };
@@ -345,7 +345,7 @@ describe("reconcile", () => {
   });
 
   it("makes Stripe's triggers, with checkout only when asked, and PostHog's with its project and events", async () => {
-    make([stripe, { ...base, toolkit: "posthog", account: "app", clot: "graphite", apiKey: "phx_x", region: "us", projectId: 7, events: ["signup"] }]);
+    make([stripe, { ...base, toolkit: "posthog", account: "app", clot: "graphite", apiKey: "phx_x", apiKeyName: "PH_KEY", region: "us", projectId: 7, events: ["signup"] }]);
     await composio.reconcile();
     const slugs = [...api.triggers.values()].map((t) => t.slug);
     expect(slugs).toContain("STRIPE_CHECKOUT_SESSION_COMPLETED");
@@ -355,9 +355,9 @@ describe("reconcile", () => {
   });
 
   it("makes the configured triggers of any other toolkit", async () => {
-    make([{ ...base, toolkit: "slack", account: "work", shared: true, apiKey: "xoxb", triggers: [{ slug: "SLACK_RECEIVE_MESSAGE", config: { channel: "C1" } }] }]);
+    make([{ ...base, toolkit: "supabase", account: "work", shared: true, fieldKeys: { full: "SB_URL", bearer_token: "SB_KEY" }, fields: { full: "https://x.supabase.co", bearer_token: "sb-secret" }, triggers: [{ slug: "SUPABASE_ROW_ADDED", config: { table: "users" } }] }]);
     await composio.reconcile();
-    expect([...api.triggers.values()].map((t) => [t.slug, t.config])).toEqual([["SLACK_RECEIVE_MESSAGE", { channel: "C1" }]]);
+    expect([...api.triggers.values()].map((t) => [t.slug, t.config])).toEqual([["SUPABASE_ROW_ADDED", { table: "users" }]]);
   });
 
   it("lets one account fail without stopping the others, and Supervisor retries it", async () => {
@@ -672,18 +672,253 @@ describe("classifyComposioError", () => {
   it("reads the errors Composio gave while probing", () => {
     expect(classifyComposioError(e('401 {"error":{"message":"Invalid API key: ck_**x","slug":"APIKey_InvalidAPIKey","status":401}}', 401))).toBe("auth");
     expect(classifyComposioError(e("400 No active connection found for toolkit(s) 'linear' in this session. ToolRouterV2_NoActiveConnection", 400))).toBe("auth");
-    expect(classifyComposioError(e("429 Too Many Requests", 429))).toBe("cap");
     expect(classifyComposioError(e("Monthly usage limit exceeded for this project"))).toBe("cap");
+    expect(classifyComposioError(e("429 quota exceeded for the plan", 429))).toBe("cap");
     expect(classifyComposioError(e("fetch failed"))).toBe("unreachable");
     expect(classifyComposioError(e("502 Bad Gateway", 502))).toBe("unreachable");
     expect(classifyComposioError(new TimeoutError("running X"))).toBe("unreachable");
     expect(classifyComposioError(e('400 TriggerInstance_BadRequest: Auth config does not contain an OAuth client_id', 400))).toBe("refused");
   });
 
-  it("reads a tool that answered failed by the service's own status", () => {
+  it("does not read Composio's own per-minute rate limit as the monthly cap", () => {
+    expect(classifyComposioError(e("429 Too Many Requests", 429))).toBe("unreachable");
+    expect(classifyComposioError(e("Rate limit exceeded, retry in 30 seconds", 429))).toBe("unreachable");
+  });
+
+  it("reads a tool that answered failed by the service's own status, and never as Composio's monthly cap", () => {
     expect(classifyFailedResult(401, "Personal API key found in request Authorization header is invalid.")).toBe("auth");
     expect(classifyFailedResult(410, "Google returned 410 Gone")).toBe("refused");
     expect(classifyFailedResult(503, "")).toBe("unreachable");
-    expect(classifyFailedResult(undefined, "quota exceeded")).toBe("cap");
+    // The service's own limits: Reddit answering 429, or saying quota, is the service rate-limiting, not Composio's cap.
+    expect(classifyFailedResult(429, "Reddit API error for subreddit 'Esperanto': HTTP 429")).toBe("unreachable");
+    expect(classifyFailedResult(undefined, "quota exceeded")).toBe("unreachable");
+    expect(classifyFailedResult(undefined, "rate limit")).toBe("unreachable");
+    // The service refusing one request says nothing about the connection.
+    expect(classifyFailedResult(403, "Forbidden: private subreddit")).toBe("refused");
+  });
+});
+
+describe("any toolkit's auth", () => {
+  const slack: ComposioAccount = { ...base, toolkit: "slack", account: "work", shared: true, triggers: [{ slug: "SLACK_CHANNEL_MESSAGE_RECEIVED", config: {} }] };
+  const supabase: ComposioAccount = { ...base, toolkit: "supabase", account: "shop", clot: "graphite", fieldKeys: { full: "SB_URL", bearer_token: "SB_KEY" }, fields: { full: "https://x.supabase.co", bearer_token: "sb-secret-1" } };
+  const reddit: ComposioAccount = { ...base, toolkit: "reddit", account: "me", shared: true };
+
+  it("posts the managed sign-in once, naming the toolkit, with the line about the Clots' own account", async () => {
+    make([slack]);
+    await composio.reconcile();
+    await composio.reconcile();
+    const links = told.filter((t) => t.text.startsWith("Sign in to Slack for the Clots: https://"));
+    expect(links).toHaveLength(1);
+    expect(links[0].text).toContain(`Sign in with the Clots' own Slack account, not yours, unless the entry has "selfIsUser": true.`);
+    expect(api.of("ensureAuthConfig")).toEqual(["ensureAuthConfig:slack/MANAGED"]);
+  });
+
+  it("leaves out the own-account line for selfIsUser, and for the calendar, which is the user's own by design", async () => {
+    make([{ ...slack, selfIsUser: true }, calendar]);
+    await composio.reconcile();
+    expect(told.find((t) => t.text.startsWith("Sign in to Slack"))!.text).not.toContain("own Slack account");
+    expect(told.find((t) => t.text.startsWith("Sign in to Google Calendar"))!.text).not.toContain("own Google Calendar account");
+  });
+
+  it("brings the account up at once when the sign-in completes: identity and triggers, not at the next daily check", async () => {
+    api.answers.set("SLACK_AUTH_TEST", { ok: true, data: { user_id: "U1" } });
+    make([slack]);
+    await composio.reconcile();
+    expect(api.triggers.size).toBe(0);
+    api.connections.get(store.composio.account("slack:work")!.connectionId!)!.status = "active";
+    await tick();
+    expect(logs.some((l) => l.includes("Slack (work) connected"))).toBe(true);
+    expect([...api.triggers.values()].map((t) => t.slug)).toEqual(["SLACK_CHANNEL_MESSAGE_RECEIVED"]);
+    expect(store.composio.account("slack:work")?.status).toBe("active");
+  });
+
+  it("never reads a selfIsUser account's identity", async () => {
+    make([{ ...slack, selfIsUser: true }]);
+    await composio.reconcile();
+    api.connections.get(store.composio.account("slack:work")!.connectionId!)!.status = "active";
+    await tick();
+    expect(api.of("execute")).toEqual([]);
+  });
+
+  it("connects Supabase with its two-field key, no sign-in link", async () => {
+    make([supabase]);
+    await composio.reconcile();
+    expect(told).toEqual([]);
+    expect(api.of("linkManaged")).toEqual([]);
+    expect(api.of("ensureAuthConfig")).toEqual(["ensureAuthConfig:supabase/API_KEY"]);
+    const made = [...api.connections.values()][0];
+    expect(made).toMatchObject({ user: "supabase:shop", status: "active" });
+    expect(JSON.parse(made.key!)).toEqual({ full: "https://x.supabase.co", bearer_token: "sb-secret-1" });
+  });
+
+  it("connects Reddit through the managed sign-in", async () => {
+    make([reddit]);
+    await composio.reconcile();
+    expect(told.filter((t) => t.text.startsWith("Sign in to Reddit for the Clots: https://"))).toHaveLength(1);
+  });
+
+  it("replaces the connection when one of two fields changes, through the staged swap, moving the triggers first", async () => {
+    const withTrigger = { ...supabase, triggers: [{ slug: "SUPABASE_ROW_ADDED", config: { t: 1 } }] };
+    make([withTrigger]);
+    await composio.reconcile();
+    const first = store.composio.account("supabase:shop")!.connectionId!;
+    make([{ ...withTrigger, fields: { ...supabase.fields!, bearer_token: "sb-secret-2" } }]);
+    api.calls.length = 0;
+    await composio.reconcile();
+    const second = store.composio.account("supabase:shop")!.connectionId!;
+    expect(second).not.toBe(first);
+    const order = api.calls.map((c) => c.split(":")[0]);
+    expect(order.indexOf("connectWithKey")).toBeLessThan(order.indexOf("deleteConnection"));
+    expect(api.connections.has(first)).toBe(false);
+    expect([...api.triggers.values()].every((t) => t.connectionId === second)).toBe(true);
+    // Unchanged again: nothing is replaced.
+    api.calls.length = 0;
+    await composio.reconcile();
+    expect(api.of("connectWithKey")).toEqual([]);
+  });
+
+  it("makes a new auth config and a new sign-in when an OAuth app's secret changes, keeping the old connection until the new one is active", async () => {
+    const own = (secret: string): ComposioAccount => ({ ...slack, oauthApp: { clientId: "SLACK_ID", clientSecret: "SLACK_SECRET" }, oauthValues: { clientId: "id-1", clientSecret: secret } });
+    make([own("s1")]);
+    await composio.reconcile();
+    const first = store.composio.account("slack:work")!;
+    api.connections.get(first.connectionId!)!.status = "active";
+    await tick();
+    expect(told.filter((t) => t.text.startsWith("Sign in")).length).toBe(1);
+
+    make([own("s2")]);
+    await composio.reconcile();
+    const links = told.filter((t) => t.text.startsWith("Sign in"));
+    expect(links).toHaveLength(2);
+    // The old connection stays the account's, with its trigger, until the new sign-in completes.
+    expect(store.composio.account("slack:work")!.connectionId).toBe(first.connectionId);
+    expect(api.connections.has(first.connectionId!)).toBe(true);
+    const staged = store.getState("composio.staged.slack:work")!.split("|");
+    api.connections.get(staged[1])!.status = "active";
+    await tick();
+    const done = store.composio.account("slack:work")!;
+    expect(done.connectionId).toBe(staged[1]);
+    expect(done.authConfigId).not.toBe(first.authConfigId);
+    expect(api.connections.has(first.connectionId!)).toBe(false);
+    expect(api.deletedAuthConfigs).toEqual([first.authConfigId]);
+    expect(store.getState("composio.staged.slack:work")).toBeUndefined();
+  });
+
+  it("tells a mismatch once per start, in the account's channel, and connects the other accounts", async () => {
+    const bad: ComposioAccount = { ...base, toolkit: "slack", account: "bad", shared: true, apiKey: "xoxb-SECRET", apiKeyName: "SLACK_BAD_KEY" };
+    make([bad, linear]);
+    await composio.reconcile();
+    await composio.reconcile();
+    const said = told.filter((t) => t.account === "slack:bad");
+    expect(said).toHaveLength(1);
+    expect(said[0].text).toBe("slack:bad cannot connect: Slack has no key scheme, only Composio's sign-in, so apiKey and fields do not apply. Slack accepts: OAUTH2 (Composio's sign-in).");
+    expect(api.of("connectWithKey").length).toBe(1);
+    expect(store.composio.account("linear:proton")?.connectionId).toBeDefined();
+    expect(store.composio.account("slack:bad")).toBeUndefined();
+    expect(JSON.stringify([told, logs])).not.toContain("xoxb-SECRET");
+  });
+
+  it("tells the mismatch again after a restart, and not after the entry is fixed", async () => {
+    const bad: ComposioAccount = { ...base, toolkit: "slack", account: "bad", shared: true, apiKey: "k", apiKeyName: "SLACK_BAD_KEY" };
+    make([bad]);
+    await composio.reconcile();
+    make([bad]);
+    await composio.reconcile();
+    expect(told.filter((t) => t.account === "slack:bad")).toHaveLength(2);
+    make([{ ...bad, apiKey: undefined, apiKeyName: undefined }]);
+    await composio.reconcile();
+    expect(told.filter((t) => t.account === "slack:bad")).toHaveLength(3);
+    expect(told[2].text).toContain("Sign in to Slack");
+  });
+
+  it("reads Composio's metadata once per account, and never again for a working one", async () => {
+    make([linear, slack]);
+    await composio.reconcile();
+    expect(api.of("toolkitInfo").sort()).toEqual(["toolkitInfo:linear", "toolkitInfo:slack"]);
+    make([linear, slack]);
+    api.calls.length = 0;
+    await composio.reconcile();
+    expect(api.of("toolkitInfo")).toEqual([]);
+  });
+
+  it("retries an account whose metadata cannot be read, with the account's job", async () => {
+    api.failNext.set("toolkitInfo", new Error("503 down"));
+    make([linear]);
+    const { failures } = await composio.reconcile();
+    expect(failures[0]).toContain("503 down");
+    expect(store.composio.account("linear:proton")).toBeUndefined();
+    await composio.reconcile();
+    expect(store.composio.account("linear:proton")?.connectionId).toBeDefined();
+  });
+
+  it("counts an OAuth-app or key account against its own allowance and a managed one against Composio's", () => {
+    make([slack]);
+    expect(composio.managed(slack)).toBe(true);
+    expect(composio.managed({ ...slack, oauthApp: { clientId: "A", clientSecret: "B" } })).toBe(false);
+    expect(composio.managed(linear)).toBe(false);
+    expect(composio.managed(supabase)).toBe(false);
+  });
+
+  it("tells an expired fields account which .env keys to replace, never a sign-in link", async () => {
+    make([supabase]);
+    await composio.reconcile();
+    api.connections.get(store.composio.account("supabase:shop")!.connectionId!)!.status = "expired";
+    await composio.checkDaily();
+    const said = told.filter((t) => t.account === "supabase:shop");
+    expect(said).toHaveLength(1);
+    expect(said[0].text).toContain("Replace SB_URL, SB_KEY in .env");
+    expect(api.of("linkManaged")).toEqual([]);
+  });
+
+  it("never puts a field's value or an OAuth app's secret in anything it tells or logs", async () => {
+    make([supabase, { ...slack, account: "own", oauthApp: { clientId: "SLACK_ID", clientSecret: "SLACK_SECRET" }, oauthValues: { clientId: "client-id-val", clientSecret: "client-secret-val" } }]);
+    await composio.reconcile();
+    await composio.checkDaily();
+    const everything = JSON.stringify([told, logs]);
+    for (const secret of ["sb-secret-1", "https://x.supabase.co", "client-secret-val", "client-id-val"]) expect(everything).not.toContain(secret);
+  });
+
+  it("does not hold a toolkit that needs no connection to one: no connection, no sign-in", async () => {
+    make([{ ...base, toolkit: "hackernews", account: "news", shared: true }]);
+    await composio.reconcile();
+    expect(told).toEqual([]);
+    expect(api.of("linkManaged")).toEqual([]);
+    expect(store.composio.account("hackernews:news")?.status).toBe("active");
+  });
+});
+
+describe("&composio reconnect", () => {
+  const slack: ComposioAccount = { ...base, toolkit: "slack", account: "work", shared: true };
+
+  it("deletes the connection and the stored identity and posts one new sign-in link", async () => {
+    make([slack]);
+    await composio.reconcile();
+    const first = store.composio.account("slack:work")!.connectionId!;
+    api.connections.get(first)!.status = "active";
+    store.composio.setAccount("slack:work", { identity: "U-wrong", status: "active" });
+    told.length = 0;
+    expect(await composio.reconnect("slack:work")).toBe("Reconnecting slack:work.");
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(api.connections.has(first)).toBe(false);
+    expect(store.composio.account("slack:work")!.identity).toBeUndefined();
+    expect(told.filter((t) => t.text.startsWith("Sign in to Slack"))).toHaveLength(1);
+    expect(store.composio.account("slack:work")!.connectionId).not.toBe(first);
+  });
+
+  it("reconnects a key account from its .env values with a new connection", async () => {
+    make([linear]);
+    await composio.reconcile();
+    const first = store.composio.account("linear:proton")!.connectionId!;
+    expect(await composio.reconnect("linear:proton")).toBe("Reconnecting linear:proton.");
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    expect(api.connections.has(first)).toBe(false);
+    expect(store.composio.account("linear:proton")!.connectionId).not.toBe(first);
+    expect(told).toEqual([]);
+  });
+
+  it("answers an unknown name, and a name without its toolkit, plainly", async () => {
+    make([slack]);
+    expect(await composio.reconnect("slack:nope")).toBe("No Composio account slack:nope.");
+    expect(await composio.reconnect("work")).toBe("No Composio account work.");
   });
 });

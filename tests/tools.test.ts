@@ -435,7 +435,7 @@ describe("calendar_list", () => {
             calls.push({ account, req });
             return scriptAnswers[req.action] ?? { ok: false, reason: "no answer set", reached: true };
           },
-          accounts: [{ toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], leadMinutes: [1440], pollMinutes: 5 }],
+          accounts: [{ toolkit: "googlecalendar", account: "me", shared: true, audience: "private", triggers: [], selfIsUser: false, leadMinutes: [1440], pollMinutes: 5 }],
           timeZone: "Europe/Zurich",
           now: () => new Date("2026-10-15T12:30:00Z").getTime(),
           list: async (account, from, to) => {
@@ -693,6 +693,41 @@ describe("watch recipe tools", () => {
     expect(await t.watch({ action: "set", file: "own", recipe })).toContain("Applied");
     expect(own().watches).toMatchObject([{ name: "notion-feedback" }]);
     expect(await t.watchTry!(recipe)).toContain("1 item");
+  });
+});
+
+describe("watch recipes on a Composio account", () => {
+  const onAccount = { name: "new-posts", account: "reddit:me", tool: "REDDIT_GET_NEW_POSTS", arguments: {}, items: "posts", id: "id", ignore: [], every: 15, report: "added" as const };
+  const make = (composio: Partial<NonNullable<ToolDeps["composio"]>>) =>
+    makeTools(
+      {
+        rulebook,
+        writer,
+        asks: { rule: async () => "FILED" },
+        store,
+        senders: {},
+        say: async () => undefined,
+        handOver: async () => "",
+        composio: { find: async () => "", run: async () => "", ...composio },
+        composioHub: { listTools: async () => [{ name: "REDDIT_GET_NEW_POSTS", description: "", readOnly: true }], callTool: async () => ({ text: '{"posts":[{"id":"a"}]}', isError: false }) },
+      },
+      { clot: "graphite", kind: "chat", outsider: false },
+    );
+
+  it("counts watch_try against composio_run's limits, and refuses past them with the same text", async () => {
+    let allowed = true;
+    const t = make({ countCall: () => (allowed ? undefined : "Refused: 30 Composio calls were made in this turn, which is the limit.") });
+    expect(await t.watchTry!(onAccount)).toContain("1 item");
+    allowed = false;
+    expect(await t.watchTry!(onAccount)).toBe("Refused: 30 Composio calls were made in this turn, which is the limit.");
+  });
+
+  it("refuses to set a watch whose account is not configured, naming the accounts", async () => {
+    const t = make({ hasAccount: (name) => name === "slack:work", accountNames: () => ["slack:work"] });
+    expect(await t.watch({ action: "set", file: "own", recipe: onAccount })).toBe("Not done: no Composio account reddit:me is configured. The accounts are: slack:work.");
+    expect(own().watches).toEqual([]);
+    const ok = make({ hasAccount: () => true });
+    expect(await ok.watch({ action: "set", file: "own", recipe: onAccount })).toContain("Applied");
   });
 });
 

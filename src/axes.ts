@@ -44,6 +44,11 @@ export const TOOL_AXES: Record<RatedTool, Axes> = {
   composioFind: LOW,
   // Rates each call itself, in code (see src/composio/rating.ts): a write that reaches people or moves money becomes an ask there, not here.
   composioRun: LOW,
+  // The two that only read, and the two that rate nothing themselves: a draft's reads are counted like composio_run's, and a set recipe is a rulebook edit.
+  composioToolkit: LOW,
+  composioSamples: LOW,
+  composioRecipeTry: LOW,
+  composioRecipe: LOW,
   mcpList: LOW,
   watchTry: LOW,
   watch: LOW,

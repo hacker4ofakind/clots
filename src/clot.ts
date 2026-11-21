@@ -47,7 +47,7 @@ export interface ClotDeps {
   /** Answers `&calendar undo`. Absent when no calendar can be changed. */
   calendar?: { undo(clot: string): Promise<string> };
   /** Answers `&composio undo`. Absent when no Composio account is configured. */
-  composio?: { undo(clot: string): Promise<string> };
+  composio?: { undo(clot: string): Promise<string>; /** Answers `&composio reconnect <toolkit>:<account>`. */ reconnect(account: string): Promise<string> };
   /** One line per listed worker, for every prompt and the recap. */
   workerLines?: (clot: string) => string[];
   /** Where a keep-warm turn's reply goes. It is never posted in chat or kept in the Clot's tail. */
@@ -347,7 +347,7 @@ export class Clot {
       await chat.post(channelId, calendar === undefined ? "No calendar can be changed from this daemon." : await calendar.undo(name));
     } else if (command.kind === "composio") {
       const composio = this.d.composio;
-      await chat.post(channelId, composio === undefined ? "No Composio account is configured." : await composio.undo(name));
+      await chat.post(channelId, composio === undefined ? "No Composio account is configured." : "reconnect" in command ? await composio.reconnect(command.reconnect) : await composio.undo(name));
     } else {
       await chat.post(channelId, `I don't know \`&${command.name}\` used that way. ${COMMAND_USAGE}`);
     }

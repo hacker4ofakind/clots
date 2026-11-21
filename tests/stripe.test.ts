@@ -9,7 +9,7 @@ import { normalizeStripe, STRIPE_KINDS, STRIPE_UNREAD, stripeEnricher, stripeMap
 import { Store } from "../src/store.js";
 import { FakeComposioApi } from "./fake-composio.js";
 
-const account: StripeAccount = { toolkit: "stripe", account: "shop", clot: "shop", shared: false, audience: "public", apiKey: "rk_test", apiKeyName: "K", checkoutCompleted: false, triggers: [] };
+const account: StripeAccount = { toolkit: "stripe", account: "shop", clot: "shop", shared: false, audience: "public", apiKey: "rk_test", apiKeyName: "K", checkoutCompleted: false, triggers: [], selfIsUser: false };
 const NOW = 1_760_000_000_000;
 
 const failedInvoice = { id: "in_1", object: "invoice", livemode: false, customer: "cus_1", customer_email: "jane@example.com", amount_due: 1200, currency: "eur", attempt_count: 2, description: null };

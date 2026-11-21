@@ -83,6 +83,14 @@ it("reads &composio undo, and answers &composio alone with the usage", () => {
   expect(COMMAND_USAGE).toContain("`&composio undo`");
 });
 
+it("reads &composio reconnect with the account's name, and refuses it without one", () => {
+  expect(parseCommand("&composio reconnect slack:work")).toEqual({ kind: "composio", reconnect: "slack:work" });
+  expect(parseCommand("&Composio  RECONNECT  slack:work ")).toEqual({ kind: "composio", reconnect: "slack:work" });
+  expect(parseCommand("&composio reconnect")).toEqual({ kind: "invalid", name: "composio" });
+  expect(parseCommand("&composio reconnect a b")).toEqual({ kind: "invalid", name: "composio" });
+  expect(COMMAND_USAGE).toContain("`&composio reconnect <toolkit>:<account>`");
+});
+
 it("reads &calendar undo, and answers &calendar alone with the usage", () => {
   expect(parseCommand("&calendar undo")).toEqual({ kind: "calendar", undo: true });
   expect(parseCommand("&calendar")).toEqual({ kind: "invalid", name: "calendar" });

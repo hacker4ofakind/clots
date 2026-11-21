@@ -1,0 +1,191 @@
+{
+  "info": {
+    "slug": "stripe",
+    "name": "Stripe",
+    "managed": [
+      "OAUTH2"
+    ],
+    "schemes": [
+      {
+        "scheme": "OAUTH2",
+        "required": [],
+        "optional": [],
+        "creationRequired": [
+          "client_id",
+          "client_secret"
+        ]
+      },
+      {
+        "scheme": "API_KEY",
+        "required": [
+          "generic_api_key"
+        ],
+        "optional": [],
+        "creationRequired": []
+      }
+    ]
+  },
+  "triggers": [
+    {
+      "slug": "STRIPE_CHARGE_CAPTURED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHARGE_DISPUTE_CLOSED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHARGE_DISPUTE_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHARGE_DISPUTE_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHARGE_FAILED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHARGE_REFUNDED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHARGE_REFUND_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHARGE_SUCCEEDED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHECKOUT_SESSION_ASYNC_PAYMENT_FAILED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHECKOUT_SESSION_ASYNC_PAYMENT_SUCCEEDED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHECKOUT_SESSION_COMPLETED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CHECKOUT_SESSION_EXPIRED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CUSTOMER_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CUSTOMER_DELETED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CUSTOMER_SUBSCRIPTION_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CUSTOMER_SUBSCRIPTION_DELETED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CUSTOMER_SUBSCRIPTION_TRIAL_WILL_END",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CUSTOMER_SUBSCRIPTION_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_CUSTOMER_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_INVOICE_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_INVOICE_FINALIZED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_INVOICEITEM_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_INVOICE_PAID",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_INVOICE_PAYMENT_FAILED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_INVOICE_PAYMENT_SUCCEEDED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_INVOICE_UPCOMING",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_INVOICE_VOIDED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PAYMENT_INTENT_CANCELED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PAYMENT_INTENT_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PAYMENT_INTENT_PAYMENT_FAILED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PAYMENT_INTENT_REQUIRES_ACTION",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PAYMENT_INTENT_SUCCEEDED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PAYMENT_LINK_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PAYOUT_FAILED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PAYOUT_PAID",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PRICE_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PRICE_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PRODUCT_CREATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_PRODUCT_UPDATED",
+      "type": "webhook"
+    },
+    {
+      "slug": "STRIPE_REFUND_CREATED",
+      "type": "webhook"
+    }
+  ],
+  "payloadSchemaField": "payload"
+}

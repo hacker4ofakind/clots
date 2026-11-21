@@ -9,7 +9,7 @@ import { LINEAR_UNREAD, linearCommentSender, linearEnricher, linearMapper } from
 import { Store } from "../src/store.js";
 import { FakeComposioApi } from "./fake-composio.js";
 
-const account: LinearAccount = { toolkit: "linear", account: "tady", shared: true, audience: "team", apiKey: "lin_api_test", apiKeyName: "K", triggers: [] };
+const account: LinearAccount = { toolkit: "linear", account: "tady", shared: true, audience: "team", apiKey: "lin_api_test", apiKeyName: "K", triggers: [], selfIsUser: false };
 const NOW = 1_760_000_000_000;
 
 // The shapes of Composio's polled Linear triggers: the issue as recorded live (tests/fixtures/composio/linear), the comment per Composio's published payload schema.

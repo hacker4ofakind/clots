@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
-import { AuthScheme, Composio } from "@composio/core";
+import { Composio } from "@composio/core";
+import { toolkitInfoFrom, type AuthChoice, type ToolkitInfo } from "./auth.js";
 
 /** The only file that imports @composio/core: everything above it is tested with a fake of ComposioApi. */
 
@@ -13,11 +14,19 @@ export type ExecResult = { ok: true; data: unknown } | { ok: false; error: strin
 export type TriggerInstance = { id: string; slug: string; connectionId: string; config: Record<string, unknown>; disabled: boolean };
 
 export interface ComposioApi {
-  /** The auth config of this kind for the toolkit: an existing one is adopted, else one is made. */
-  ensureAuthConfig(toolkit: string, scheme: "API_KEY" | "MANAGED"): Promise<string>;
+  /** What Composio says of the toolkit's ways of connecting. */
+  toolkitInfo(slug: string): Promise<ToolkitInfo>;
+  /**
+   * The auth config for the choice: a managed or key one is adopted when it exists, else made; an `oauthApp` one is
+   * always made, from the values `secrets` gives for the choice's `.env` keys, and is never shared or adopted.
+   */
+  ensureAuthConfig(toolkit: string, choice: AuthChoice, secrets: Record<string, string>): Promise<string>;
+  /** Deletes an auth config the daemon made for an `oauthApp` that was replaced. */
+  deleteAuthConfig(id: string): Promise<void>;
   /** The user's connection for the toolkit, preferring an active one. */
   findConnection(user: string, toolkit: string): Promise<Connection | undefined>;
-  connectWithKey(user: string, authConfigId: string, key: string, extra?: Record<string, string>): Promise<Connection>;
+  /** A key connection, active at once: the scheme and its fields by Composio's names, resolved to their values. */
+  connectWithKey(user: string, authConfigId: string, scheme: string, fields: Record<string, string>): Promise<Connection>;
   linkManaged(user: string, authConfigId: string): Promise<{ redirectUrl: string; connectionId: string }>;
   connection(id: string): Promise<Connection>;
   deleteConnection(id: string): Promise<void>;
@@ -34,6 +43,12 @@ export interface ComposioApi {
   rotateWebhookSecret(): Promise<{ secret: string }>;
   tool(slug: string): Promise<ToolInfo | undefined>;
   search(toolkit: string, query: string): Promise<ToolInfo[]>;
+  /** A toolkit's tools, for `composio_toolkit`. At most `limit`. */
+  toolkitTools(toolkit: string, limit: number): Promise<ToolInfo[]>;
+  /** A toolkit's trigger types: each trigger's slug and whether Composio delivers it by webhook or polls for it. */
+  toolkitTriggers(toolkit: string): Promise<{ slug: string; type: "webhook" | "poll" }[]>;
+  /** One trigger type's details: its config schema and the schema of the payload it delivers. Undefined for an unknown slug. */
+  triggerType(slug: string): Promise<{ slug: string; name: string; type: string; config: unknown; payload: unknown } | undefined>;
   execute(user: string, toolkit: string, slug: string, args: Record<string, unknown>): Promise<ExecResult>;
 }
 
@@ -56,28 +71,39 @@ async function timed<T>(what: string, work: Promise<T>, ms = CALL_TIMEOUT_MS): P
   }
 }
 
+/** Composio's own monthly quota wording: the plan's allowance is used up. A per-minute rate limit is not it. */
+const MONTHLY_QUOTA = /quota|usage limit|monthly|plan limit|limit (has been )?reached/i;
+
 /**
- * How a thrown error reads to the daemon. A rate limit or quota is `cap`; a rejected key, an expired
- * connection or a session with no active connection is `auth`; the network, a timeout and a 5xx are
- * `unreachable`; anything else, a refusal.
+ * How a thrown error reads to the daemon. Composio's monthly quota is `cap`; a rejected key, an expired
+ * connection or a session with no active connection is `auth`; the network, a timeout, a 5xx and Composio's
+ * own per-minute rate limit (a 429 that is not the quota) are `unreachable`, to be tried again later; anything
+ * else, a refusal.
  */
 export function classifyComposioError(e: unknown): FailureReason {
   const text = e instanceof Error ? e.message : String(e);
   const status = Number((e as { status?: unknown } | null)?.status ?? (e as { statusCode?: unknown } | null)?.statusCode);
   if (e instanceof TimeoutError) return "unreachable";
-  if (status === 429 || /rate.?limit|quota|usage limit|limit (has been )?(reached|exceeded)/i.test(text)) return "cap";
+  if (MONTHLY_QUOTA.test(text) && !/rate.?limit/i.test(text)) return "cap";
+  if (status === 429 || /rate.?limit|too many requests/i.test(text)) return "unreachable";
   if (status === 401 || status === 403 || /ToolRouterV2_NoActiveConnection|APIKey_Invalid|expired|revoked|no active connection/i.test(text)) return "auth";
   if (status >= 500 || /ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|fetch failed|network|socket hang up/i.test(text)) return "unreachable";
   return "refused";
 }
 
-/** How a tool that answered `failed` reads: the service's own status code decides. */
+/**
+ * How a tool that answered `failed` reads: the service's own status code decides, and none of it is Composio's
+ * monthly cap. A service that rate-limits (429, or says so) is a call to be tried again later, `unreachable`, so an
+ * undo keeps its place for the next time; it is never "Composio's free monthly limit is reached". A 401 is the
+ * service rejecting the connection's credentials (`auth`: replace the key or sign in again); a 403 is the service
+ * refusing this one request (a private subreddit, a missing scope), which says nothing about the connection, so it is
+ * `refused`.
+ */
 export function classifyFailedResult(statusCode: unknown, text: string): FailureReason {
   const status = Number(statusCode);
-  if (status === 429) return "cap";
-  if (status === 401 || status === 403) return "auth";
-  if (status >= 500) return "unreachable";
-  return /rate.?limit|quota/i.test(text) ? "cap" : "refused";
+  if (status === 401) return "auth";
+  if (status === 429 || status >= 500 || /rate.?limit|too many requests|quota/i.test(text)) return "unreachable";
+  return "refused";
 }
 
 const toConnection = (item: any): Connection => {
@@ -111,16 +137,33 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
   };
 
   const api: ComposioApi = {
-    async ensureAuthConfig(toolkit, scheme) {
+    async toolkitInfo(slug) {
+      return toolkitInfoFrom(await timed("reading a toolkit", composio.toolkits.get(slug)));
+    },
+
+    async ensureAuthConfig(toolkit, choice, secrets) {
+      if (choice.kind === "none") throw new Error(`${toolkit} needs no auth config`);
+      if (choice.kind === "oauthApp") {
+        const created: any = await timed(
+          "creating an auth config",
+          composio.authConfigs.create(toolkit, { type: "use_custom_auth", authScheme: "OAUTH2", credentials: { client_id: secrets[choice.clientId], client_secret: secrets[choice.clientSecret] } }),
+        );
+        return created.id;
+      }
       const list: any = await timed("listing auth configs", composio.authConfigs.list({ toolkit }));
-      const managed = scheme === "MANAGED";
-      const found = (list.items ?? []).find((c: any) => (managed ? c.isComposioManaged === true : c.authScheme === "API_KEY" && c.isComposioManaged !== true) && c.status !== "DISABLED");
+      const managed = choice.kind === "managed";
+      const scheme = choice.kind === "key" ? choice.scheme : "";
+      const found = (list.items ?? []).find((c: any) => (managed ? c.isComposioManaged === true : c.authScheme === scheme && c.isComposioManaged !== true) && c.status !== "DISABLED");
       if (found) return found.id;
       const created: any = await timed(
         "creating an auth config",
-        managed ? composio.authConfigs.create(toolkit, { type: "use_composio_managed_auth" }) : composio.authConfigs.create(toolkit, { type: "use_custom_auth", authScheme: "API_KEY", credentials: {} }),
+        managed ? composio.authConfigs.create(toolkit, { type: "use_composio_managed_auth" }) : composio.authConfigs.create(toolkit, { type: "use_custom_auth", authScheme: scheme, credentials: {} }),
       );
       return created.id;
+    },
+
+    async deleteAuthConfig(id) {
+      await timed("deleting an auth config", composio.authConfigs.delete(id));
     },
 
     async findConnection(user, toolkit) {
@@ -132,15 +175,18 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
 
     // `allowMultiple`: a changed key connects the new key while the old connection still exists (the old one is deleted last),
     // and Composio refuses a second connection for the same user without it.
-    async connectWithKey(user, authConfigId, key, extra = {}) {
-      const request: any = await timed("connecting", composio.connectedAccounts.initiate(user, authConfigId, { config: AuthScheme.APIKey({ generic_api_key: key, ...extra } as any), allowMultiple: true }));
+    async connectWithKey(user, authConfigId, scheme, fields) {
+      // What the SDK's AuthScheme helpers build, for any scheme: the scheme's name and the fields, active at once.
+      const request: any = await timed("connecting", composio.connectedAccounts.initiate(user, authConfigId, { config: { authScheme: scheme, val: { status: "ACTIVE", ...fields } } as any, allowMultiple: true }));
       const connection = request.status === "ACTIVE" ? toConnection(request) : toConnection(await timed("waiting for the connection", composio.connectedAccounts.waitForConnection(request.id, 20_000)));
       return remember(user, connection);
     },
 
     async linkManaged(user, authConfigId) {
       const request: any = await timed("making a sign-in link", composio.connectedAccounts.link(user, authConfigId));
-      connectionOf.set(user, request.id);
+      // No pin is made here. While a replacement sign-in is pending, a call finds the active connection (the pin is empty
+      // after a restart, and `findConnection` prefers an active one over the initiating one); once the old connection is
+      // deleted the pin is cleared and the next call finds the new one.
       return { redirectUrl: request.redirectUrl, connectionId: request.id };
     },
 
@@ -150,6 +196,7 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
 
     async deleteConnection(id) {
       await timed("deleting a connection", composio.connectedAccounts.delete(id));
+      for (const [user, pinned] of connectionOf) if (pinned === id) connectionOf.delete(user);
     },
 
     async listTriggers(connectionId) {
@@ -208,6 +255,26 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
       return tools.map(toTool);
     },
 
+    async toolkitTools(toolkit, limit) {
+      const tools: any[] = await timed("listing a toolkit's tools", composio.tools.getRawComposioTools({ toolkits: [toolkit], limit }));
+      return tools.map(toTool);
+    },
+
+    async toolkitTriggers(toolkit) {
+      const page: any = await timed("listing trigger types", composio.triggers.listTypes({ toolkits: [toolkit], limit: 100 }));
+      return (page.items ?? []).map((t: any) => ({ slug: t.slug, type: t.type === "poll" ? "poll" : "webhook" }));
+    },
+
+    async triggerType(slug) {
+      try {
+        const t: any = await timed("reading a trigger type", composio.triggers.getType(slug));
+        return { slug: t.slug, name: t.name ?? t.slug, type: String(t.type ?? ""), config: t.config, payload: t.payload };
+      } catch (e) {
+        if (/not.?found|404/i.test(e instanceof Error ? e.message : "") || (e as { status?: number })?.status === 404) return undefined;
+        throw e;
+      }
+    },
+
     async execute(user, toolkit, slug, args) {
       try {
         let connectionId = connectionOf.get(user);
@@ -238,7 +305,4 @@ export function configKey(config: Record<string, unknown>): string {
   return crypto.createHash("sha256").update(sorted).digest("hex").slice(0, 16);
 }
 
-/** SHA-256 of a service key, to tell that it changed without keeping it. */
-export function keyHash(key: string): string {
-  return crypto.createHash("sha256").update(key).digest("hex");
-}
+export { keyHash } from "./auth.js";

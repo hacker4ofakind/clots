@@ -3,8 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
-import { isBuiltinSource, KIND_PATTERN, SOURCE_KINDS } from "./events/kinds.js";
+import { isBuiltinSource, isBuiltinToolkit, KIND_PATTERN, SOURCE_KINDS } from "./events/kinds.js";
+import { pathsIn } from "./paths.js";
 import type { ClotEvent } from "./events/types.js";
+import { callsPerMonth, MONTHLY_POLLING_CALLS } from "./config.js";
 import type { Binding } from "./routing.js";
 
 /** The fields a template may use, each filled from the triggering event. `{repo}` is the older name of `{place}`. */
@@ -23,7 +25,7 @@ export type Via = keyof typeof VIA_SOURCE;
 export const VIAS = Object.keys(VIA_SOURCE) as [Via, ...Via[]];
 
 /** The keys of a rule file that hold lists, in the order a file has them. */
-export const LIST_KEYS: string[] = ["prefilters", "triage", "standing", "routing", "watches", "webhooks"];
+export const LIST_KEYS: string[] = ["prefilters", "triage", "standing", "routing", "watches", "webhooks", "composio"];
 
 /** A recipe's name: it becomes its events' source, so it cannot be a built-in source's. */
 const recipeName = z
@@ -31,9 +33,15 @@ const recipeName = z
   .regex(/^[a-z0-9][a-z0-9-]*$/, "a recipe's name uses lowercase letters, digits and hyphens")
   .refine((name) => !isBuiltinSource(name), "a recipe cannot have the name of a built-in source");
 
-const WatchSchema = z.strictObject({
+const WatchSchema = z
+  .strictObject({
   name: recipeName,
-  server: z.string().min(1),
+  // Exactly one of `server` (an MCP server) and `account` (a Composio account, `<toolkit>:<account>`).
+  server: z.string().min(1).optional(),
+  account: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*:[a-z0-9][a-z0-9-]*$/, "account is a Composio account, written <toolkit>:<account>")
+    .optional(),
   tool: z.string().min(1),
   arguments: z.record(z.string(), z.unknown()).default({}),
   items: z.string(),
@@ -46,9 +54,25 @@ const WatchSchema = z.strictObject({
   every: z.number().int().min(1).default(5),
   report: z.enum(["added", "added_and_changed"]).default("added"),
   notReadOnly: z.literal(true).optional(),
-});
+  })
+  .refine((watch) => (watch.server === undefined) !== (watch.account === undefined), { message: "give either server (an MCP server) or account (a Composio account), not both and not neither", path: ["server"] })
+  .superRefine((watch, ctx) => {
+    if (watch.account === undefined) return;
+    if (watch.every < MIN_COMPOSIO_WATCH_MINUTES) ctx.addIssue({ code: "custom", path: ["every"], message: `a watch on a Composio account runs every ${MIN_COMPOSIO_WATCH_MINUTES} minutes or less often, since every run counts against Composio's allowance` });
+    if (watch.notReadOnly) ctx.addIssue({ code: "custom", path: ["notReadOnly"], message: "a watch on a Composio account may use only a tool Composio marks as a read; notReadOnly does not apply" });
+    const toolkit = watch.account.split(":")[0].toUpperCase();
+    if (!watch.tool.startsWith(`${toolkit}_`)) ctx.addIssue({ code: "custom", path: ["tool"], message: `the tool must be one of ${watch.account.split(":")[0]}'s: its slug begins ${toolkit}_` });
+  });
+
+const watchOverBudgetText = (name: string): string => `the watch "${name}" would take Composio past ${MONTHLY_POLLING_CALLS.toLocaleString("en-US")} polling calls a month`;
+
+/** A watch on a Composio account runs at most this often: each run is a call against the month's allowance. */
+export const MIN_COMPOSIO_WATCH_MINUTES = 15;
 
 export type WatchRecipe = z.infer<typeof WatchSchema>;
+
+/** Where a watch calls: an MCP server, or a Composio account. */
+export const watchTarget = (recipe: Pick<WatchRecipe, "server" | "account">): string => recipe.account ?? recipe.server ?? "";
 
 /** Checks one watch recipe. Throws when it does not fit. */
 export function parseWatch(value: unknown): WatchRecipe {
@@ -162,6 +186,111 @@ export function parseWebhook(value: unknown): WebhookRecipe {
   return WebhookSchema.parse(value);
 }
 
+/** A Composio tool or trigger slug: uppercase, beginning with its toolkit's name. */
+const COMPOSIO_SLUG = /^[A-Z][A-Z0-9_]*$/;
+
+/** At most this many reads run for one trigger's payload. */
+export const MAX_ENRICH_READS = 3;
+
+/** The fields a recipe may fill from a read's data: the pipeline keeps only these three after enrichment. */
+const ENRICHED_FIELDS = ["title", "actor", "body"] as const;
+
+const TriggerRecipeSchema = z.strictObject({
+  kind,
+  title: z.string().min(1),
+  id: z.string().min(1).optional(),
+  actorId: z.string().min(1).optional(),
+  actor: z.string().min(1).optional(),
+  body: z.string().min(1).optional(),
+  url: z.string().min(1).optional(),
+  ref: z.string().min(1).optional(),
+  place: z.string().min(1).optional(),
+  subject: z.string().min(1).optional(),
+  objects: z.array(z.string().min(1)).optional(),
+  automatedWhen: z.record(z.string(), scalar).optional(),
+  enrich: z
+    .array(
+      z.strictObject({
+        as: z.string().regex(/^[a-z][a-z0-9_]*$/, "a read's name `as` uses lowercase letters, digits and underscores"),
+        tool: z.string().regex(COMPOSIO_SLUG, "a tool is Composio's uppercase slug"),
+        args: z.record(z.string(), z.unknown()).optional(),
+      }),
+    )
+    .max(MAX_ENRICH_READS, `at most ${MAX_ENRICH_READS} reads for one trigger`)
+    .optional(),
+});
+
+/** The strings in a value, to any depth: a read's arguments may hold templates in nested objects and lists. */
+export function stringsIn(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsIn);
+  if (value !== null && typeof value === "object") return Object.values(value).flatMap(stringsIn);
+  return [];
+}
+
+export const ComposioRecipeSchema = z
+  .strictObject({
+    toolkit: z
+      .string()
+      .regex(/^[a-z][a-z0-9_]*$/, "a toolkit is Composio's lowercase slug")
+      .refine((name) => !isBuiltinToolkit(name), "a Composio recipe cannot name a toolkit that has built-in support (linear, notion, stripe, googlecalendar, posthog)")
+      .refine((name) => !isBuiltinSource(name), "a Composio recipe cannot name a toolkit like a built-in source: the toolkit becomes its events' source"),
+    identity: z.strictObject({ tool: z.string().regex(COMPOSIO_SLUG), path: z.string().min(1) }).optional(),
+    ownWrites: z.array(z.strictObject({ tool: z.string().regex(COMPOSIO_SLUG), ids: z.array(z.string().min(1)).min(1) })).optional(),
+    triggers: z
+      .record(z.string().regex(COMPOSIO_SLUG, "a trigger is Composio's uppercase slug"), TriggerRecipeSchema)
+      .refine((triggers) => Object.keys(triggers).length > 0, "a recipe maps at least one trigger"),
+  })
+  .superRefine((recipe, ctx) => {
+    const prefix = `${recipe.toolkit.toUpperCase()}_`;
+    const tools: [string, (string | number)[]][] = [];
+    if (recipe.identity) tools.push([recipe.identity.tool, ["identity", "tool"]]);
+    recipe.ownWrites?.forEach((write, i) => tools.push([write.tool, ["ownWrites", i, "tool"]]));
+    for (const [slug, trigger] of Object.entries(recipe.triggers)) {
+      if (!slug.startsWith(prefix)) ctx.addIssue({ code: "custom", path: ["triggers", slug], message: `the trigger ${slug} is not ${recipe.toolkit}'s: its slug begins ${prefix}` });
+      const reads = trigger.enrich ?? [];
+      const seen = new Set<string>();
+      reads.forEach((read, i) => {
+        if (seen.has(read.as)) ctx.addIssue({ code: "custom", path: ["triggers", slug, "enrich", i, "as"], message: `two reads of ${slug} are both named ${read.as}` });
+        tools.push([read.tool, ["triggers", slug, "enrich", i, "tool"]]);
+        // A read's arguments may use the payload and the reads before it, nothing else.
+        for (const path of stringsIn(read.args).flatMap(pathsIn)) checkPath(path, seen, ["triggers", slug, "enrich", i, "args"]);
+        seen.add(read.as);
+      });
+      const all = new Set(reads.map((read) => read.as));
+      const templates: [string, string | undefined][] = [["id", trigger.id], ["actorId", trigger.actorId], ["actor", trigger.actor], ["title", trigger.title], ["body", trigger.body], ["url", trigger.url], ["ref", trigger.ref], ["place", trigger.place], ["subject", trigger.subject], ...(trigger.objects ?? []).map((o, i): [string, string] => [`objects.${i}`, o])];
+      for (const [field, template] of templates) {
+        if (template === undefined) continue;
+        const paths = pathsIn(template);
+        if (paths.some((p) => p === "enrich" || p.startsWith("enrich.")) && !(ENRICHED_FIELDS as readonly string[]).includes(field)) {
+          ctx.addIssue({ code: "custom", path: ["triggers", slug, field.split(".")[0]], message: `${field} cannot use enrich: only title, actor and body are filled after the reads (the other fields are set when the delivery arrives)` });
+        }
+        for (const path of paths) checkPath(path, all, ["triggers", slug, field.split(".")[0]]);
+      }
+      for (const key of Object.keys(trigger.automatedWhen ?? {})) checkPath(key, new Set(), ["triggers", slug, "automatedWhen"], true);
+    }
+    for (const [slug, path] of tools) {
+      if (!slug.startsWith(prefix)) ctx.addIssue({ code: "custom", path, message: `${slug} is not a tool of ${recipe.toolkit}: its slug begins ${prefix}` });
+    }
+    function checkPath(path: string, reads: Set<string>, where: (string | number)[], payloadOnly = false): void {
+      const [root, name] = path.split(".");
+      if (root === "payload") return;
+      if (root === "enrich" && !payloadOnly) {
+        if (name === undefined || !reads.has(name)) ctx.addIssue({ code: "custom", path: where, message: `{${path}} names no read: ${reads.size > 0 ? `the reads here are ${[...reads].join(", ")}` : "no read comes before it"}` });
+        return;
+      }
+      ctx.addIssue({ code: "custom", path: where, message: `{${path}} is out of reach: a template reads payload${payloadOnly ? "" : " and enrich.<as>"}, nothing else` });
+    }
+  });
+
+export type ComposioRecipe = z.infer<typeof ComposioRecipeSchema>;
+export type ComposioTriggerRecipe = z.infer<typeof TriggerRecipeSchema>;
+
+/** Checks one Composio recipe. Throws when it does not fit. */
+export function parseComposioRecipe(value: unknown): ComposioRecipe {
+  return ComposioRecipeSchema.parse(value);
+}
+
 const RuleFileSchema = z.strictObject({
   prefilters: z.array(PrefilterSchema).default([]),
   // A list of lines. A single block of text, as stage 2a wrote it, is read as one line.
@@ -176,6 +305,7 @@ const RuleFileSchema = z.strictObject({
   routing: z.array(RoutingSchema).default([]),
   watches: z.array(WatchSchema).default([]),
   webhooks: z.array(WebhookSchema).default([]),
+  composio: z.array(ComposioRecipeSchema).default([]),
 });
 
 export type Prefilter = z.infer<typeof PrefilterSchema>;
@@ -278,6 +408,10 @@ export class Rulebook {
   /** "<file>\n<notice>": parts of a usable file that are ignored, each reported once for as long as it holds. */
   private notices = new Set<string>();
   private listeners: (() => void)[] = [];
+  /** The toolkits `sources.composio` names. */
+  private reserved = new Set<string>();
+  /** The calendars' monthly polling calls, which the watches on Composio accounts share a limit with. */
+  private calendarCalls = 0;
 
   /** Calls fn after each load, for what follows the files: the running watch recipes, the webhook recipes' secrets. */
   onLoad(fn: () => void): void {
@@ -335,30 +469,88 @@ export class Rulebook {
     if (name === "global") parts.push(...file.routing.filter((rule) => !this.clots.includes(rule.clot)).map((rule) => `the routing rule for "${rule.clot}" names no Clot that exists, so it is ignored`));
     // A recipe's name is its events' source, so two recipes cannot share one, in one file or in two.
     const earlier = new Set(this.recipes().filter((entry) => this.names().indexOf(entry.file) < this.names().indexOf(name)).map((entry) => entry.name));
-    for (const recipeName of this.recipeNamesIn(file)) if (earlier.has(recipeName)) parts.push(`the recipe "${recipeName}" has the name of another recipe, so it is ignored`);
+    const over = this.overBudget();
+    for (const recipe of file.watches) if (over.has(recipe.name)) parts.push(watchOverBudgetText(recipe.name));
+    const here = new Set<string>();
+    for (const { name: recipeName, kind } of this.recipeNamesIn(file)) {
+      if (kind !== "composio" && this.reserved.has(recipeName)) parts.push(`the recipe "${recipeName}" has the name of the Composio toolkit ${recipeName}, whose events use it as their source, so it is ignored`);
+      else if (kind === "composio" && (earlier.has(recipeName) || here.has(recipeName))) parts.push(`the Composio recipe for "${recipeName}" is ignored: another recipe has that name, and the first in file order is the one in force`);
+      else if (earlier.has(recipeName) || here.has(recipeName)) parts.push(`the recipe "${recipeName}" has the name of another recipe, so it is ignored`);
+      here.add(recipeName);
+    }
     return parts;
   }
 
-  /** The recipes a file holds, by name: watch recipes and webhook recipes share one set of names. */
-  private recipeNamesIn(file: RuleFile): string[] {
-    return [...file.watches.map((recipe) => recipe.name), ...file.webhooks.map((recipe) => recipe.name)];
+  /** The recipes a file holds, by name and kind: watch recipes and webhook recipes share one set of names with the Composio recipes' toolkits, since each becomes its events' source. */
+  private recipeNamesIn(file: RuleFile): { name: string; kind: "watch" | "webhook" | "composio" }[] {
+    return [...file.watches.map((r) => ({ name: r.name, kind: "watch" as const })), ...file.webhooks.map((r) => ({ name: r.name, kind: "webhook" as const })), ...file.composio.map((r) => ({ name: r.toolkit, kind: "composio" as const }))];
+  }
+
+  /** The toolkits `sources.composio` names: a watch or webhook recipe cannot take one's name, which is its events' source. */
+  setReserved(toolkits: string[]): void {
+    this.reserved = new Set(toolkits);
+  }
+
+  /** Sets the month's polling calls the calendars take, so that the watches on Composio accounts are held to the limit they share. */
+  setCalendarCalls(calls: number): void {
+    this.calendarCalls = calls;
+  }
+
+  /**
+   * The watches on Composio accounts that would take polling past the month's limit, in file order: each is counted
+   * when it fits, and refused when it would cross, so one too many does not stop the others.
+   */
+  private overBudget(): Set<string> {
+    const refused = new Set<string>();
+    let sum = this.calendarCalls;
+    const inForce = this.recipes();
+    for (const file of this.names()) {
+      for (const recipe of this.file(file).watches) {
+        if (recipe.account === undefined || !inForce.some((e) => e.name === recipe.name && e.file === file && e.kind === "watch")) continue;
+        const calls = callsPerMonth(recipe.every);
+        if (sum + calls > MONTHLY_POLLING_CALLS) refused.add(recipe.name);
+        else sum += calls;
+      }
+    }
+    return refused;
+  }
+
+  /** Why a watch on a Composio account cannot be set: with it, the calendars' polling and the other Composio watches would pass the limit. Undefined when it fits or is not on an account. */
+  watchBudgetProblem(recipe: WatchRecipe): string | undefined {
+    if (recipe.account === undefined) return undefined;
+    // Only watches in force count: a shadowed copy, or one already refused, takes nothing.
+    const others = this.watches().map((w) => w.recipe).filter((w) => w.account !== undefined && w.name !== recipe.name);
+    const sum = this.calendarCalls + others.reduce((n, w) => n + callsPerMonth(w.every), 0) + callsPerMonth(recipe.every);
+    return sum > MONTHLY_POLLING_CALLS ? watchOverBudgetText(recipe.name) : undefined;
   }
 
   /** The webhook recipe in force with this name, if any. */
   webhook(name: string): WebhookRecipe | undefined {
-    const entry = this.recipes().find((candidate) => candidate.name === name);
+    const entry = this.recipes().find((candidate) => candidate.name === name && candidate.kind === "webhook");
     return entry === undefined ? undefined : this.file(entry.file).webhooks.find((recipe) => recipe.name === name);
   }
 
-  /** Every recipe in force, with its file, in file order; of two with one name, the first. */
-  private recipes(): { name: string; file: string }[] {
+  /** The Composio recipe in force for a toolkit: the first in file order. */
+  composioRecipe(toolkit: string): ComposioRecipe | undefined {
+    const entry = this.recipes().find((candidate) => candidate.name === toolkit && candidate.kind === "composio");
+    return entry === undefined ? undefined : this.file(entry.file).composio.find((recipe) => recipe.toolkit === toolkit);
+  }
+
+  /** The file whose recipe is in force for the name (a toolkit, or a webhook or watch recipe's name), if any. */
+  recipeFile(name: string): { file: string; kind: "watch" | "webhook" | "composio" } | undefined {
+    const entry = this.recipes().find((candidate) => candidate.name === name);
+    return entry === undefined ? undefined : { file: entry.file, kind: entry.kind };
+  }
+
+  /** Every recipe in force, with its file, in file order; of two with one name, the first. A watch or webhook recipe named like a configured toolkit is not in force. */
+  private recipes(): { name: string; file: string; kind: "watch" | "webhook" | "composio" }[] {
     const seen = new Set<string>();
-    const out: { name: string; file: string }[] = [];
-    for (const name of this.names()) {
-      for (const recipeName of this.recipeNamesIn(this.file(name))) {
-        if (seen.has(recipeName)) continue;
-        seen.add(recipeName);
-        out.push({ name: recipeName, file: name });
+    const out: { name: string; file: string; kind: "watch" | "webhook" | "composio" }[] = [];
+    for (const file of this.names()) {
+      for (const { name, kind } of this.recipeNamesIn(this.file(file))) {
+        if (seen.has(name) || (kind !== "composio" && this.reserved.has(name))) continue;
+        seen.add(name);
+        out.push({ name, file, kind });
       }
     }
     return out;
@@ -367,12 +559,13 @@ export class Rulebook {
   /** The watch recipes in force, each with the file it is in. */
   watches(): { recipe: WatchRecipe; file: string }[] {
     const inForce = this.recipes();
-    return this.names().flatMap((file) => this.file(file).watches.filter((recipe) => inForce.some((entry) => entry.name === recipe.name && entry.file === file)).map((recipe) => ({ recipe, file })));
+    const over = this.overBudget();
+    return this.names().flatMap((file) => this.file(file).watches.filter((recipe) => !over.has(recipe.name) && inForce.some((entry) => entry.name === recipe.name && entry.file === file && entry.kind === "watch")).map((recipe) => ({ recipe, file })));
   }
 
   /** Where a recipe's events go: the Clot whose file it is in, or routing for one in global.yaml. Undefined for no recipe. */
   recipeBinding(name: string): Binding | undefined {
-    const entry = this.recipes().find((candidate) => candidate.name === name);
+    const entry = this.recipes().find((candidate) => candidate.name === name && candidate.kind !== "composio");
     if (entry === undefined) return undefined;
     return entry.file === "global" ? "shared" : { clot: entry.file };
   }

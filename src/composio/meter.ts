@@ -36,6 +36,16 @@ export class Meter {
     return text === undefined ? empty() : { ...empty(), ...(JSON.parse(text) as Month) };
   }
 
+  /**
+   * How much of a pool's monthly allowance is used, as fractions: tool calls and trigger events. Recipe reads
+   * are skipped when either reaches 80%, so enrichment never starves the calendar or the Clots' own calls.
+   */
+  used(managed: boolean): { calls: number; events: number } {
+    const month = this.usage();
+    const pool = managed ? "managed" : "own";
+    return { calls: month.calls[pool] / ALLOWANCE.calls[pool], events: month.events[pool] / ALLOWANCE.events[pool] };
+  }
+
   /** Counts `n` tool calls or deliveries for an account (`<toolkit>:<account>`); `managed` for a Composio-managed app. */
   async count(kind: Kind, account: string, managed: boolean, n = 1): Promise<void> {
     const month = this.usage();

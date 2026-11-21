@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ClotEvent } from "../src/events/types.js";
-import { matchesPrefilter, parsePrefilter, parseRouting, parseRuleFile, parseStanding, problemText, Rulebook } from "../src/rulebook.js";
+import { matchesPrefilter, parsePrefilter, parseRouting, parseRuleFile, parseStanding, parseWatch, problemText, Rulebook } from "../src/rulebook.js";
 
 /** What the pipeline checks for a Clot: the global pre-filters, then the Clot's own. */
 const isDroppedFor = (rulebook: Rulebook, clot: string, event: ClotEvent) => rulebook.dropsIn("global", event) || rulebook.dropsIn(clot, event);
@@ -253,6 +253,115 @@ describe("Rulebook", () => {
     rulebook.load();
     expect(rulebook.watches().map((w) => w.file)).toEqual(["global"]);
     expect(invalid).toContainEqual({ file: "graphite.yaml", problem: 'the recipe "same" has the name of another recipe, so it is ignored' });
+  });
+
+  describe("watches on Composio accounts share the month's polling limit with the calendars", () => {
+    const onAccount = (name: string, every: number) => `  - name: ${name}\n    account: reddit:me\n    tool: REDDIT_GET_NEW_POSTS\n    items: posts\n    id: id\n    every: ${every}\n`;
+
+    it("refuses the watch that crosses 10,000 calls a month, says so in its file, and starts the others", () => {
+      // A calendar polled every 20 minutes takes 2,160; a watch every 15 minutes takes 2,880; one every 60, 720.
+      rulebook.setCalendarCalls(2160);
+      write("graphite.yaml", `watches:\n${onAccount("a", 15)}${onAccount("b", 15)}${onAccount("c", 15)}${onAccount("d", 60)}`);
+      rulebook.load();
+      expect(rulebook.watches().map((w) => w.recipe.name)).toEqual(["a", "b", "d"]);
+      expect(invalid).toContainEqual({ file: "graphite.yaml", problem: 'the watch "c" would take Composio past 10,000 polling calls a month' });
+    });
+
+    it("does not count a shadowed copy of a watch when judging a new one", () => {
+      rulebook = new Rulebook(dir, ["graphite", "other"], (file, problem) => invalid.push({ file, problem }));
+      // 2,000 calendar calls, one active 15-minute watch (2,880) and a shadowed copy of it: 4,880 in force, not 7,760.
+      rulebook.setCalendarCalls(2000);
+      write("graphite.yaml", `watches:\n${onAccount("a", 15)}`);
+      write("other.yaml", `watches:\n${onAccount("a", 15)}`);
+      rulebook.load();
+      const recipe = parseWatch({ name: "b", account: "reddit:me", tool: "REDDIT_GET_NEW_POSTS", items: "posts", id: "id", every: 15 });
+      expect(rulebook.watches()).toHaveLength(1);
+      expect(rulebook.watchBudgetProblem(recipe)).toBeUndefined();
+    });
+
+    it("counts only watches on accounts: an MCP server's watch costs no allowance", () => {
+      rulebook.setCalendarCalls(9990);
+      write("graphite.yaml", "watches:\n  - name: mcp-one\n    server: s\n    tool: t\n    items: x\n    id: id\n    every: 1\n");
+      rulebook.load();
+      expect(rulebook.watches()).toHaveLength(1);
+    });
+
+    it("refuses a watch edit that would cross, with the same text, and allows one that fits or replaces itself", () => {
+      rulebook.setCalendarCalls(2160);
+      write("graphite.yaml", `watches:\n${onAccount("a", 15)}${onAccount("b", 15)}`);
+      rulebook.load();
+      const recipe = (name: string, every: number) => parseWatch({ name, account: "reddit:me", tool: "REDDIT_GET_NEW_POSTS", items: "posts", id: "id", every });
+      expect(rulebook.watchBudgetProblem(recipe("c", 15))).toBe('the watch "c" would take Composio past 10,000 polling calls a month');
+      expect(rulebook.watchBudgetProblem(recipe("c", 60))).toBeUndefined();
+      // Replacing b with itself, as an edit does, is not counted twice.
+      expect(rulebook.watchBudgetProblem(recipe("b", 15))).toBeUndefined();
+      expect(rulebook.watchBudgetProblem(parseWatch({ name: "m", server: "s", tool: "t", items: "x", id: "id", every: 1 }))).toBeUndefined();
+    });
+  });
+
+  describe("Composio recipes", () => {
+    const composio = (toolkit: string, trigger = "SLACK_CHANNEL_MESSAGE_RECEIVED") => `composio:\n  - toolkit: ${toolkit}\n    triggers:\n      ${trigger}: { kind: message, title: "x" }\n`;
+    const watch = (name: string) => `watches:\n  - name: ${name}\n    server: s\n    tool: t\n    items: x\n    id: id\n`;
+
+    it("finds the recipe in force for a toolkit, in a Clot's file or the global one", () => {
+      write("graphite.yaml", composio("slack"));
+      rulebook.load();
+      expect(rulebook.composioRecipe("slack")?.triggers).toHaveProperty("SLACK_CHANNEL_MESSAGE_RECEIVED");
+      expect(rulebook.composioRecipe("reddit")).toBeUndefined();
+      expect(rulebook.recipeFile("slack")).toEqual({ file: "graphite", kind: "composio" });
+    });
+
+    it("validates rules that name source slack and kind message, once the toolkit is a source", () => {
+      write("global.yaml", "prefilters:\n  - source: slack\n    kind: message\n    actor: someone\n");
+      rulebook.load();
+      expect(invalid).toEqual([]);
+      expect(rulebook.dropsIn("global", { ...event, source: "slack", kind: "message", actor: "someone" })).toBe(true);
+    });
+
+    it("uses only the first of two recipes for one toolkit, and says so", () => {
+      write("global.yaml", composio("slack"));
+      write("graphite.yaml", composio("slack"));
+      rulebook.load();
+      expect(rulebook.recipeFile("slack")).toEqual({ file: "global", kind: "composio" });
+      expect(invalid).toContainEqual({ file: "graphite.yaml", problem: 'the Composio recipe for "slack" is ignored: another recipe has that name, and the first in file order is the one in force' });
+    });
+
+    it("refuses a webhook or watch recipe named like a Composio recipe's toolkit, whichever comes second", () => {
+      write("global.yaml", composio("slack"));
+      write("graphite.yaml", watch("slack"));
+      rulebook.load();
+      expect(rulebook.watches()).toEqual([]);
+      expect(invalid).toContainEqual({ file: "graphite.yaml", problem: 'the recipe "slack" has the name of another recipe, so it is ignored' });
+      invalid.length = 0;
+      write("global.yaml", watch("reddit"));
+      write("graphite.yaml", composio("reddit", "REDDIT_NEW_POST"));
+      rulebook.load();
+      expect(rulebook.composioRecipe("reddit")).toBeUndefined();
+      expect(invalid.some((i) => i.problem.includes('Composio recipe for "reddit" is ignored'))).toBe(true);
+    });
+
+    it("keeps a watch or webhook recipe from taking the name of a toolkit that sources.composio names", () => {
+      rulebook.setReserved(["slack"]);
+      write("graphite.yaml", watch("slack"));
+      rulebook.load();
+      expect(rulebook.watches()).toEqual([]);
+      expect(invalid[0].problem).toContain("has the name of the Composio toolkit slack");
+    });
+
+    it("does not bind a Composio recipe by its file: its events follow the account's binding", () => {
+      write("graphite.yaml", composio("slack"));
+      rulebook.load();
+      expect(rulebook.recipeBinding("slack")).toBeUndefined();
+    });
+
+    it("reports a recipe that does not fit the schema as any rule file is, keeping the last good version", () => {
+      write("graphite.yaml", composio("slack"));
+      rulebook.load();
+      write("graphite.yaml", composio("linear", "LINEAR_X"));
+      rulebook.load();
+      expect(invalid.at(-1)!.problem).toContain("built-in support");
+      expect(rulebook.composioRecipe("slack")).toBeDefined();
+    });
   });
 
   it("checks one file's pre-filters at a time", () => {
