@@ -43,12 +43,12 @@
 
 ## Key Decisions & Gotchas
 
-**Facts already checked live (2026-11-21, read-only metadata):** `toolkits.get(slug)` returns `composioManagedAuthSchemes` and `authConfigDetails[]`, each with `mode` and `fields.connectedAccountInitiation.{required,optional}[].name`. Slack: managed `OAUTH2` only, init fields none required (optional `generic_id`); triggers (all `webhook`): `SLACK_CHANNEL_CREATED`, `SLACK_CHANNEL_MESSAGE_RECEIVED` (config `channel_id`, `channel_type`, `is_bot_message`, `is_thread_reply`), `SLACK_DIRECT_MESSAGE_RECEIVED`, `SLACK_MESSAGE_REACTION_ADDED/_REMOVED`, `SLACK_REACTION_ADDED/_REMOVED`, `SLACK_RECEIVE_BOT_MESSAGE`, `SLACK_RECEIVE_MESSAGE`. Reddit: managed `OAUTH2`, no triggers. Supabase: managed `OAUTH2`, plus `API_KEY` with required `full` and `bearer_token`. `triggers.listTypes({ toolkits })` gives `slug`, `type` (`webhook`|`poll`), `config` (JSON schema). Save these answers as the `meta` fixtures in Task 1 rather than re-deriving them.
+**Facts already checked live (2026-11-21, read-only metadata):** `toolkits.get(slug)` returns `composioManagedAuthSchemes` and `authConfigDetails[]`, each with `mode` and `fields.connectedAccountInitiation.{required,optional}[].name`. Slack: managed `OAUTH2` only, init fields none required (optional `generic_id`); triggers (all `webhook`): `SLACK_CHANNEL_CREATED`, `SLACK_CHANNEL_MESSAGE_RECEIVED` (config `channel_id`, `channel_type`, `is_bot_message`, `is_thread_reply`), `SLACK_DIRECT_MESSAGE_RECEIVED`, `SLACK_MESSAGE_REACTION_ADDED/_REMOVED`, `SLACK_REACTION_ADDED/_REMOVED`, `SLACK_RECEIVE_BOT_MESSAGE`, `SLACK_RECEIVE_MESSAGE`. Reddit: managed `OAUTH2`, no triggers. Supabase: managed `OAUTH2`, plus `API_KEY` with required `full` and `bearer_token`. `triggers.listTypes({ toolkits })` gives `slug`, `type` (`webhook`|`poll`), `config` (JSON schema). Save these answers as the `meta` fixtures in Task 1 rather than re-deriving them. Slack's tools the recipes use are `SLACK_TEST_AUTH` (`user_id`), `SLACK_RETRIEVE_DETAILED_USER_INFORMATION` (`user.profile.real_name`) and `SLACK_RETRIEVE_CONVERSATION_INFORMATION` (`channel.name`); a post is `SLACK_CHAT_POST_MESSAGE`. A toolkit that needs no connection lists the scheme `NO_AUTH` and runs in a session with none; Supabase's `OAUTH2` scheme has a required connection field (`full`).
 
 **Auth**
-- `ToolkitInfo = { slug: string; name: string; managed: string[]; schemes: { scheme: string; required: string[]; optional: string[] }[] }`, read once per toolkit per daemon life (cache in the component; a failed read is retried with the account's job).
-- `AuthChoice = { kind: "managed" } | { kind: "key"; scheme: string; fields: Record<string, string> /* field name → .env key */ } | { kind: "oauthApp"; clientId: string; clientSecret: string /* .env keys */ }`.
-- `chooseAuth(a, info): AuthChoice | { error: string }`, in this order: `oauthApp` → `oauthApp` if the toolkit has `OAUTH2`; `fields` or `apiKey` → the key scheme (`scheme` if given, else the toolkit's only non-OAuth scheme; several and no `scheme` → error); `apiKey` fills the scheme's single required field by its real name (zero or several required → error naming them and saying to use `fields`); `fields` must cover every required field and name no field the scheme lacks; neither → `managed` if `info.managed` is not empty, else error. Built-in toolkits go through it too: Linear/Notion/Stripe/PostHog resolve to their `API_KEY` scheme (PostHog's `connectExtra` still adds `subdomain`; it is merged after `chooseAuth`'s fields), the calendar to `managed`. Check in Task 1 that each built-in resolves to the field name it uses today (`generic_api_key`), so no existing connection is replaced.
+- `ToolkitInfo = { slug: string; name: string; managed: string[]; schemes: { scheme: string; required: string[]; optional: string[]; creationRequired: string[] }[]; noAuth?: true }`, read once per toolkit per daemon life (cache in the component; a failed read is retried with the account's job). `creationRequired` is what an auth config of the scheme needs (a user's own OAuth app needs `client_id` and `client_secret`, nothing else).
+- `AuthChoice = { kind: "managed" } | { kind: "none" } | { kind: "key"; scheme: string; fields: Record<string, string> /* field name → .env key */ } | { kind: "oauthApp"; clientId: string; clientSecret: string /* .env keys */ }`.
+- `chooseAuth(a, info, provided?: string[]): AuthChoice | { error: string }` (`provided` names the fields the toolkit's def adds itself, PostHog's `subdomain`, which an entry need not give), in this order: `oauthApp` → `oauthApp` if the toolkit has `OAUTH2`; `fields` or `apiKey` → the key scheme (`scheme` if given, else the toolkit's only non-OAuth scheme; several and no `scheme` → error); `apiKey` fills the scheme's single required field by its real name (zero or several required → error naming them and saying to use `fields`); `fields` must cover every required field and name no field the scheme lacks; neither → `managed` if `info.managed` is not empty, else error. Built-in toolkits go through it too: Linear/Notion/Stripe/PostHog resolve to their `API_KEY` scheme (PostHog's `connectExtra` still adds `subdomain`; it is merged after `chooseAuth`'s fields), the calendar to `managed`. Check in Task 1 that each built-in resolves to the field name it uses today (`generic_api_key`), so no existing connection is replaced.
 - Error text, posted once per start in the account's channel and logged: ``<toolkit>:<account> cannot connect: <reason>. <Toolkit name> accepts: <scheme> (fields: a, b), <scheme> (Composio's sign-in).`` The account then has no connection, triggers or tools; nothing else waits on it.
 - The key hash becomes a SHA-256 of the scheme and every field's value, in field-name order, so a change of any field replaces the connection through the existing staged swap. For a single `generic_api_key` it must equal today's hash of the key (keep today's formula for that case) so upgrading replaces nothing.
 - `oauthApp`: an auth config of its own per account (`use_custom_auth`, `OAUTH2`, the client ID and secret as credentials), never shared or adopted; its ID and a hash of the two values are kept in `composio_accounts`. A changed hash makes a new auth config and a new sign-in, then deletes the old connection once the new one is active.
@@ -77,7 +77,7 @@
 - The skill's auth step suggests `oauthApp` for a service expected to send more than about 100 events a day.
 - Template context is `{ payload, enrich }`; `fillPaths` and `pathGet` from `watch.ts` as they are. `args` values that are strings are filled the same way; other values pass through. `automatedWhen` paths are read from the same context.
 - **Two-step application.** Composio expects a quick answer, so intake never waits on reads. `recipeMapper` (sync, a `Mapper`): fills `id`, `actorId`, `objects`, `automatedWhen`, `kind`, and the text fields with `enrich` empty. Event ID `<toolkit>:<account>:<id>`, or `composio:<webhook-id>` when `id` is absent or fills empty. `recipeEnricher(composio, rulebook, store): Enricher`, registered as the fallback of `enricherBySource` (add an optional fallback argument): for an event whose source is a toolkit with a recipe in force and a kept delivery with that `event_id`, run the reads in order, then render every text field again with `enrich` filled. No recipe or no kept delivery → the event is returned unchanged.
-- Each read: `composio.tool(slug)` must exist, belong to the toolkit, and pass `isRead` from `rating.ts`; else the line `Could not read <as>: <slug> is not a read tool.` Runs through `composio.run` on the event's account (counted by the meter). A failed run → `Could not read <as>: <error>.` appended to the body; that read's `enrich.<as>` stays empty. Field fallbacks after rendering: `actor` → `unknown`, `body` → the clipped payload JSON, `subject` → `<toolkit>:<slug>`, others → empty; `title` filling empty → the generic mapper's title.
+- Each read: `composio.tool(slug)` must exist, belong to the toolkit, and pass `isRead` from `rating.ts`; else the line `Could not read <as>: <slug> is not a read tool.` Runs through `composio.run` on the event's account (counted by the meter). A failed run → `Could not read <as>: <error>.` appended to the body; that read's `enrich.<as>` stays empty. Field fallbacks after rendering: `actor` → `unknown`, `body` → the clipped payload JSON, `subject` → `<toolkit>:<slug>`, `place` → the account's name, others → empty; `title` filling empty → the generic mapper's title.
 - Identity: the generic def's `identity` uses the recipe in force (run the tool, read `path` from the data; a missing or empty value throws, so the existing retry applies). Setting or replacing a recipe whose `identity` changed clears the stored identity of that toolkit's accounts and learns it again.
 - Kinds: a recipe's kinds are known for its toolkit's source in `kinds.ts` the way a webhook recipe's kinds are for its name, so rules naming `source: slack, kind: message` validate.
 - Set-time checks in the `rulebook_composio` tool (they need the network, so a hand-edited file only gets the run-time ones): the toolkit has no built-in def; every `enrich` and `identity` tool exists, belongs to the toolkit and is a read. Refusal texts name the tool and the reason.
@@ -142,7 +142,7 @@
 - Ask the user to sign in to Slack once through `link slack` (user `spike:slack`, a Slack workspace they choose, ideally as the Clots' own account), make a `SLACK_CHANNEL_MESSAGE_RECEIVED` trigger, post one message, save the delivery as the Slack fixture, then delete the user's trigger and connection.
 **Done when:** fixtures saved; findings in Implementation Notes; any failed probe reported to the user before Task 2.
 
-- [ ] Task 1 complete
+- [x] Task 1 complete
 
 ### Task 2: Auth for any toolkit
 **Files:** `src/composio/auth.ts`, `src/composio/api.ts`, `src/composio/component.ts`, `src/config.ts`, `tests/composio-auth.test.ts`, `tests/composio-component.test.ts`, `tests/config.test.ts`
@@ -159,7 +159,7 @@
 **Files (also):** `src/commands.ts`, `tests/commands.test.ts` (the reconnect command).
 **Done when:** `npm test -- composio-auth composio-component config commands` passes.
 
-- [ ] Task 2 complete
+- [x] Task 2 complete
 
 ### Task 3: Deliveries and recipes at intake and enrichment
 **Files:** `src/composio/store.ts`, `src/composio/recipe.ts`, `src/composio/intake.ts`, `src/composio/toolkits/{generic,index}.ts`, `src/enrich.ts`, `src/rulebook.ts`, `src/events/kinds.ts`, `src/daemon.ts` (wiring only), `tests/composio-recipe.test.ts`, `tests/composio-samples.test.ts`, `tests/composio-intake.test.ts`, `tests/rulebook.test.ts`
@@ -173,31 +173,31 @@
 - an unlisted trigger of a toolkit with a recipe → generic event; a recipe with no `id` → `composio:<webhook-id>`;
 - samples: the sixth delivery prunes the oldest unless it is younger than an hour; 7-day-old rows go; a 70 KB payload is clipped and marked;
 - rules with `source: slack, kind: message` validate once the recipe is in force;
-- two messages from one user in one channel within a day make one `SLACK_USERS_INFO` call; two arriving together share one in-flight call;
+- two messages from one user in one channel within a day make one `SLACK_RETRIEVE_DETAILED_USER_INFORMATION` call; two arriving together share one in-flight call;
 - with the meter at 80% of the account's pool, no read is made and the body has the skipped line;
 - a `SLACK_CHAT_POST_MESSAGE` write whose result has `channel` and `ts` records `<channel>:<ts>` through `ownWrites`, and the delivery of that post is dropped as self-caused even with `selfIsUser`.
 **Files (also):** `src/composio/actions.ts`, `src/composio/meter.ts` (`ownWrites`, the read budget).
 **Done when:** `npm test -- composio-recipe composio-samples composio-intake rulebook` passes.
 
-- [ ] Task 3 complete
+- [x] Task 3 complete
 
 ### Task 4: Watch recipes on Composio read tools
 **Files:** `src/rulebook.ts`, `src/watch.ts`, `src/daemon.ts` (wiring), `tests/watch.test.ts`, `tests/rulebook.test.ts`
-**Interfaces:** Consumes `Composio.run`, `Composio.tool`, `isRead`. Produces `composioHub(c: Composio): Hub`; `Watcher` deps `hubFor(recipe): Hub`.
+**Interfaces:** Consumes `Composio.run`, `Composio.tool`, `isRead`. Produces `composioHub(c: Composio): Hub` (`src/composio/hub.ts`; the exported `Hub`'s `listTools(name, tool?)` answers the one tool the recipe uses); `Watcher` deps `hubFor(recipe): Hub` and optional `active()`; `tryRecipe(hubFor, recipe)`; `Rulebook.setCalendarCalls`, `watchBudgetProblem`.
 **Build:** per Key Decisions "Watches on Composio".
 **Tests (behaviours):** a watch with `account` and a read tool reports new items as `item_added`; `every: 5` refused; `server` and `account` together refused; a write tool is refused at run like a non-read MCP tool; the monthly sum refuses the watch that crosses 10,000 and starts the others.
 **Done when:** `npm test -- watch rulebook` passes.
 
-- [ ] Task 4 complete
+- [x] Task 4 complete
 
 ### Task 5: The Clot's tools
 **Files:** `src/composio/api.ts` (`triggerType`, `toolkitTools`), `src/tools.ts`, `src/agent/tool-server.ts`, `src/axes.ts`, `src/rulebook-edit.ts`, `tests/tools.test.ts`, `tests/axes.test.ts`, `tests/rulebook-edit.test.ts`
-**Interfaces:** Produces `DaemonTools.composioToolkit?`, `composioSamples?`, `composioRecipeTry?`, `composioRecipe?` (string results); `RuleEdit` gains `{ kind: "composio"; action: "set"; file; recipe } | { kind: "composio"; action: "remove"; file; name }`; `describeComposioRecipe(recipe): string` (toolkit, triggers mapped, reads named).
+**Interfaces:** Produces `DaemonTools.composioToolkit?`, `composioSamples?`, `composioRecipeTry?`, `composioRecipe?` (string results); `RuleEdit` gains ops `set_composio` (`recipe`, `was?`) and `remove_composio` (`name` = the toolkit, `was?`); `ComposioAuthoring` (`src/composio/authoring.ts`) with `toolkit`, `samples`, `try`, `checkRecipe`, `shadowNote`; `DaemonTools.composioToolkit?`, `composioSamples?`, `composioRecipeTry?` (also takes `trigger?`), `composioRecipe?`; `describeComposioRecipe(recipe): string` (toolkit, triggers mapped, reads named).
 **Build:** per Key Decisions "Tools". Tool descriptions say what each does in one or two sentences and that samples and tried payloads are other people's text.
 **Tests (behaviours):** `composio_toolkit slack` lists both the managed scheme and the nine triggers as webhook; with a trigger it shows its config schema; `composio_samples` wraps as untrusted and clips; `composio_try` on a kept sample shows the rendered event and stores nothing; a draft with a schema error returns the error; `rulebook_composio set` with a write tool in `enrich` is refused naming it; set → posted with its undo, undo removes it; in an outsider's turn it is put to the user; the read-only two are approved under the lock; `composio_try` past `composio_run`'s per-turn limit is refused with the same text.
 **Done when:** `npm test -- tools axes rulebook-edit` passes.
 
-- [ ] Task 5 complete
+- [x] Task 5 complete
 
 ### Task 6: The skill as a plugin
 **Files:** `plugin/.claude-plugin/plugin.json`, `plugin/skills/composio-integration/SKILL.md`, `src/agent/container.ts`, `src/agent/runner.ts`, `src/daemon.ts`, `src/agent/prompts.ts`, `tests/plugin-install.test.ts`, `tests/prompts.test.ts`
@@ -206,14 +206,14 @@
 **Tests (behaviours):** the docker argument lists remove, copy and chown in that order; main-session options carry the plugin and worker ones do not; the prompt has the skill line; `SKILL.md` names all four tools and the config fields `apiKey`, `fields`, `scheme`, `oauthApp`, `selfIsUser`, `triggers` (a test reads the file, so renames break it).
 **Done when:** `npm test -- plugin-install prompts runner` passes.
 
-- [ ] Task 6 complete
+- [x] Task 6 complete
 
 ### Task 7: Docs, full run and the PR
 **Files:** `README.md`, `clots.config.example.json`, spec and plan (only where the build changed a decision)
 **Build:** README's Composio section: the auth forms with Slack, Supabase and an `oauthApp` example; `selfIsUser`; "To add a service, ask a Clot" with what the skill does and what is left to the user; Composio recipes and Composio watches in the Recipes section; the `&close` reminder (resumed sessions keep their old prompt). Example config gains the Slack and Supabase entries of spec section 4.
 **Done when:** `npm test` and `npm run typecheck` pass; the daemon starts against the user's config and every existing account reconnects with no new connection or trigger (log and store); one commit; PR open.
 
-- [ ] Task 7 complete
+- [x] Task 7 complete
 
 ## Manual Verification Checklist
 
@@ -287,4 +287,26 @@
 - Stage 3's onboarding entries.
 
 ## Implementation Notes
-_Filled in by the executor: deviations and why, changed names/interfaces, surprises, notes for the next stage's planner._
+Built 2026-11-21 on branch `stage-2e-any-toolkit` (PR 17). Code and unit tests are done; the live checks are at the end.
+
+**Task 1 findings that shaped the build**
+- Metadata fixtures are saved for slack, reddit, supabase, github, linear, notion, stripe, posthog, googlecalendar and hackernews (a toolkit that needs no connection: its `authConfigDetails` has the scheme `NO_AUTH`, and a session with no connected account runs its tools). Every built-in resolves through `chooseAuth` to the scheme and field it uses today; PostHog's `subdomain` is a required connection field the def adds, so `chooseAuth` takes `provided` names. `triggers.getType` returns the payload schema as `payload`.
+- Supabase's managed OAuth scheme has a required connection field (`full`) a sign-in link cannot give, so a managed entry for it is refused with Supabase's key scheme named.
+- The Slack tools the spec named do not exist: the real ones are `SLACK_TEST_AUTH`, `SLACK_RETRIEVE_DETAILED_USER_INFORMATION`, `SLACK_RETRIEVE_CONVERSATION_INFORMATION` (posts: `SLACK_CHAT_POST_MESSAGE`, `SLACK_SEND_MESSAGE`). Spec and plan name them now. The Slack fixtures are anonymised copies of a live delivery and of the tools' answers; the spike sign-in was the user's own Slack account.
+- The plugin path works: a main session started with `plugins: [{ type: "local", path: "/opt/clots/plugin" }]` in `clot-home` lists `clots:composio-integration`; a missing path is ignored, so a failed install only loses the skill. Composio's redirect URL for an own OAuth app is `https://backend.composio.dev/api/v1/auth-apps/add`.
+
+**Deviations and final names**
+- Auth: `ToolkitInfo` gains `creationRequired` and `noAuth`; `AuthChoice` gains `{ kind: "none" }`. The resolved choice is kept in `state` as `composio.auth.<user>` (the hash of the entry's auth field names, the choice and the toolkit's display name); no column was added. `Composio.managed(a)` (no key, fields or OAuth app) picks the meter's pool. `ComposioApi` gains `toolkitInfo`, `deleteAuthConfig`, `toolkitTools`, `toolkitTriggers`, `triggerType`; `ensureAuthConfig(toolkit, choice, secrets)`; `connectWithKey(user, authConfigId, scheme, fields)`. An OAuth app's auth config is deleted with the connection it served.
+- `place` falls back to the account's name (a place is never empty), not to empty.
+- `composio_try` also takes `trigger?` (which trigger a given payload is for); its reads are not cached and its meter counts are real.
+- `RuleEdit` ops are `set_composio` / `remove_composio`; the Rulebook is kind-aware (`recipes()` carries watch / webhook / composio) with `setReserved`, `setCalendarCalls`, `watchBudgetProblem`, `composioRecipe`, `recipeFile`. The monthly polling limit lives in `config.ts` (`callsPerMonth`, `calendarPollingCalls`, `MONTHLY_POLLING_CALLS`); `Rulebook` applies it greedily in file order, so the watch that crosses is refused and the rest start. `Hub.listTools(name, tool?)` takes the recipe's tool so a Composio hub need not list 170 tools.
+- `src/paths.ts` (`pathGet`, `fillPaths` with `{a|b}`, `fillKey` for keys, `pathsIn`); `ComposioActions.countCall` is the one counter for `composio_run` and `composio_try`; `Meter.used(managed)` returns fractions; `ComposioStore` gains `keepDelivery`, `delivery`, `deliveryByEvent`, `samples`, `pruneDeliveries`, `cachedRead`, `keepRead`, `pruneReads` (`composio_deliveries` also has a `clipped` column).
+- The daemon's `learnIdentity` has a per-account guard and a generic def returns undefined (no retry) when a recipe has no `identity`; `Composio.recipeChanged(toolkit)` is called from the rulebook's on-load hook.
+- Review fixes: tool calls stay on the active connection while a replacement sign-in is pending (`linkManaged` pins nothing; deleting a connection clears its pin); a recipe read is cached and shared per `<account>#<connection>`; `watchBudgetProblem` counts only watches in force; `watch_try` on a Composio account goes through `countCall`; a watch whose account is not configured is refused at set time (`ToolDeps.composio.hasAccount`) and reported, not started, when found in a file.
+- Tests are in `tests/composio-{auth,recipe,samples,tools,api}.test.ts`, `paths.test.ts`, `plugin-install.test.ts` and extend the files the plan names.
+
+**Live results** (the real daemon; a fresh verifier session): V1 a start against the existing config leaves every connection and trigger as it was (the calendar row's hash became `managed`); V2 a mismatched Slack entry is told once per start with the exact text, the others connect; V3 the home Clot used the skill and `composio_toolkit`, proposed `SLACK_CHANNEL_MESSAGE_RECEIVED`, gave an entry with no key, asked about a Slack account of its own and did not edit the config; V9 a recipe for linear and one with a write tool in `enrich` were refused and nothing was written; V10 the Clot's write to the plugin is `Permission denied`, root's is replaced at the next start; V11 a GitHub issue and a Linear issue still arrive as before.
+
+**Left for the user** (needs their sign-ins and accounts): MV-4 and MV-5 (Slack managed sign-in, a recipe from a kept sample), MV-6 (the Clot's own post is dropped, `selfIsUser`), MV-7 (Supabase's two-field key), MV-8 (Reddit watch and its sign-in), and the calendar and Notion parts of MV-11.
+
+**For the next planner.** Composio's metadata is the truth for how a toolkit connects, but Supabase's managed scheme shows it can need more than a link; an entry for such a toolkit says so. Nothing was run against Reddit (no trigger, watch only) or a polled trigger of a generic toolkit. `@composio/core` stays at 0.28.0.

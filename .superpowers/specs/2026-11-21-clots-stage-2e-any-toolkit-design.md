@@ -1,7 +1,7 @@
 # Clots stage 2e follow-up: any Composio toolkit
 
 Date: 2026-11-21
-Status: approved in brainstorming. Not built.
+Status: built on branch `stage-2e-any-toolkit` (code and unit tests; live checks are in the plan's Implementation Notes).
 Builds on: `.superpowers/specs/2026-11-19-clots-stage-2e-composio-design.md`
 (stage 2e, built), which this document extends; section numbers written "2e
 section N" refer to it. Recipes: `.superpowers/specs/2026-10-14-clots-stage-2c-sources-design.md`
@@ -40,13 +40,19 @@ Composio's metadata, read with the project's key, without making connections:
   and each scheme's connection fields (`getConnectedAccountInitiationFields`
   gives the same per scheme).
 - Slack has only OAuth, managed by Composio, and nine triggers, all of them
-  webhook triggers.
+  webhook triggers. Its tools that the recipes use are `SLACK_TEST_AUTH` (who the
+  connection is), `SLACK_RETRIEVE_DETAILED_USER_INFORMATION` and
+  `SLACK_RETRIEVE_CONVERSATION_INFORMATION`; a post is `SLACK_CHAT_POST_MESSAGE`.
 - Reddit has managed OAuth and no triggers at all.
 - Supabase has managed OAuth, or an API key whose connection needs two fields,
   `full` and `bearer_token`. So a key cannot always be sent as `generic_api_key`,
   as 2e does for every key.
 - `triggers.listTypes` gives each trigger's type (webhook or polled) and its
-  config schema; `triggers.getType` gives one trigger's details.
+  config schema; `triggers.getType` gives one trigger's details, with its payload
+  schema under `payload`.
+- A toolkit that needs no connection (Hacker News) lists the scheme `NO_AUTH` and
+  runs its tools in a session with no connection. Supabase's managed OAuth scheme
+  has a required connection field (`full`) that a sign-in link cannot give.
 
 ## 3. Connecting any toolkit
 
@@ -74,10 +80,19 @@ section 3 for every account, built-in or not.
   triggers need the user's own app.
 - The sign-in should be made as the Clots' own account at the service, as
   Linear's key is the Clots' member's (2e section 8). The sign-in message says so.
+- **A toolkit that needs no connection** has none made: the entry gives no key,
+  and its tools run as they are.
 - **A mismatch**: a toolkit with no scheme the entry fits, or a required field
-  the entry does not give, is reported once in the account's Clot channel,
-  naming the schemes the toolkit accepts and each one's fields. The account stays
-  unconnected; nothing else is held up.
+  the entry does not give, is reported once per start in the account's Clot
+  channel, naming the schemes the toolkit accepts and each one's fields. The text
+  reads `<toolkit>:<account> cannot connect: <reason>. <Toolkit name> accepts:
+  <scheme> (fields: a, b), <scheme> (Composio's sign-in).` The account stays
+  unconnected; nothing else is held up. A managed sign-in is refused for a toolkit
+  whose OAuth scheme needs a connection field of its own (Supabase's).
+- **Resolved once**: the choice is made from Composio's metadata when an account
+  has none stored for its entry's auth fields (their names, not their values), and
+  is kept; a working account never reads the metadata again, and a change in
+  Composio's metadata cannot disconnect it.
 - Accounts already connected stay as they are: a built-in toolkit's key resolves
   to the scheme and field it uses now, so upgrading replaces no connection.
 - **Signing in again**: `&composio reconnect <toolkit>:<account>`, in any
@@ -122,13 +137,15 @@ account of that toolkit:
 ```yaml
 composio:
   - toolkit: slack
-    identity: { tool: SLACK_AUTH_TEST, path: user_id }
+    identity: { tool: SLACK_TEST_AUTH, path: user_id }
+    ownWrites:
+      - { tool: SLACK_CHAT_POST_MESSAGE, ids: ["{result.channel}:{result.ts}"] }
     triggers:
       SLACK_CHANNEL_MESSAGE_RECEIVED:
         kind: message
         id: "{payload.channel}:{payload.ts}"
         actorId: "{payload.user}"
-        actor: "{enrich.user.user.real_name}"
+        actor: "{enrich.user.user.profile.real_name|enrich.user.user.name}"
         title: "Message in #{enrich.channel.channel.name}"
         body: "{payload.text}"
         ref: "{payload.ts}"
@@ -137,8 +154,8 @@ composio:
         objects: ["{payload.channel}:{payload.ts}"]
         automatedWhen: { payload.subtype: bot_message }
         enrich:
-          - { as: channel, tool: SLACK_CONVERSATIONS_INFO, args: { channel: "{payload.channel}" } }
-          - { as: user, tool: SLACK_USERS_INFO, args: { user: "{payload.user}" } }
+          - { as: channel, tool: SLACK_RETRIEVE_CONVERSATION_INFORMATION, args: { channel: "{payload.channel}" } }
+          - { as: user, tool: SLACK_RETRIEVE_DETAILED_USER_INFORMATION, args: { user: "{payload.user}" } }
 ```
 
 - **Templates** fill `{path}` as the other recipes do (a missing path gives
@@ -154,8 +171,9 @@ composio:
   kinds, and a recipe's kinds are known for its toolkit's source, so routing and
   other rules can name them. Every other field is optional and falls back as 2e's
   generic mapping does: the `id` to the delivery's, the `actor` to `unknown`, the
-  `body` to the payload, the `subject` to `<toolkit>:<slug>`, and `url`, `ref`
-  and `place` to empty.
+  `body` to the payload, the `subject` to `<toolkit>:<slug>`, the `place` to the
+  account's name (a place is never empty), and `url` and `ref` to empty. A `title`
+  that fills empty takes the generic mapping's.
 - **Event ID**: `<toolkit>:<account>:<the filled id>`, or `composio:<webhook-id>`
   when the `id` is absent or fills empty. A repeat is dropped as for every source.
 - **`identity`**: a read tool and the path of the connection's own user ID in its
@@ -176,7 +194,9 @@ composio:
   answered first, and the reads run in the pipeline's enrichment step.
 - **Read cache and budget**: a read's data is kept for 24 hours by account, tool
   and arguments, and a read already in flight is shared, so a channel's or a
-  person's name is read once a day, not once a message. Once the month's
+  person's name is read once a day, not once a message. A kept read belongs to the
+  connection it ran on, so after a reconnect or a changed credential another
+  service user's data is never reused. Once the month's
   Composio allowance that the account counts against is 80% used, recipe reads
   are skipped (the body says so) until the month resets, so enrichment never
   starves the calendar or the Clots' own tool calls.
@@ -218,8 +238,15 @@ MCP server, and one of its read tools. Everything else about watch recipes holds
 The interval is at least 15 minutes, a tool that is not a read is refused, and
 every run counts against the allowance. The calendars' polling and these watches
 may use at most 10,000 calls a month in all (replacing 2e section 13's limit for
-the calendars alone), checked when the configuration and the rulebook load; a
-watch that would pass it is refused with the reason.
+the calendars alone), checked when the configuration and the rulebook load and
+when a watch is set. A watch that would pass it is refused with the reason (`the
+watch "<name>" would take Composio past 10,000 polling calls a month`): when the
+rulebook loads, it is not started and is listed in its file's problems, and the
+others are; when it is set, it is not set. A watch on an account that is not
+signed in yet skips its run, as the calendar's poll does; one naming an account the
+configuration lacks is refused when set, and reported and not started when found
+in a file. Trying a watch on a Composio account counts against `composio_run`'s
+limits.
 
 ## 8. The Clot's tools
 
@@ -230,7 +257,7 @@ configured:
 |---|---|
 | `composio_toolkit(toolkit, trigger?)` | What Composio says of a toolkit, connected or not: its auth schemes, whether Composio manages one, each scheme's connection fields, its triggers with their type (webhook or polled), and its tools marked read or write. With a trigger, that trigger's config and payload schemas. Only reads. |
 | `composio_samples(account, trigger?)` | The kept payloads of an account's triggers, newest first, wrapped as untrusted data. |
-| `composio_try(recipe, account, sample or payload)` | Runs a draft recipe on a kept sample or on a payload the Clot gives, including its enrichment reads on the connected account, and shows the event it would make, or why it does not fit. Records nothing. Its reads count against `composio_run`'s per-turn and per-day limits (2e section 11). |
+| `composio_try(recipe, account, sample or payload, trigger?)` | Runs a draft recipe on a kept sample or on a payload the Clot gives, including its enrichment reads on the connected account, and shows the event it would make, or why it does not fit. Records nothing. Its reads count against `composio_run`'s per-turn and per-day limits (2e section 11). |
 | `rulebook_composio(action, file, recipe)` | Sets or removes a Composio recipe, as `rulebook_webhook` does. When set, every tool it names is checked: it exists, belongs to the toolkit, and is a read. |
 
 ## 9. The skill
