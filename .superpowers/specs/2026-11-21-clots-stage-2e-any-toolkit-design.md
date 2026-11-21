@@ -130,7 +130,7 @@ composio:
         body: "{payload.text}"
         ref: "{payload.ts}"
         place: "{payload.channel}"
-        subject: "slack:{payload.channel}:{payload.thread_ts}"
+        subject: "slack:{payload.channel}:{payload.thread_ts|payload.ts}"
         objects: ["{payload.channel}:{payload.ts}"]
         automatedWhen: { payload.subtype: bot_message }
         enrich:
@@ -139,8 +139,14 @@ composio:
 ```
 
 - **Templates** fill `{path}` as the other recipes do (a missing path gives
-  nothing). They read `payload`, the trigger's payload, and `enrich.<as>`, the
-  data of each of the recipe's own reads. Nothing else is in reach.
+  nothing), and `{a|b}` takes the first of the paths that is present. They read
+  `payload`, the trigger's payload, and `enrich.<as>`, the data of each of the
+  recipe's own reads. Nothing else is in reach. `enrich.` may be used only in
+  `title`, `actor` and `body`, the fields the enrichment step keeps; the others
+  are filled when the delivery arrives, before any read.
+- **Keys** (`id`, `actorId`, each of `objects`) count as empty when any path in
+  them is missing, so `"{payload.channel}:{payload.ts}"` never fills to a partial
+  key that would make later events look like repeats.
 - **`kind`** and **`title`** are required. `kind` follows the rulebook's rule for
   kinds, and a recipe's kinds are known for its toolkit's source, so routing and
   other rules can name them. Every other field is optional and falls back as 2e's
@@ -168,7 +174,9 @@ composio:
 - **Outsider**: a recipe's events are always an outsider's. A recipe cannot
   change that, nor how any write is rated, nor add an undo.
 - **Limits**: a recipe cannot name a toolkit that has a built-in mapping (Stripe,
-  Linear, Notion, Google Calendar, PostHog). A trigger the recipe does not list is
+  Linear, Notion, Google Calendar, PostHog), nor one named like a built-in source
+  (`github`, `sentry`, `vercel`, …) or a webhook or watch recipe in force, since
+  the toolkit becomes its events' source. A trigger the recipe does not list is
   mapped generically. Two recipes for one toolkit: the first in file order is in
   force and the other is reported, as two recipes of one name are now.
 - **Where it lives**: in `global.yaml` or a Clot's own file, under `composio:`,
@@ -206,17 +214,18 @@ configured:
 |---|---|
 | `composio_toolkit(toolkit, trigger?)` | What Composio says of a toolkit, connected or not: its auth schemes, whether Composio manages one, each scheme's connection fields, its triggers with their type (webhook or polled), and its tools marked read or write. With a trigger, that trigger's config and payload schemas. Only reads. |
 | `composio_samples(account, trigger?)` | The kept payloads of an account's triggers, newest first, wrapped as untrusted data. |
-| `composio_recipe_try(recipe, account, sample or payload)` | Runs a draft recipe on a kept sample or on a payload the Clot gives, including its enrichment reads on the connected account, and shows the event it would make, or why it does not fit. Records nothing. |
-| `composio_recipe(action, file, recipe)` | Sets or removes a Composio recipe, as `webhook_recipe` does. When set, every tool it names is checked: it exists, belongs to the toolkit, and is a read. |
+| `composio_try(recipe, account, sample or payload)` | Runs a draft recipe on a kept sample or on a payload the Clot gives, including its enrichment reads on the connected account, and shows the event it would make, or why it does not fit. Records nothing. |
+| `rulebook_composio(action, file, recipe)` | Sets or removes a Composio recipe, as `rulebook_webhook` does. When set, every tool it names is checked: it exists, belongs to the toolkit, and is a read. |
 
 ## 9. The skill
 
 The daemon ships a skill, `composio-integration`, in a local plugin of its own
 (`plugin/` in the repository). Whenever a Clot's container starts, the daemon
-copies the plugin into the Clot's home, replacing what is there, so it changes
-with the daemon, and the main session loads it. (The home folder is the Clot's
-own volume, so a file built into the image would be hidden, and the sessions load
-no settings of their own, so a skill in `~/.claude/skills` would not be found.)
+copies the plugin to `/opt/clots/plugin` in the container, replacing what is
+there, so it changes with the daemon, and the main session loads it. The folder
+is the root user's and only readable by the Clot, so a Clot steered by outsider
+text cannot rewrite its own instructions. (The sessions load no settings of their
+own, so a skill in `~/.claude/skills` would not be found.)
 It takes the Clot through adding a service:
 
 1. Read the toolkit with `composio_toolkit`, and the service's own documentation
@@ -273,7 +282,7 @@ The system prompt's Composio lines gain one: to add a service, use the skill.
   enrichment against a fake Composio, each fallback, the self-caused drop through
   `identity` and `actorId`, `selfIsUser`, and the intake handling a recipe's
   trigger and an unlisted one.
-- `composio_recipe_try` on a kept sample, and the samples' limits.
+- `composio_try` on a kept sample, and the samples' limits.
 - A watch recipe on a Composio read tool, and the monthly limit refusing one.
 - The plugin is installed into a container's home and replaced on the next start.
 

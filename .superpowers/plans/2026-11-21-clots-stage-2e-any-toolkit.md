@@ -26,13 +26,15 @@
 - `src/composio/auth.ts` (create): `ToolkitInfo`, `AuthChoice`, pure `chooseAuth`, the mismatch texts.
 - `src/composio/component.ts` (modify): every account connects through `chooseAuth`; sign-in text from `info.name`; `selfIsUser`; identity from the recipe for generic toolkits; deliveries kept.
 - `src/composio/store.ts` (modify): `composio_deliveries` table and its methods.
+- `src/paths.ts` (create): `pathGet`, `fillPaths` (with `{a|b}`), moved from `watch.ts`.
+- `src/composio/authoring.ts` (create): the logic of the four Clot tools.
 - `src/composio/recipe.ts` (create): the recipe schema's helpers, `recipeMapper`, `recipeEnricher`, `renderRecipe`, the read check.
 - `src/composio/intake.ts` (modify): keep the delivery; pick the recipe mapper before the generic one.
 - `src/composio/toolkits/generic.ts`, `index.ts` (modify): the generic def's `identity` reads the recipe in force.
 - `src/config.ts` (modify): `fields`, `scheme`, `oauthApp`, `selfIsUser` on generic entries; `apiKey` optional there.
 - `src/rulebook.ts`, `src/rulebook-edit.ts`, `src/events/kinds.ts` (modify): `composio:` list in rule files, its edit kind and description, recipe kinds known for the toolkit's source; `account` form of a watch.
 - `src/watch.ts` (modify): `Watcher` and `tryRecipe` take a hub chosen per recipe; a Composio hub.
-- `src/tools.ts`, `src/agent/tool-server.ts`, `src/axes.ts` (modify): `composio_toolkit`, `composio_samples`, `composio_recipe_try`, `composio_recipe`.
+- `src/tools.ts`, `src/agent/tool-server.ts`, `src/axes.ts` (modify): `composio_toolkit`, `composio_samples`, `composio_try`, `rulebook_composio`.
 - `plugin/` (create, at repo root): `.claude-plugin/plugin.json` and `skills/composio-integration/SKILL.md`.
 - `src/agent/container.ts`, `src/agent/runner.ts`, `src/daemon.ts` (modify): install the plugin at container start; main sessions load it; wiring.
 - `src/agent/prompts.ts` (modify): one line pointing at the skill and the four tools.
@@ -71,7 +73,7 @@
 - Each read: `composio.tool(slug)` must exist, belong to the toolkit, and pass `isRead` from `rating.ts`; else the line `Could not read <as>: <slug> is not a read tool.` Runs through `composio.run` on the event's account (counted by the meter). A failed run → `Could not read <as>: <error>.` appended to the body; that read's `enrich.<as>` stays empty. Field fallbacks after rendering: `actor` → `unknown`, `body` → the clipped payload JSON, `subject` → `<toolkit>:<slug>`, others → empty; `title` filling empty → the generic mapper's title.
 - Identity: the generic def's `identity` uses the recipe in force (run the tool, read `path` from the data; a missing or empty value throws, so the existing retry applies). Setting or replacing a recipe whose `identity` changed clears the stored identity of that toolkit's accounts and learns it again.
 - Kinds: a recipe's kinds are known for its toolkit's source in `kinds.ts` the way a webhook recipe's kinds are for its name, so rules naming `source: slack, kind: message` validate.
-- Set-time checks in the `composio_recipe` tool (they need the network, so a hand-edited file only gets the run-time ones): the toolkit has no built-in def; every `enrich` and `identity` tool exists, belongs to the toolkit and is a read. Refusal texts name the tool and the reason.
+- Set-time checks in the `rulebook_composio` tool (they need the network, so a hand-edited file only gets the run-time ones): the toolkit has no built-in def; every `enrich` and `identity` tool exists, belongs to the toolkit and is a read. Refusal texts name the tool and the reason.
 
 **Watches on Composio**
 - `WatchSchema` gains `account?: "<toolkit>:<account>"`; exactly one of `server` and `account`. With `account`: `every ≥ 15`, `notReadOnly` refused, `tool` must start with `<TOOLKIT>_`.
@@ -81,13 +83,45 @@
 **Tools** (main session only, present when `sources.composio` is not empty; `TOOL_AXES`: all `LOW`, the two that only read approved under the lock)
 - `composio_toolkit({ toolkit, trigger? })`: without `trigger`, the name, schemes with their fields, whether managed, each trigger's slug and type, and up to 100 tool slugs each marked read or write by `isRead`; with `trigger`, that trigger's config schema and payload schema (from `triggers.getType`), clipped to 6,000 characters. Answers for any toolkit, connected or not.
 - `composio_samples({ account, trigger? })`: newest first, at most 5, each with its webhook ID, slug, time and payload clipped to 4,000 characters, the whole wrapped as untrusted data.
-- `composio_recipe_try({ recipe, account, sample?: webhookId, payload?: object })`: one of `sample`/`payload` (none → the newest sample of the recipe's first trigger). Parses the draft with the schema (errors returned as text), applies both steps exactly as live (reads run on the account; the tool says so in its description), and shows the event's fields. Records nothing.
-- `composio_recipe({ action: "set" | "remove", file, recipe | name })`: a new `RuleEdit` kind, applied, undone, described and refused for outsiders' turns exactly as `webhook_recipe` is.
+- `composio_try({ recipe, account, sample?: webhookId, payload?: object })`: one of `sample`/`payload` (none → the newest sample of the recipe's first trigger). Parses the draft with the schema (errors returned as text), applies both steps exactly as live (reads run on the account; the tool says so in its description), and shows the event's fields. Records nothing.
+- `rulebook_composio({ action: "set" | "remove", file, recipe | name })`: a new `RuleEdit` kind, applied, undone, described and refused for outsiders' turns exactly as `rulebook_webhook` is.
 
 **The skill**
-- The Agent SDK sessions here load no filesystem settings, so `~/.claude/skills` would not be found. Ship it as a local plugin: `plugin/.claude-plugin/plugin.json` (`{ "name": "clots", "version": "1.0.0" }`) and `plugin/skills/composio-integration/SKILL.md`. At every container start the daemon copies `plugin/` to `/home/clot/.clots/plugin` in the container (remove the old folder, `docker cp`, `chown clot`), and main-session query options get `plugins: [{ type: "local", path: "/home/clot/.clots/plugin" }]`. Workers and the sweep do not get it. Task 1 probes that the Skill tool lists `clots:composio-integration` in a main session this way; if the SDK refuses a plugin path inside the container, stop and tell the user before Task 6.
+- The Agent SDK sessions here load no filesystem settings, so `~/.claude/skills` would not be found. Ship it as a local plugin: `plugin/.claude-plugin/plugin.json` (`{ "name": "clots", "version": "1.0.0" }`) and `plugin/skills/composio-integration/SKILL.md`. At every container start the daemon copies `plugin/` to `/opt/clots/plugin` in the container as root (`docker exec -u root` removes and recreates the folder, `docker cp` fills it, `chmod -R a+rX,go-w` leaves it root-owned and read-only to the Clot; `/opt` is outside the home volume, and copying on every start keeps it current), and main-session query options get `plugins: [{ type: "local", path: "/opt/clots/plugin" }]`. Workers and the sweep do not get it. Task 1 probes that the Skill tool lists `clots:composio-integration` in a main session this way; if the SDK refuses a plugin path inside the container, stop and tell the user before Task 6.
 - `SKILL.md` follows spec section 9's six steps, and adds: the exact config entry forms of spec section 4; choose webhook triggers over polled ones; for a polled-only or trigger-less toolkit, ask the user before setting a polled trigger or watch, giving its monthly call cost; write recipes against at least one kept sample and try them on every kept sample; never put a secret in a recipe or a message; the Clot can set the recipe but only the user edits `clots.config.json` and `.env`. Keep it under 150 lines.
 - System prompt: one line in the Composio part: to add a service, use the `composio-integration` skill.
+
+### From the plan review (2026-11-21)
+
+**Auth, resolved once**
+- `apiKey === undefined` means "managed" today (`component.ts:91,232,503,514`, `intake.ts:103`). Replace every such test with the account's resolved auth kind: the meter's managed pool, the expired-connection message (a `fields` account is told which `.env` keys to replace, never sent a link), and the sign-in path.
+- Resolve once: store the `AuthChoice` and a hash of the entry's auth fields (`apiKey`/`fields`/`scheme`/`oauthApp` names, not values) per account in `state` (`composio.auth.<user>`), and run `chooseAuth` only when that hash changes or nothing is stored. A working account never re-reads metadata at start, and a later change in Composio's metadata cannot disconnect it. No new columns on `composio_accounts`: `ComposioStore` has no migration helper, and the user's database already has the table.
+- The stored `authConfigId` is reused only for the same kind and scheme (`component.ts:233`). A changed choice makes a new auth config and connection through the staged swap; the old connection stays the tool target and keeps its triggers and its intake lookup until the new one is active (for a sign-in, until the user completes it), then triggers move and the old is deleted. Never overwrite `connectionId` before the new connection is active (`component.ts:374` does today).
+- When a sign-in completes, `watchSignIn` runs the account's trigger sync and identity read at once, not at the next daily check.
+- The own-account sign-in line is not posted for `googlecalendar` (the calendar is the user's own by design).
+- `fields` and `oauthApp` values must be `.env` keys not used by the daemon for anything else: refuse `COMPOSIO_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, the Discord and GitHub tokens, any `RECIPE_*` key, and any key another part of the config names.
+- The key hash is a SHA-256 of a JSON array `[scheme, [name, value]…]` sorted by name, except that a lone `generic_api_key` keeps today's formula.
+- `chooseAuth` also reads `getAuthConfigCreationFields` for `oauthApp` and refuses with the missing ones named. A toolkit marked `noAuth` needs no entry fields; Task 1 probes how Composio connects one, and `chooseAuth` returns `{ kind: "none" }` for it.
+
+**Recipes**
+- Source names must not collide: refuse a Composio recipe (and a generic account) whose toolkit is a built-in source (`github`, `sentry`, `vercel`, …: `isBuiltinSource`) or the name of a webhook or watch recipe in force, and refuse a webhook or watch recipe named like a Composio recipe's toolkit. Otherwise `enricherBySource` gives the event to the wrong enricher (`daemon.ts:450`).
+- The pipeline keeps only `body`, `title` and `actor` after enrichment (`pipeline.ts:120-126`): the schema refuses `{enrich.` in any other field.
+- Keys (`id`, `actorId`, `objects`) fill empty when any path is missing; `fillPaths` gains `{a|b}` (first present). Move `pathGet`/`fillPaths` to `src/paths.ts`; `watch.ts`, `webhook-recipe.ts` and `recipe.ts` import them.
+- A delivery whose payload was clipped is not enriched; the event keeps its intake text and the body says the payload was too large to read.
+- `identity`: before each run, check the tool is still a read (as `enrich` is).
+- `learnIdentity` takes a per-user guard so a retry chain is never started twice; the generic def gets the recipe through a lookup in `ComposioDeps`, and `Composio.recipeChanged(toolkit)` (called from the rulebook's on-load hook) clears and relearns identity for that toolkit's accounts. A generic account with no recipe identity does not retry.
+- A recipe shadowed by an earlier one for the same toolkit is reported by `rulebook_composio` as set but not in force, naming the one that is.
+- Edits follow the existing pattern: `RuleEdit` ops `set_composio` / `remove_composio` with `was?`, mirroring `set_webhook` (`rulebook-edit.ts:275-295`), so an undo never overwrites a later change. The tool input is derived from the exported recipe schema, not copied by hand.
+- Tools are named after the existing ones: `rulebook_composio` (as `rulebook_webhook`) and `composio_try` (as `watch_try`). Their logic lives in `src/composio/authoring.ts`; `tools.ts` only passes through.
+
+**Deliveries and watches**
+- `composio_deliveries` inserts with `INSERT OR IGNORE` on `webhook_id`, in the same transaction as the event.
+- `WatchRecipe.server` becoming optional touches `watch.ts`, `daemon.ts:519,570`, `describeWatch` (`rulebook-edit.ts:58`) and `tool-server.ts`'s watch input: add one `watchTarget(recipe)` helper and use it everywhere.
+- A Composio watch on an account that is not active skips its run, as the calendar's poll does.
+- The 10,000-call check is one function in `config.ts` (today's at `config.ts:320-322`), called by config load, rulebook load and the watch edit.
+
+**The skill**
+- For `oauthApp`, the skill tells the user the redirect URL to register in their app (Task 1 records Composio's) and that scopes come from the toolkit's auth config.
 
 ## Tasks
 
@@ -121,7 +155,7 @@
 ### Task 3: Deliveries and recipes at intake and enrichment
 **Files:** `src/composio/store.ts`, `src/composio/recipe.ts`, `src/composio/intake.ts`, `src/composio/toolkits/{generic,index}.ts`, `src/enrich.ts`, `src/rulebook.ts`, `src/events/kinds.ts`, `src/daemon.ts` (wiring only), `tests/composio-recipe.test.ts`, `tests/composio-samples.test.ts`, `tests/composio-intake.test.ts`, `tests/rulebook.test.ts`
 **Interfaces:**
-- Produces: `ComposioRecipe` type and `parseComposioRecipe(value): ComposioRecipe`; `Rulebook.composioRecipe(toolkit): ComposioRecipe | undefined`; `recipeMapper(recipe: ComposioRecipe): Mapper`; `recipeEnricher(d: { composio: Composio; recipe(toolkit: string): ComposioRecipe | undefined; delivery(eventId: string): { payload: unknown; user: string } | undefined }): Enricher`; `renderRecipe(recipe, slug, account, payload, enrich, webhookId, receivedAt): Mapped` (pure, used by both steps and by `composio_recipe_try`); store `composio.keepDelivery(row)`, `composio.deliveryByEvent(eventId)`, `composio.samples(user, slug?)`, `composio.pruneDeliveries(now)`; intake deps gain `recipe(toolkit)`.
+- Produces: `ComposioRecipe` type and `parseComposioRecipe(value): ComposioRecipe`; `Rulebook.composioRecipe(toolkit): ComposioRecipe | undefined`; `recipeMapper(recipe: ComposioRecipe): Mapper`; `recipeEnricher(d: { composio: Composio; recipe(toolkit: string): ComposioRecipe | undefined; delivery(eventId: string): { payload: unknown; user: string } | undefined }): Enricher`; `renderRecipe(recipe, slug, account, payload, enrich, webhookId, receivedAt): Mapped` (pure, used by both steps and by `composio_try`); store `composio.keepDelivery(row)`, `composio.deliveryByEvent(eventId)`, `composio.samples(user, slug?)`, `composio.pruneDeliveries(now)`; intake deps gain `recipe(toolkit)`.
 **Build:** per Key Decisions "Deliveries and samples" and "Recipes". Intake order for a non-built-in toolkit: recipe mapper if the recipe lists the slug, else the generic mapper when the account has triggers; keep the delivery either way. Self-caused check skipped for `selfIsUser`.
 **Tests (behaviours):**
 - schema: a built-in toolkit, a fourth read, a duplicate `as`, a tool of another toolkit, an empty `triggers` → each refused with its reason; two recipes for one toolkit → second reported;
@@ -147,7 +181,7 @@
 **Files:** `src/composio/api.ts` (`triggerType`, `toolkitTools`), `src/tools.ts`, `src/agent/tool-server.ts`, `src/axes.ts`, `src/rulebook-edit.ts`, `tests/tools.test.ts`, `tests/axes.test.ts`, `tests/rulebook-edit.test.ts`
 **Interfaces:** Produces `DaemonTools.composioToolkit?`, `composioSamples?`, `composioRecipeTry?`, `composioRecipe?` (string results); `RuleEdit` gains `{ kind: "composio"; action: "set"; file; recipe } | { kind: "composio"; action: "remove"; file; name }`; `describeComposioRecipe(recipe): string` (toolkit, triggers mapped, reads named).
 **Build:** per Key Decisions "Tools". Tool descriptions say what each does in one or two sentences and that samples and tried payloads are other people's text.
-**Tests (behaviours):** `composio_toolkit slack` lists both the managed scheme and the nine triggers as webhook; with a trigger it shows its config schema; `composio_samples` wraps as untrusted and clips; `composio_recipe_try` on a kept sample shows the rendered event and stores nothing; a draft with a schema error returns the error; `composio_recipe set` with a write tool in `enrich` is refused naming it; set → posted with its undo, undo removes it; in an outsider's turn it is put to the user; the read-only two are approved under the lock.
+**Tests (behaviours):** `composio_toolkit slack` lists both the managed scheme and the nine triggers as webhook; with a trigger it shows its config schema; `composio_samples` wraps as untrusted and clips; `composio_try` on a kept sample shows the rendered event and stores nothing; a draft with a schema error returns the error; `rulebook_composio set` with a write tool in `enrich` is refused naming it; set → posted with its undo, undo removes it; in an outsider's turn it is put to the user; the read-only two are approved under the lock.
 **Done when:** `npm test -- tools axes rulebook-edit` passes.
 
 - [ ] Task 5 complete
@@ -197,7 +231,7 @@
 
 #### MV-5: A recipe from a kept sample
 - **Steps:** 1. Post a message in the channel. 2. Ask the Clot to finish the Slack setup.
-- **Expected:** the first message arrives as a generic `trigger` event; the Clot calls `composio_samples`, `composio_recipe_try` (shown event has the channel's and author's names), then `composio_recipe set`, posted with its undo. The next message arrives as `slack / message`, title `Message in #clots-test`, actor the author's name, outsider.
+- **Expected:** the first message arrives as a generic `trigger` event; the Clot calls `composio_samples`, `composio_try` (shown event has the channel's and author's names), then `rulebook_composio set`, posted with its undo. The next message arrives as `slack / message`, title `Message in #clots-test`, actor the author's name, outsider.
 - **How the executor runs it:** `[user-only]` for chat and Slack; executor checks the events table.
 
 #### MV-6: The Clot's own Slack message is not an event
@@ -222,9 +256,9 @@
 - **Expected:** both refused with the reason; nothing written to the rule file.
 - **How the executor runs it:** `[user-only]` for the chat; the executor confirms with `git diff rulebook/` that no file changed.
 
-#### MV-10: The plugin is replaced on restart
-- **Steps:** `docker exec clot-home sh -c 'echo x >> /home/clot/.clots/plugin/skills/composio-integration/SKILL.md'`; restart the daemon; `docker exec clot-home tail -1 /home/clot/.clots/plugin/skills/composio-integration/SKILL.md`.
-- **Expected:** the last line is the repository file's, not `x`.
+#### MV-10: The Clot cannot change its plugin
+- **Steps:** `docker exec clot-home sh -c 'echo x >> /opt/clots/plugin/skills/composio-integration/SKILL.md'`; then `docker exec -u root clot-home sh -c 'echo x >> /opt/clots/plugin/skills/composio-integration/SKILL.md'`; restart the daemon; `docker exec clot-home tail -1 /opt/clots/plugin/skills/composio-integration/SKILL.md`.
+- **Expected:** the first write fails with "Permission denied"; after the restart the last line is the repository file's, not `x`.
 - **How the executor runs it:** CLI.
 
 #### MV-11: Regressions
