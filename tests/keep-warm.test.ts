@@ -112,7 +112,7 @@ describe("Clot.keepWarm", () => {
   let clot: Clot;
   let now: Date;
   let log: string[];
-  const router: Router = { decide: async () => ({ effort: "medium" }) };
+  const router: Router = { decide: async () => ({ effort: "high" }) };
 
   beforeEach(async () => {
     store = new Store(":memory:");
@@ -165,6 +165,18 @@ describe("Clot.keepWarm", () => {
     expect(log).toEqual(["graphite: reply: ok"]);
     // The ping is a turn: the clock starts again.
     expect(clot.lastTurnAt()).toBe(now.getTime());
+  });
+
+  it("pings at low effort for that turn only: the turns after it, even after a failed ping, run at their own", async () => {
+    await say("hello");
+    expect(runner.calls[0].effort).toBe("high");
+    runner.ok = false;
+    now = new Date(now.getTime() + KEEP_WARM_AFTER_MS);
+    await clot.keepWarm();
+    expect(runner.calls[1]).toMatchObject({ prompt: KEEP_WARM_PROMPT, effort: "low" });
+    runner.ok = true;
+    await say("again");
+    expect(runner.calls[2]).toMatchObject({ prompt: "again", effort: "high" });
   });
 
   it("does not ping while a turn runs, and the ping makes a message wait, then run", async () => {

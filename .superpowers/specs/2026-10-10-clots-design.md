@@ -152,8 +152,10 @@ Entry points other than events:
   Clot's own last turn that reached the model: a message, an event, a worker's
   report, a recap or an earlier successful ping. Each Clot has its own clock, kept
   across restarts, so a Clot that was busy 25 minutes ago is pinged 30 minutes
-  from now. A ping is a turn of the main session on the same model, with the same
-  tools in the request (so the prefix matches) and every tool call refused. It
+  from now. A ping is a turn of the main session on the same model, at low effort
+  (effort is set per turn and does not change the cached prefix on the current
+  models, so the ping is cheap and the next turn runs at its own effort), with the
+  same tools in the request (so the prefix matches) and every tool call refused. It
   runs under the Clot's drain, so it never runs beside a turn, and a message that
   arrives meanwhile waits for it and then runs. The ping and the reply are
   written to the daemon's log only: not to chat, not to the Clot's tail. The
