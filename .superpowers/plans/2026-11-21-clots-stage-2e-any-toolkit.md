@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans. This plan gives structure and decisions, not code. You write the implementation (TDD per task). Track tasks with the checkboxes. After all tasks, run the **Manual Verification Checklist** (or hand it to the user if they asked to do it), then fill in **Implementation Notes**.
 
 **Goal:** Any Composio toolkit connects from one `sources.composio` entry whatever its auth scheme, and the Clots extend the integrations themselves: they research a toolkit, write a Composio recipe (data, never code) that turns its trigger payloads into enriched events, try it on kept samples and set it, or set a watch recipe on a read tool for a toolkit without triggers.
-**Specs:** `.superpowers/specs/2026-11-19-clots-stage-2e-composio-design.md`, sections 1, 3, 4, 5, 11, 13–18 (this finishes stage 2e; it is not a new stage). The rest of 2e is built: `.superpowers/plans/2026-11-19-clots-stage-2e-composio.md` (read its Key Decisions and Implementation Notes first). Recipes: 2c spec sections 14 and 15.
+**Specs:** `.superpowers/specs/2026-11-21-clots-stage-2e-any-toolkit-design.md` (this follow-up; "spec section N" below means this file). It finishes stage 2e and is not a stage of its own: 2e is built per `.superpowers/specs/2026-11-19-clots-stage-2e-composio-design.md` and `.superpowers/plans/2026-11-19-clots-stage-2e-composio.md` (read that plan's Key Decisions and Implementation Notes first). Recipes: 2c spec sections 14 and 15.
 **Architecture:** Auth becomes a pure choice from Composio's own toolkit metadata (`chooseAuth`), used by the component for every account, built-in or not. Composio recipes are a new list in rulebook files, checked by zod like the webhook and watch recipes. A recipe is applied in two steps that fit the existing pipeline: a synchronous mapper at intake (IDs, actor, objects, provisional text from the payload) and an enricher before routing (the recipe's read calls, then every text field rendered again). Deliveries of non-built-in toolkits are kept in a table that serves both the enricher (its payload) and the Clot's samples. The skill reaches the Clot as a local plugin the daemon writes into the Clot's home at container start.
 **Tech Stack:** as stage 2e: TypeScript on Node, `@composio/core` 0.28.0 (no upgrade), better-sqlite3, zod 4, vitest, `@anthropic-ai/claude-agent-sdk`.
 
@@ -86,7 +86,7 @@
 
 **The skill**
 - The Agent SDK sessions here load no filesystem settings, so `~/.claude/skills` would not be found. Ship it as a local plugin: `plugin/.claude-plugin/plugin.json` (`{ "name": "clots", "version": "1.0.0" }`) and `plugin/skills/composio-integration/SKILL.md`. At every container start the daemon copies `plugin/` to `/home/clot/.clots/plugin` in the container (remove the old folder, `docker cp`, `chown clot`), and main-session query options get `plugins: [{ type: "local", path: "/home/clot/.clots/plugin" }]`. Workers and the sweep do not get it. Task 1 probes that the Skill tool lists `clots:composio-integration` in a main session this way; if the SDK refuses a plugin path inside the container, stop and tell the user before Task 6.
-- `SKILL.md` follows spec section 11's six steps, and adds: the exact config entry forms of spec section 4; choose webhook triggers over polled ones; for a polled-only or trigger-less toolkit, ask the user before setting a polled trigger or watch, giving its monthly call cost; write recipes against at least one kept sample and try them on every kept sample; never put a secret in a recipe or a message; the Clot can set the recipe but only the user edits `clots.config.json` and `.env`. Keep it under 150 lines.
+- `SKILL.md` follows spec section 9's six steps, and adds: the exact config entry forms of spec section 4; choose webhook triggers over polled ones; for a polled-only or trigger-less toolkit, ask the user before setting a polled trigger or watch, giving its monthly call cost; write recipes against at least one kept sample and try them on every kept sample; never put a secret in a recipe or a message; the Clot can set the recipe but only the user edits `clots.config.json` and `.env`. Keep it under 150 lines.
 - System prompt: one line in the Composio part: to add a service, use the `composio-integration` skill.
 
 ## Tasks
@@ -234,7 +234,7 @@
 
 ## Out of Scope
 
-- Recipes that rate writes or add undo inverses; Clot-written code run by the daemon (spec section 18).
+- Recipes that rate writes or add undo inverses; Clot-written code run by the daemon (spec section 14).
 - Moving Linear or Notion to webhook triggers through `oauthApp`.
 - Upgrading `@composio/core`.
 - Stage 3's onboarding entries.
