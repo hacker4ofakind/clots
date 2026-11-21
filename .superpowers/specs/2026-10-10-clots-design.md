@@ -81,6 +81,7 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Usage meter | Keeps the account's five-hour and seven-day utilization, from turns' rate-limit events and the SDK's usage call. | Agent SDK |
 | Spend log | Books every model call's estimated cost to its Clot, worker, the daemon or the sweep; answers `&spend`; warns once a week per Clot past a set figure. | Store, chat |
 | Sweep | One throwaway session for the whole daemon every 90 minutes: reads the connectors of the claude.ai login and turns what changed into events, routed like a shared source's. | Connectors, routing |
+| Cache keeper | Keeps each Clot's prompt cache from expiring between turns: 55 minutes after a Clot's last turn it sends its session one small message that is answered and logged, never posted. | Runner, store |
 | Re-grounder | A throwaway session at each rollover that checks the recap against the current state. | Recap |
 | `clots` CLI | `clots add`, secret entry, status. Runs on the PC and talks to the daemon. | Network path to the Pi |
 
@@ -143,6 +144,24 @@ Entry points other than events:
 - **The 90-minute tick** starts the sweep (section 9). It is skipped while a gate
   holds or the last sweep is still running. Its findings enter at step 3 as
   events from a shared source: pre-filtered, routed and triaged like any other.
+- **The cache keep-warm ping.** Claude Code caches a conversation's prefix for one
+  hour on a subscription within the plan's included usage (five minutes on usage
+  credits or an API key), and every request that reads the cache starts the hour
+  again. The daemon's one-minute clock sends a Clot's session a small message,
+  "keeping the cache warm, reply ok", once 55 minutes have passed since that
+  Clot's own last turn that reached the model: a message, an event, a worker's
+  report, a recap or an earlier ping. Each Clot has its own clock, kept across
+  restarts, so a Clot that was busy 25 minutes ago is pinged 30 minutes from now.
+  A ping is a turn of the main session on the same model, with the same tools in
+  the request (so the prefix matches) and every tool call refused. It runs
+  under the Clot's drain, so it never runs beside a turn, and a message that
+  arrives meanwhile waits for it and then runs. The ping and the reply are
+  written to the daemon's log only: not to chat, not to the Clot's tail. The
+  turn's cost is booked, and a usage limit it hits pauses the Clot like any
+  turn's. A Clot with no turn yet in its session, or paused, is not pinged; a
+  ping that fails is tried again after 5 minutes. The sweep is a session of its
+  own and does not warm any Clot's cache, so it does not stand in for a ping.
+  Pings go on for as long as the daemon runs.
 
 Whenever several queued events are delivered together, each is shown with its
 arrival time in the user's configured timezone.

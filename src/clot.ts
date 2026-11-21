@@ -7,6 +7,7 @@ import { COMMAND_USAGE, parseCommand, type Command } from "./commands.js";
 import { digestText, planDrain, type DigestEntry } from "./digest.js";
 import { describeGate, waitingUntil, type GateState } from "./gates.js";
 import { formatEvent, linkTo } from "./events/format.js";
+import { KEEP_WARM_PROMPT, KEEP_WARM_RETRY_MS } from "./keep-warm.js";
 import type { ClotEvent } from "./events/types.js";
 import { OPUS } from "./models.js";
 import { REGROUND_FAILED_NOTE, regroundNote, type RegroundOutcome } from "./reground.js";
@@ -49,6 +50,8 @@ export interface ClotDeps {
   composio?: { undo(clot: string): Promise<string> };
   /** One line per listed worker, for every prompt and the recap. */
   workerLines?: (clot: string) => string[];
+  /** Where a keep-warm turn's reply goes. It is never posted in chat or kept in the Clot's tail. */
+  keepWarmLog?: (clot: string, text: string) => void;
   /** Called when a turn of this Clot hits the usage limit. resetsAt is in Unix seconds. */
   onLimit?: (resetsAt: number) => void;
   /** Called when this Clot's pause ends. */
@@ -87,7 +90,9 @@ const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: 
 export class Clot {
   private live?: TurnHandle;
   /** What the running turn is for. Only a chat turn takes in the user's messages while it runs. */
-  private liveKind: TurnKind = "chat";
+  private liveKind: TurnKind | "keep-warm" = "chat";
+  /** No keep-warm ping is tried before this time: the last one failed. */
+  private keepWarmRetryAt = 0;
   /** The running chat turn's context, so a message fed into it joins the text the write reviewer may trust. */
   private liveContext?: TurnContext;
   /** The last of the daemon's notes that the running turn was given, or 0 when it was given none. */
@@ -107,6 +112,9 @@ export class Clot {
       store.createSession({ id: this.d.newId(), clot: name, channelId, seed: null });
       await chat.post(channelId, `${chat.mention(this.d.userId)} ${name} is ready.`);
     }
+
+    // A session that already ran has a cache of unknown age: its keep-warm clock starts now.
+    if (store.activeSession(name)!.started && this.lastTurnAt() === undefined) store.setState(`last-turn:${name}`, String(this.d.now().getTime()));
 
     if (store.requeueRunning(name) > 0) store.setInterrupted(store.activeSession(name)!.id, true);
     // Nothing is running after a restart either.
@@ -195,6 +203,67 @@ export class Clot {
   /** Whether a turn is running. */
   isBusy(): boolean {
     return this.live !== undefined;
+  }
+
+  /** When this Clot's last turn that reached the model ended (kept across restarts), or undefined before its first. */
+  lastTurnAt(): number | undefined {
+    const value = this.d.store.getState(`last-turn:${this.d.name}`);
+    return value === undefined ? undefined : Number(value);
+  }
+
+  /** Notes that a turn reached the model, which started its cache's lifetime over. */
+  private touch(result: TurnResult): void {
+    if (result.ok || result.responded === true || result.contextPercent > 0) this.d.store.setState(`last-turn:${this.d.name}`, String(this.d.now().getTime()));
+  }
+
+  /**
+   * Sends the session one small message so that its prompt cache does not expire, when nothing else is using the Clot.
+   * It holds the drain, so it never runs beside another turn and a message that arrives meanwhile waits, then runs. The
+   * message and the reply go to the daemon's log only: not to chat, not to the tail, and the tools it may not use are refused.
+   */
+  async keepWarm(): Promise<void> {
+    const { store, name } = this.d;
+    if (this.draining || this.live) return;
+    const session = store.activeSession(name);
+    // Nothing is cached before the session's first turn, and a paused Clot would only meet the limit again.
+    if (!session?.started) return;
+    const paused = store.getClot(name)!.pausedUntil;
+    if (paused !== null && paused * 1000 > this.d.now().getTime()) return;
+    if (this.d.now().getTime() < this.keepWarmRetryAt) return;
+    this.draining = true;
+    try {
+      const reply: string[] = [];
+      this.liveKind = "keep-warm";
+      this.live = this.d.runner.startTurn({
+        resume: session.id,
+        prompt: KEEP_WARM_PROMPT,
+        effort: "low",
+        role: "main",
+        model: OPUS,
+        tools: this.d.makeTools?.({ clot: name, kind: "chat", outsider: true }),
+        noTools: true,
+        onText: (text) => void reply.push(text),
+      });
+      let result: TurnResult;
+      try {
+        result = await this.live.done;
+      } finally {
+        this.live = undefined;
+      }
+      this.touch(result);
+      await this.d.spend?.book({ clot: name, who: "main", sessionId: session.id, total: result.totalCostUsd }).catch((error) => console.error(`[${name}] booking the keep-warm turn's cost failed:`, error));
+      this.d.keepWarmLog?.(name, result.ok ? `reply: ${reply.join(" ").trim() || "(none)"}` : "the turn did not finish");
+      if (result.limit) {
+        this.d.onLimit?.(result.limit.resetsAt);
+        await this.pause(session.channelId, result.limit.resetsAt);
+      } else if (!result.ok) {
+        this.keepWarmRetryAt = this.d.now().getTime() + KEEP_WARM_RETRY_MS;
+      }
+    } finally {
+      this.draining = false;
+    }
+    // A message that came in during the ping was left pending.
+    this.kick();
   }
 
   /**
@@ -328,6 +397,7 @@ export class Clot {
       stopTyping();
     }
     await this.posts;
+    this.touch(result);
     await this.d.spend?.book({ clot: name, who: "main", sessionId: session.id, total: result.totalCostUsd }).catch((error) => console.error(`[${name}] booking the turn's cost failed:`, error));
     if (result.activity && result.activity.files.length + result.activity.commands.length > 0) {
       await chat.postActivity(session.channelId, result.activity).catch(() => undefined);
@@ -578,6 +648,7 @@ export class Clot {
       await chat.post(old.channelId, words.notice).catch(() => undefined);
       const stopTyping = chat.startTyping(old.channelId);
       const recapResult = await recapTurn.done.finally(stopTyping);
+      this.touch(recapResult);
       await this.d.spend?.book({ clot: name, who: "main", sessionId: old.id, total: recapResult.totalCostUsd }).catch((error) => console.error(`[${name}] booking the recap's cost failed:`, error));
       if (recapResult.limit) {
         this.d.onLimit?.(recapResult.limit.resetsAt);

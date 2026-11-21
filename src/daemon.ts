@@ -65,6 +65,7 @@ import { gateAt } from "./gates.js";
 import { UsageMeter } from "./usage-meter.js";
 import { SpendLog } from "./spend.js";
 import { skipList, Sweeper } from "./sweep.js";
+import { CacheKeeper } from "./keep-warm.js";
 import { makeReground } from "./reground.js";
 
 const config = loadConfig(JSON.parse(fs.readFileSync("clots.config.json", "utf8")), process.env);
@@ -156,6 +157,13 @@ const ticker = new GateTicker({
   },
   wakeWorkers: () => workers.wake(),
   sweep: () => sweepTick(),
+  keepWarm: () => keeper.tick(),
+});
+const keeper = new CacheKeeper({
+  names: () => names,
+  now: () => Date.now(),
+  lastTurnAt: (name) => clots.get(name)?.lastTurnAt(),
+  ping: (name) => clots.get(name)?.keepWarm() ?? Promise.resolve(),
 });
 meter.onChange(() => ticker.recheck());
 
@@ -391,6 +399,7 @@ for (const c of definitions) {
     runner,
     workerLines: (name) => workers.lines(name),
     onLimit: (resetsAt) => workers.onLimit(resetsAt),
+    keepWarmLog: (name, text) => console.log(`[${name}] keep-warm: ${text}`),
     timeZone: config.timeZone,
     userId: config.userId,
     gate,
