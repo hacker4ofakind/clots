@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans. This plan gives structure and decisions, not code. You write the implementation (TDD per task). Track tasks with the checkboxes. After all tasks, run the **Manual Verification Checklist** (or hand it to the user if they asked to do it), then fill in **Implementation Notes**.
 
-**Goal:** The Clots step back during the user's own hours and when the five-hour window runs high, deliver what waited as one digest, log what every model call costs, sweep the claude.ai connectors every 90 minutes, and re-ground each new session after a rollover.
+**Goal:** The Clots step back during the user's own hours and when the five-hour window runs high, deliver what waited as one digest, log what every model call costs, sweep the claude.ai connectors every 3 hours, and re-ground each new session after a rollover.
 **Specs:** `.superpowers/specs/2026-11-10-clots-stage-2d-gates-sweep-design.md`; parent `.superpowers/specs/2026-10-10-clots-design.md` (sections 6, 8, 9).
 **Architecture:** A pure gate function decides "run or wait, until when" from the time, the configured windows and the usage meter's five-hour reading. A one-minute daemon ticker refreshes the meter, notices gate changes and pokes every Clot's drain and the worker queue, and runs the sweep when it is due. The sweep and re-grounding are one-off sessions run by a new runner method with structured output, a lock that also allows read-only connector tools, a time limit and transcript deletion. Spend is booked from the SDK's `total_cost_usd` into a store table.
 **Tech Stack:** TypeScript on Node, `@anthropic-ai/claude-agent-sdk` (^0.3.296), better-sqlite3, zod 4, vitest.

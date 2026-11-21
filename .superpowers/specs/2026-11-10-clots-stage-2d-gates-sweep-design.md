@@ -20,7 +20,7 @@ told to give workers slightly cheaper models.
 The daemon logs what every model call costs, per Clot and per worker. `&spend`
 shows the week, and a Clot that passes a weekly figure is reported once.
 
-Every 90 minutes one sweep reads the connectors that reach the Clots only through
+Every 3 hours one sweep reads the connectors that reach the Clots only through
 the claude.ai login, and turns what changed into events.
 
 After every rollover a short sweep checks the recap against the current state, so
@@ -240,7 +240,7 @@ client cannot reach. Sources the daemon already hears from are not swept.
 
 ### When
 
-- One sweep for the whole daemon, every `sweep.everyMinutes` (default 90).
+- One sweep for the whole daemon, every `sweep.everyMinutes` (default 180).
 - The daemon keeps the start time of the last sweep and checks every minute
   whether the next is due, so restarts do not keep pushing it back.
 - Skipped while any gate holds (including a usage-limit pause of any Clot), and
@@ -393,7 +393,7 @@ starts from its recap.
     "leadIn": { "mon": "10:00-15:00", "tue": "10:00-15:00", "wed": "10:00-15:00", "thu": "10:00-15:00", "fri": "10:00-15:00" },
     "leadInPercent": 50
   },
-  "sweep": { "enabled": true, "everyMinutes": 90 },
+  "sweep": { "enabled": true, "everyMinutes": 180 },
   "spend": { "weeklyWarnUsd": 50 }
 }
 ```

@@ -31,7 +31,7 @@ it("merges the config file and the environment", () => {
     publicUrl: "",
     sendReview: { enabled: true, maxMs: 3 * 86_400_000 },
     gates: expect.any(Object),
-    sweep: { enabled: true, everyMinutes: 90 },
+    sweep: { enabled: true, everyMinutes: 180 },
     spend: { weeklyWarnUsd: 50 },
     sources: { email: [], composio: [] },
     composioApiKey: undefined,
@@ -231,7 +231,7 @@ const defaultWindows = (window: { start: number; end: number }) => Object.fromEn
 it("defaults the gates, the sweep and the spend warning", () => {
   const config = loadConfig(json, env);
   expect(config.gates).toEqual({ scarce: defaultWindows({ start: 900, end: 1080 }), leadIn: defaultWindows({ start: 600, end: 900 }), leadInPercent: 50 });
-  expect(config.sweep).toEqual({ enabled: true, everyMinutes: 90 });
+  expect(config.sweep).toEqual({ enabled: true, everyMinutes: 180 });
   expect(config.spend).toEqual({ weeklyWarnUsd: 50 });
 });
 
