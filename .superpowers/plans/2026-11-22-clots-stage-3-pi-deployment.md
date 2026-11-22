@@ -25,7 +25,8 @@
 - `deploy/update.sh` — the Pi side of `npm run deploy` (spec section 7).
 - `deploy/backup.sh` — makes one backup archive and prunes old ones (spec section 9).
 - `deploy/clots-backup.service`, `deploy/clots-backup.timer` — run `backup.sh` nightly.
-- `package.json` — add the `deploy` script.
+- `package.json` — add the `deploy` script (`node scripts/deploy.mjs`).
+- `scripts/deploy.mjs` — runs update.sh on `CLOTS_HOST` (default `clots@clots`) over SSH, passing its exit code through.
 - `.gitattributes` — `*.sh`, `deploy/*` stored with LF.
 - `README.md` — a "Deploy on a server" section.
 - `.superpowers/specs/2026-10-10-clots-design.md` — only if the build changes something it states (memory: the spec tracks the build).
@@ -44,8 +45,10 @@
 - **Setup does not start the service.** It enables it, but it only starts once `.env` and `clots.config.json` exist. The script prints which are missing and, when both exist, starts the service. Otherwise systemd would loop restarting a daemon that throws on missing config.
 - **Funnel:** `tailscale funnel --bg 8787` persists across reboots. Run it only if `tailscale funnel status` doesn't already show 8787. If the tailnet policy doesn't allow Funnel on this node, the command prints a link: surface it and stop.
 - **The unit:** `User=clots`, `WorkingDirectory=/home/clots/clots`, `ExecStart=/usr/bin/node --env-file=.env --import tsx src/daemon.ts`, `After=`/`Wants=` `docker.service network-online.target`, `Restart=always`, `RestartSec=5`. Leave `KillMode` at its default (control-group), so `docker exec` clients die with the daemon; the daemon already handles a session left running in a container at startup.
-- **update.sh change detection:** record `git rev-parse HEAD` before `git pull --ff-only`. If HEAD didn't move, print "Already up to date" and exit 0 without restarting. Otherwise diff the names between old and new HEAD: `package-lock.json` → `npm ci`; anything under `docker/` → `docker build -t clots-clot:dev docker`. Then `sudo systemctl restart clots`, `sleep 5`, `systemctl status clots --no-pager` and `journalctl -u clots -n 20 --no-pager`. Exit non-zero if the service isn't `active`. The dirty-checkout check is `git status --porcelain` (non-empty → error naming the files).
-- **`npm run deploy`** is `ssh clots@clots clots/deploy/update.sh`. Use a path relative to home, not `~`, because npm runs scripts through cmd on Windows.
+- **update.sh change detection compares against the last *successful* deploy, not the pre-pull HEAD.** A failed `npm ci` (which deletes `node_modules` first) or a failed image build happens after HEAD has moved. Comparing against the pre-pull HEAD would make the next deploy print "Already up to date" over a broken checkout. So: after the service is confirmed `active`, write the deployed commit to `data/deployed-commit` (`data/` is gitignored). On each run, `git pull --ff-only`, then compare HEAD with that file. Equal → "Already up to date", exit 0, no restart. A missing file counts as "everything changed". Otherwise diff names between the file's commit and HEAD: `package-lock.json` → `npm ci`; anything under `docker/` → `docker build -t clots-clot:dev docker`. Then `sudo systemctl restart clots`, `sleep 5`, `systemctl status clots --no-pager` and `journalctl -u clots -n 20 --no-pager`. If not `active`: exit non-zero and leave the file unchanged, so the next run retries every step. If `active`: write the file, then `docker image prune -f` to drop the image the rebuild replaced (the microSD card is small and wears). The dirty-checkout check is `git status --porcelain` (non-empty → error naming the files).
+- **Node version changes rebuild native modules.** better-sqlite3 is compiled for one Node ABI. When setup-pi.sh installs a different Node than the one `node_modules` was built with, it runs `npm ci` as `clots`. Record the version in `data/node-version` after each `npm ci`, in both setup and update.sh, and compare against `node --version`.
+- **`npm run deploy`** runs `ssh <host> clots/deploy/update.sh` with the host taken from the `CLOTS_HOST` environment variable, default `clots@clots`. Put it in a tiny `scripts/deploy.mjs` so the default works the same in cmd and PowerShell. Use a path relative to home, not `~`. This lets the x64 machine be deployed to before it takes the `clots` name.
+- **Cutover order (README):** Tailscale gives a second machine that joins as `clots` the name `clots-1`, and the suffix sticks. Before the x64 machine joins, rename the Pi (`sudo tailscale set --hostname=clots-pi`); after the cutover, remove the Pi from the tailnet. `publicUrl` and the GitHub webhook then keep working unchanged.
 - **Sudoers rule:** exactly `clots ALL=(root) NOPASSWD: /usr/bin/systemctl restart clots`. Nothing broader.
 - **backup.sh:** run as `clots` from the checkout. `sqlite3 data/clots.db ".backup '<tmp>/clots.db'"` (the online backup API, safe beside the running daemon in WAL mode). Copy the rulebook folder (`rulebook/`, `.git` included) beside it, then `tar czf clots-backups/<YYYY-MM-DD>.tar.gz`. Write to a temp name and rename, so a failed run never leaves a half archive. Prune to the 7 newest. A second run on the same day replaces that day's archive. If `data/clots.db` doesn't exist yet, exit 0 with a message.
 - **Timer:** `OnCalendar=*-*-* 03:30` (Pi local time, Africa/Johannesburg), `Persistent=true` so a night missed while the Pi was off runs at the next boot.
@@ -75,7 +78,7 @@
 - [ ] Task 1 complete
 
 ### Task 2: Deploying from the PC
-**Files:** `deploy/update.sh`, `package.json` (add `"deploy"`)
+**Files:** `deploy/update.sh`, `scripts/deploy.mjs`, `package.json` (add `"deploy"`)
 **Interfaces:**
 - Consumes: the checkout, the sudoers rule and the unit from Task 1.
 
@@ -88,6 +91,8 @@
 - A commit touching only `README.md`: pull, both steps skipped, the service restarted and `active`.
 - A commit touching `docker/Dockerfile`: the image rebuilt, and on restart the daemon logs that it recreated each container, keeping its volumes.
 - A local edit in the Pi's checkout: exits non-zero naming the file, nothing pulled.
+- A deploy whose restart fails (the bad-config case below), then fixed: the next run reruns every step since the last successful deploy instead of saying "Already up to date".
+- After an image rebuild, `docker images` shows no dangling `<none>` image.
 - With an unknown key added to the Pi's `clots.config.json` (the config is gitignored, so the checkout stays clean) and a README-only commit pushed: update.sh restarts, finds the service not `active`, exits non-zero and prints the log lines with the config error. Remove the key and deploy again afterwards.
 
 **Done when:** shellcheck passes; the behaviours above observed from the PC through `npm run deploy`.

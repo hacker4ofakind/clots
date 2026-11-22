@@ -100,8 +100,10 @@ ends a session that a `docker exec` kept running in a container (parent section
 
 ## 7. Deploying
 
-`npm run deploy` on the PC runs `ssh clots@clots ~/clots/deploy/update.sh`.
-`deploy/update.sh`, on the Pi:
+`npm run deploy` on the PC runs `deploy/update.sh` over SSH on the host named by
+`CLOTS_HOST`, `clots@clots` by default. update.sh compares the checkout with the
+last commit that deployed successfully (kept in `data/deployed-commit`), so a
+deploy that failed partway is redone in full by the next one. On the Pi:
 
 1. Stops with an error if the Pi's checkout has local changes.
 2. `git pull --ff-only`.
@@ -112,6 +114,12 @@ ends a session that a `docker exec` kept running in a container (parent section
 5. `sudo systemctl restart clots` (allowed without a password for that one
    command, through a file in `/etc/sudoers.d`, written by the setup script).
 6. Waits a few seconds and prints the service's state and its latest log lines.
+   Once the service is active, records the commit as deployed and removes the
+   image a rebuild replaced.
+
+Moving to the x64 machine keeps every URL: before it joins the tailnet, the Pi
+is renamed (`tailscale set --hostname=clots-pi`), so the new machine can take the
+name `clots`.
 
 A deploy during a turn interrupts that turn, and the crash recovery resumes it.
 
