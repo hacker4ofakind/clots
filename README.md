@@ -206,7 +206,7 @@ A Clots server runs the daemon as a systemd service, started at boot and restart
 
 To deliver new code, push it to GitHub and run `npm run deploy` on your computer. It runs `deploy/update.sh` on the server over SSH (`CLOTS_HOST` overrides the default `clots@clots`): pulls, runs `npm ci` and rebuilds the image only when the lockfile or `docker/` changed, restarts the service and prints its state. A deploy during a turn interrupts it; the daemon resumes it after the restart. If the checkout has local changes, or the service is not active afterwards, it exits non-zero, and the next deploy redoes every step.
 
-Logs: `journalctl -u clots`. Backups: `~/clots-backups/<date>.tar.gz`, one per night at 03:30 (the database, the rulebook and each Clot's home volume, which holds its Claude login), the 7 newest kept. They sit on the same disk as the data.
+Logs: `journalctl -u clots`. Backups: `~/clots-backups/<date>.tar.gz`, one per night at 03:30 (the database, the rulebook, `clots.config.json` and each Clot's home volume, which holds its Claude login; not `.env`, which you keep in a password manager), the 7 newest kept. They sit on the same disk as the data.
 
 Moving to another machine: Tailscale names a second machine that joins as `clots` `clots-1`, and the suffix sticks. Rename the old one first (`sudo tailscale set --hostname=clots-pi`), join the new one as `clots`, then remove the old one from the tailnet; `publicUrl` and the GitHub webhook keep working.
 

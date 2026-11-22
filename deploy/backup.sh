@@ -23,6 +23,9 @@ sqlite3 data/clots.db ".backup '$work/clots.db'"
 
 if [ -d rulebook ]; then cp -a rulebook "$work/rulebook"; fi
 
+# The configuration is gitignored and the Clots edit it, so it is kept too. It names .env keys and holds no secret; .env itself is not backed up here.
+if [ -f clots.config.json ]; then cp -a clots.config.json "$work/clots.config.json"; fi
+
 # Each Clot's home volume holds its Claude login and its session transcripts. The work volumes are
 # left out: they are clones GitHub already holds. .credentials.json is mode 600 and owned by the
 # container's user, so the volume is read as root, and the archive is handed back to this user.
