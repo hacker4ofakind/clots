@@ -79,7 +79,9 @@ again safely:
   `https://clots.tailf707aa.ts.net` on port 443.
 
 The script does not write `.env` or `clots.config.json`: the user creates them on
-the Pi (section 8). It ends by printing which of the two are still missing.
+the Pi (section 8). It enables the service but starts it only once both exist,
+so systemd never loops restarting a daemon that has no config; until then it ends
+by printing which of the two are still missing.
 
 ## 6. The service
 
