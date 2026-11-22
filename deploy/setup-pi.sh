@@ -48,8 +48,29 @@ ARCH=$(dpkg --print-architecture)
 CODENAME=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
 APT_DIRTY=0
 
+# --- Ubuntu updates pocket -----------------------------------------------------------------------
+# Some installs lack <codename>-updates, which leaves apt unable to match the newer libraries already
+# on the host with the release-pocket packages (e.g. sqlite3 needing libsqlite3-0).
+say "Ubuntu updates pocket"
+UBUNTU_SOURCES=/etc/apt/sources.list.d/ubuntu.sources
+if grep -rqs "${CODENAME}-updates" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+  done_already "${CODENAME}-updates"
+elif [ -f "$UBUNTU_SOURCES" ]; then
+  ubuntu_uri=$(awk '/^URIs:/ { print $2; exit }' "$UBUNTU_SOURCES")
+  cat > "$TMP/ubuntu-updates.sources" <<EOF
+Types: deb
+URIs: $ubuntu_uri
+Suites: ${CODENAME}-updates
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
+  install_file "$TMP/ubuntu-updates.sources" /etc/apt/sources.list.d/ubuntu-updates.sources 0644
+  APT_DIRTY=1
+fi
+
 # --- apt prerequisites ---------------------------------------------------------------------------
 say "apt prerequisites"
+if [ "$APT_DIRTY" -eq 1 ]; then apt-get update; APT_DIRTY=0; fi
 missing=()
 for pkg in ca-certificates curl gnupg git sqlite3 build-essential python3; do
   dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
