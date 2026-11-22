@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "image": "docker build -t clots-clot:dev docker",
     "spike": "node --env-file=.env --import tsx scripts/spike.ts",
-    "daemon": "node --env-file=.env --import tsx src/daemon.ts"
+    "daemon": "node --env-file=.env --import tsx src/daemon.ts",
+    "deploy": "node scripts/deploy.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.296",

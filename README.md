@@ -186,6 +186,30 @@ A message that starts with `&` is handled by the daemon and never reaches the mo
 | `&composio reconnect <toolkit>:<account>` | Deletes that Composio account's connection and learned identity and signs in again: a new link, or a fresh connection from the `.env` values for a key account. Answered `No Composio account <name>.` for an unknown one. |
 | `&spend` | This week's estimated spend per Clot and worker, the gate in force, and the five-hour and seven-day usage. Answered at once, even during a turn. |
 
+## Deploy on a server
+
+A Clots server runs the daemon as a systemd service, started at boot and restarted if it stops. It assumes Ubuntu Server (arm64 or x64) with a `clots` user (key-only SSH, `sudo` allowed), the host named `clots`, and Tailscale installed and joined to your tailnet. The checkout lives at `/home/clots/clots`.
+
+1. On the server, clone the repository and run the setup script from the clone. It is safe to run again.
+
+   ```bash
+   git clone https://github.com/hacker4ofakind/clots.git ~/clots && cd ~/clots && sudo ./deploy/setup-pi.sh
+   ```
+
+   It installs Docker and Node.js 26.13.1 (held at that version; change `NODE_VERSION` in the script to move), builds the Clot image, installs the systemd units and a sudoers rule that lets `clots` run `systemctl restart clots`, turns on Tailscale Funnel for port 8787, and prints which config files are still missing.
+
+2. Create `~/clots/.env` (`chmod 600`) with `DISCORD_BOT_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLOT_GITHUB_TOKEN` and `GITHUB_WEBHOOK_SECRET`, and `~/clots/clots.config.json` from `clots.config.example.json` (`publicUrl` is the Funnel address). If a development daemon also runs somewhere, the server needs a Discord bot and server of its own, and its own webhook secret: two daemons on one bot token both receive every message.
+
+3. Run `sudo ./deploy/setup-pi.sh` again. It starts the service once both files exist.
+
+4. Log each container in to Claude once: `docker exec -it clot-<name> claude /login`.
+
+To deliver new code, push it to GitHub and run `npm run deploy` on your computer. It runs `deploy/update.sh` on the server over SSH (`CLOTS_HOST` overrides the default `clots@clots`): pulls, runs `npm ci` and rebuilds the image only when the lockfile or `docker/` changed, restarts the service and prints its state. A deploy during a turn interrupts it; the daemon resumes it after the restart. If the checkout has local changes, or the service is not active afterwards, it exits non-zero, and the next deploy redoes every step.
+
+Logs: `journalctl -u clots`. Backups: `~/clots-backups/<date>.tar.gz`, one per night at 03:30 (the database, the rulebook and each Clot's home volume, which holds its Claude login), the 7 newest kept. They sit on the same disk as the data.
+
+Moving to another machine: Tailscale names a second machine that joins as `clots` `clots-1`, and the suffix sticks. Rename the old one first (`sudo tailscale set --hostname=clots-pi`), join the new one as `clots`, then remove the old one from the tailnet; `publicUrl` and the GitHub webhook keep working.
+
 ## Test
 
 ```bash
