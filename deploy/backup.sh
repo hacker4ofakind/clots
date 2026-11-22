@@ -28,11 +28,13 @@ if [ -d rulebook ]; then cp -a rulebook "$work/rulebook"; fi
 # container's user, so the volume is read as root, and the archive is handed back to this user.
 uid=$(id -u)
 gid=$(id -g)
+# A failing `docker volume ls` stops the script (set -e) instead of looking like "no volumes".
+all_volumes=$(docker volume ls --format '{{.Name}}')
 while read -r vol; do
   [ -n "$vol" ] || continue
   docker run --rm -v "$vol:/v:ro" -v "$work:/out" --user 0 --entrypoint sh "$IMAGE" \
     -c "tar cf /out/$vol.tar -C /v . && chown $uid:$gid /out/$vol.tar"
-done < <(docker volume ls --format '{{.Name}}' | grep -E '^clot-.*-home$' || true)
+done < <(grep -E '^clot-.*-home$' <<< "$all_volumes" || true)
 
 # Write under a temp name, then rename, so a failed run never leaves a half archive.
 tar czf "$dest/.$today.tar.gz.part" -C "$work" .
