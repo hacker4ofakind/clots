@@ -1110,7 +1110,7 @@ Each stage gets its own specification and plan.
    as in development, talking through Discord. The Pi stands in until the
    always-on x64 machine arrives. Onboarding (section 11), with Composio's
    connections in its checklist, is not part of this stage; it will be built in
-   the web UI.
+   the web UI (`.superpowers/specs/2026-11-22-clots-stage-3-pi-deployment-design.md`).
 4. **Browser and live view.**
 
 ### Stage 1 scope
