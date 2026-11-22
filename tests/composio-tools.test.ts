@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { ComposioActions, LIMITS } from "../src/composio/actions.js";
 import { ComposioAuthoring, AUTHORING_LIMITS } from "../src/composio/authoring.js";
 import { Composio } from "../src/composio/component.js";
+import { defaultRecipe } from "../src/composio/default-recipes.js";
 import { Meter } from "../src/composio/meter.js";
 import type { ComposioAccount } from "../src/config.js";
 import { Supervisor } from "../src/listeners.js";
@@ -22,6 +23,12 @@ const answers = JSON.parse(fs.readFileSync("tests/fixtures/composio/slack/tool-a
 const trig = "SLACK_CHANNEL_MESSAGE_RECEIVED";
 
 const slack: ComposioAccount = { toolkit: "slack", account: "work", shared: true, audience: "team", triggers: [{ slug: trig, config: {} }], selfIsUser: false };
+const posthog: ComposioAccount = { toolkit: "posthog", account: "prod", clot: "graphite", shared: false, audience: "team", apiKey: "phx_x", apiKeyName: "PH_KEY", connect: { subdomain: "eu" }, triggers: [{ slug: "POSTHOG_EVENT_CAPTURED", config: { project_id: 7, event_names: ["signup"] } }], selfIsUser: false };
+const ph = {
+  event: { event: "signup", distinct_id: "user-42", timestamp: "2026-11-19T10:00:00Z", url: "https://eu.posthog.com/project/7/events/abc", properties: { plan: "pro", $ip: "1.2.3.4", seats: 3 } },
+  person: { id: "p-1", name: "Ann", distinct_id: "user-42" },
+  project: { id: 7, name: "Truecast" },
+};
 const draft = {
   toolkit: "slack",
   identity: { tool: "SLACK_TEST_AUTH", path: "user_id" },
@@ -92,7 +99,7 @@ beforeEach(() => {
   said = [];
   api = new FakeComposioApi();
   const meter = new Meter({ store, now: () => NOW, tellHome: async () => {} });
-  composio = new Composio({ api, store, accounts: [slack], publicUrl: "https://x.example", tell: async () => {}, tellHome: async () => {}, now: () => NOW, schedule, supervisor: new Supervisor({ schedule }), log: () => {}, meter, recipe: (t) => rulebook.composioRecipe(t) });
+  composio = new Composio({ api, store, accounts: [slack, posthog], publicUrl: "https://x.example", tell: async () => {}, tellHome: async () => {}, now: () => NOW, schedule, supervisor: new Supervisor({ schedule }), log: () => {}, meter, recipe: (t) => rulebook.composioRecipe(t) });
   actions = new ComposioActions({ composio, store, reviewer: { review: async () => ({ verdict: "ask", reason: "" }) }, ask: async () => "", say: async () => {}, now: () => NOW });
   authoring = new ComposioAuthoring({
     composio,
@@ -124,16 +131,26 @@ const keep = (n: number, over: Partial<Parameters<Store["composio"]["keepDeliver
 describe("composio_check_entry", () => {
   const check = (entry: Record<string, unknown>) => tools().composioCheckEntry!({ entry });
 
-  it("refuses the PostHog entry that stopped the daemon, naming each fault", async () => {
-    const text = await check({ toolkit: "posthog", account: "prod", clot: "graphite", selfIsUser: true, apiKey: "PH_KEY" });
+  it("refuses PostHog's old entry, saying what to write instead", async () => {
+    const text = await check({ toolkit: "posthog", account: "prod", clot: "graphite", apiKey: "PH_KEY", region: "eu", projectId: 1, events: ["signup"] });
     expect(text).toContain("does not fit");
-    for (const word of ["projectId", "events", "selfIsUser"]) expect(text).toContain(word);
+    expect(text).toContain("PostHog is a generic entry now: put the region in connect.subdomain");
   });
 
-  it("accepts a complete built-in entry and a clot that does not exist is refused", async () => {
-    const ok = { toolkit: "posthog", account: "prod", clot: "graphite", apiKey: "PH_KEY", projectId: 1, events: ["signup"] };
+  it("refuses a built-in toolkit's entry that is wrong, naming the fault, and a clot that does not exist", async () => {
+    const text = await check({ toolkit: "linear", account: "prod", clot: "graphite", selfIsUser: true, apiKey: "LINEAR_KEY" });
+    expect(text).toContain("does not fit");
+    expect(text).toContain("selfIsUser");
+    const ok = { toolkit: "linear", account: "prod", clot: "graphite", apiKey: "LINEAR_KEY" };
     expect(await check(ok)).toContain("fits the daemon's schema");
     expect(await check({ ...ok, clot: "nobody" })).toContain("no Clot named nobody");
+  });
+
+  it("checks a PostHog entry's trigger against Composio's config: project_id and event_names are required", async () => {
+    api.triggerDetails.set("POSTHOG_EVENT_CAPTURED", { slug: "POSTHOG_EVENT_CAPTURED", name: "Event Captured", type: "webhook", config: { required: ["project_id", "event_names"], properties: { project_id: {}, event_names: {} } }, payload: {} });
+    const entry = (config: Record<string, unknown>) => ({ toolkit: "posthog", account: "prod", clot: "graphite", apiKey: "PH_KEY", connect: { subdomain: "eu" }, triggers: [{ slug: "POSTHOG_EVENT_CAPTURED", config }] });
+    expect(await check(entry({}))).toContain("needs project_id, event_names");
+    expect(await check(entry({ project_id: 1, event_names: ["signup"] }))).toContain("and Composio's trigger configs");
   });
 
   it("checks a generic entry's triggers against Composio: they must exist and their required config must be given", async () => {
@@ -218,7 +235,7 @@ describe("composio_samples", () => {
 
   it("says when none is kept, and names the accounts when the account is unknown", async () => {
     expect(await tools().composioSamples!({ account: "slack:work" })).toContain("No payload is kept for slack:work");
-    expect(await tools().composioSamples!({ account: "slack:nope" })).toBe("No Composio account named slack:nope. The accounts are: slack:work.");
+    expect(await tools().composioSamples!({ account: "slack:nope" })).toBe("No Composio account named slack:nope. The accounts are: slack:work, posthog:prod.");
   });
 });
 
@@ -293,6 +310,52 @@ describe("composio_try", () => {
     expect(text).toContain("Reads made on slack:work: channel");
     expect(text).toContain(`Could not read user: Refused: ${LIMITS.perClotDay} Composio calls were made today by this Clot, which is the limit.`);
     expect(api.of("execute").filter((c) => c.includes("SLACK_RETRIEVE_DETAILED_USER_INFORMATION"))).toEqual([]);
+  });
+});
+
+describe("PostHog's shipped recipe", () => {
+  it("is the recipe in force for posthog when none is saved, and the file lookup says it is shipped", () => {
+    expect(rulebook.composioRecipe("posthog")).toBe(defaultRecipe("posthog"));
+    expect(rulebook.recipeFile("posthog")).toEqual({ file: "", kind: "composio", shipped: true });
+    expect(rulebook.composioRecipe("slack")).toBeUndefined();
+    expect(rulebook.recipeFile("slack")).toBeUndefined();
+  });
+
+  it("is what composio_try renders for a draft that is the shipped recipe, on a kept sample, with no rulebook entry", async () => {
+    store.composio.keepDelivery({ webhookId: "ph_1", user: "posthog:prod", slug: "POSTHOG_EVENT_CAPTURED", eventId: "posthog:prod:signup:user-42:2026-11-19T10:00:00Z", payload: ph, receivedAt: NOW });
+    const text = await tools().composioRecipeTry!({ recipe: defaultRecipe("posthog"), account: "posthog:prod", sample: "ph_1" });
+    expect(text).toContain("kind: analytics_event");
+    expect(text).toContain("id: posthog:prod:signup:user-42:2026-11-19T10:00:00Z");
+    expect(text).toContain("title: signup in PostHog (user-42)");
+    expect(text).toContain("place: Truecast");
+    expect(text).toContain("automated: true");
+    expect(text).toContain("plan: pro");
+    expect(text).not.toContain("$ip");
+  });
+
+  it("can be overridden by a saved recipe, which is in force from then on; removing it brings the shipped one back", async () => {
+    const own = { ...JSON.parse(JSON.stringify(defaultRecipe("posthog"))) };
+    own.triggers.POSTHOG_EVENT_CAPTURED.title = "{payload.event.event} ({payload.event.properties.plan})";
+    const reply = await tools().composioRecipe!({ action: "set", file: "own", recipe: own });
+    expect(reply).toContain("Applied");
+    expect(ownFile().composio).toMatchObject([{ toolkit: "posthog" }]);
+    expect(rulebook.composioRecipe("posthog")!.triggers.POSTHOG_EVENT_CAPTURED.title).toBe("{payload.event.event} ({payload.event.properties.plan})");
+    expect(rulebook.recipeFile("posthog")).toEqual({ file: "graphite", kind: "composio" });
+    expect(await tools().composioRecipe!({ action: "remove", file: "own", name: "posthog" })).toContain("Applied");
+    expect(rulebook.composioRecipe("posthog")).toBe(defaultRecipe("posthog"));
+    expect(rulebook.recipeFile("posthog")?.shipped).toBe(true);
+  });
+
+  it("is undone by &rules undo, which returns to the shipped one", async () => {
+    const own = JSON.parse(JSON.stringify(defaultRecipe("posthog")));
+    own.triggers.POSTHOG_EVENT_CAPTURED.title = "changed";
+    await tools().composioRecipe!({ action: "set", file: "own", recipe: own });
+    expect(writer.undo("graphite").ok).toBe(true);
+    expect(rulebook.composioRecipe("posthog")).toBe(defaultRecipe("posthog"));
+  });
+
+  it("is not the end of the refusal for the other built-in toolkits", async () => {
+    expect(await tools().composioRecipe!({ action: "set", file: "own", recipe: { toolkit: "linear", triggers: { LINEAR_X: { kind: "x", title: "t" } } } })).toContain("built-in support (linear, notion, stripe, googlecalendar)");
   });
 });
 

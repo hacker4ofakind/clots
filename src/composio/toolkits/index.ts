@@ -6,7 +6,6 @@ import { calendarDef } from "./googlecalendar.js";
 import { genericDef } from "./generic.js";
 import { linearDef } from "./linear.js";
 import { notionDef } from "./notion.js";
-import { posthogDef } from "./posthog.js";
 import { stripeDef } from "./stripe.js";
 
 /** One trigger instance an account should have. `pollingMinutes` is for a polled trigger. */
@@ -27,9 +26,8 @@ export interface ToolkitHost {
 }
 
 /**
- * The single home of what is specific to one toolkit: its trigger set, how to learn who the connection
- * is, and what a connection needs besides a key. Mappers, enrichers, senders and inverses join it in
- * the tasks that build them.
+ * The single home of what is specific to one toolkit: its trigger set and how to learn who the connection
+ * is. Mappers, enrichers, senders and inverses join it in the tasks that build them.
  */
 export interface ToolkitDef {
   toolkit: string;
@@ -39,8 +37,6 @@ export interface ToolkitDef {
   triggers(a: ComposioAccount, host: ToolkitHost): Promise<TriggerWant[]>;
   /** The connection's own user ID at the service. Throws when it cannot be read; undefined when the toolkit has no way to say. */
   identity?(a: ComposioAccount, host: ToolkitHost): Promise<string | undefined>;
-  /** Fields the connection needs besides the key. */
-  connectExtra?(a: ComposioAccount): Record<string, string>;
   /**
    * The shape of what each fixed-purpose call of the daemon relies on, by tool slug (enrichment reads,
    * identity, the calendar's calls). `runChecked` applies it; a call that is not here is not checked.
@@ -53,7 +49,6 @@ const BUILT_IN: Record<string, ToolkitDef> = {
   notion: notionDef,
   stripe: stripeDef,
   googlecalendar: calendarDef,
-  posthog: posthogDef,
 };
 
 /** The def of a toolkit; one with no built-in def is the generic one. */

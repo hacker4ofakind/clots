@@ -27,7 +27,7 @@
       { "toolkit": "notion", "account": "workspace", "shared": true, "audience": "private", "apiKey": "NOTION_WORKSPACE_KEY" },
       { "toolkit": "stripe", "account": "graphite", "clot": "graphite", "audience": "public", "apiKey": "STRIPE_GRAPHITE_KEY" },
       { "toolkit": "googlecalendar", "account": "personal", "shared": true, "audience": "private", "leadTimes": ["24h"], "pollMinutes": 5 },
-      { "toolkit": "posthog", "account": "graphite", "clot": "graphite", "audience": "public", "apiKey": "POSTHOG_GRAPHITE_KEY", "region": "us", "projectId": 123456, "events": ["signup"] },
+      { "toolkit": "posthog", "account": "graphite", "clot": "graphite", "audience": "public", "apiKey": "POSTHOG_GRAPHITE_KEY", "connect": { "subdomain": "us" }, "triggers": [{ "slug": "POSTHOG_EVENT_CAPTURED", "config": { "project_id": 123456, "event_names": ["signup"] } }] },
       { "toolkit": "slack", "account": "work", "shared": true, "audience": "team", "triggers": [{ "slug": "SLACK_CHANNEL_MESSAGE_RECEIVED", "config": { "channel_id": "C0123" } }] },
       { "toolkit": "supabase", "account": "graphite", "clot": "graphite", "audience": "team", "fields": { "full": "SUPABASE_GRAPHITE_URL", "bearer_token": "SUPABASE_GRAPHITE_KEY" } }
     ]

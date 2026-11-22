@@ -70,14 +70,6 @@ const COMPOSIO_TOOLKITS = {
     leadTimes: z.array(leadTime).min(1).default([1440]),
     pollMinutes: z.number().int().min(1).default(5),
   }),
-  posthog: z.strictObject({
-    ...composioFields,
-    toolkit: z.literal("posthog"),
-    apiKey: envKey,
-    region: z.enum(["us", "eu"]).default("us"),
-    projectId: z.number().int().positive(),
-    events: z.array(z.string().min(1)).min(1),
-  }),
 };
 const GENERIC_TOOLKIT = z
   .strictObject({
@@ -87,6 +79,8 @@ const GENERIC_TOOLKIT = z
     apiKey: envKey.optional(),
     fields: z.record(z.string().min(1), envKey).refine((f) => Object.keys(f).length > 0, "fields names at least one field").optional(),
     scheme: z.string().regex(/^[A-Z][A-Z0-9_]*$/, "a scheme is Composio's uppercase name, such as API_KEY").optional(),
+    // Connection fields whose values are not secrets (a region, an instance subdomain), given here and merged into a key connection's fields.
+    connect: z.record(z.string().min(1), z.string().min(1)).optional(),
     oauthApp: z.strictObject({ clientId: envKey, clientSecret: envKey }).optional(),
     // True when the connection is the user's own account at the service, not the Clots'.
     selfIsUser: z.boolean().default(false),
@@ -94,7 +88,18 @@ const GENERIC_TOOLKIT = z
   })
   .refine((a) => !(a.oauthApp !== undefined && (a.apiKey !== undefined || a.fields !== undefined)), { message: "oauthApp cannot go with apiKey or fields", path: ["oauthApp"] })
   .refine((a) => !(a.apiKey !== undefined && a.fields !== undefined), { message: "give apiKey or fields, not both", path: ["fields"] })
-  .refine((a) => a.scheme === undefined || a.apiKey !== undefined || a.fields !== undefined, { message: "scheme goes with apiKey or fields", path: ["scheme"] });
+  .refine((a) => a.scheme === undefined || a.apiKey !== undefined || a.fields !== undefined, { message: "scheme goes with apiKey or fields", path: ["scheme"] })
+  .refine((a) => a.connect === undefined || a.apiKey !== undefined || a.fields !== undefined, { message: "connect goes with apiKey or fields: it gives fields of a key connection", path: ["connect"] });
+
+/** What an entry for PostHog written before it became a generic entry is told: its keys moved into `connect` and a trigger's config. */
+const LEGACY_POSTHOG = "PostHog is a generic entry now: put the region in connect.subdomain and the project and events in a POSTHOG_EVENT_CAPTURED trigger's config (project_id, event_names)";
+
+/** The refusal for a PostHog entry in the old shape (`region`, `projectId` or `events`), or undefined for any other entry. */
+function legacyProblem(entry: unknown): string | undefined {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  const e = entry as Record<string, unknown>;
+  return e.toolkit === "posthog" && ["region", "projectId", "events"].some((key) => key in e) ? LEGACY_POSTHOG : undefined;
+}
 
 /** The source keys 2e moved into sources.composio. */
 const MOVED_SOURCES = ["stripe", "linear", "notion", "calendar"];
@@ -212,6 +217,8 @@ export interface ComposioAccount extends AccountBase {
   selfIsUser: boolean;
   /** Notion: the .env key of Notion's verification token, if set by hand. */
   verificationToken?: string;
+  /** Connection fields whose values are not secrets, merged into a key connection's fields after the `.env` ones. */
+  connect?: Record<string, string>;
   /** A toolkit with no built-in mapper: the triggers to make, with their config. */
   triggers: { slug: string; config: Record<string, unknown> }[];
   /** Calendar: how long before an event its reminders come, in minutes; and how often the calendar is read. */
@@ -219,16 +226,11 @@ export interface ComposioAccount extends AccountBase {
   pollMinutes?: number;
   /** Stripe */
   checkoutCompleted?: boolean;
-  /** PostHog */
-  region?: "us" | "eu";
-  projectId?: number;
-  events?: string[];
 }
 export type StripeAccount = ComposioAccount & { toolkit: "stripe"; apiKey: string; checkoutCompleted: boolean };
 export type LinearAccount = ComposioAccount & { toolkit: "linear"; apiKey: string };
 export type NotionAccount = ComposioAccount & { toolkit: "notion"; apiKey: string };
 export type CalendarAccount = ComposioAccount & { toolkit: "googlecalendar"; leadMinutes: number[]; pollMinutes: number };
-export type PostHogAccount = ComposioAccount & { toolkit: "posthog"; apiKey: string; region: "us" | "eu"; projectId: number; events: string[] };
 export const isCalendar = (a: ComposioAccount): a is CalendarAccount => a.toolkit === "googlecalendar";
 export interface Sources {
   email: EmailAccount[];
@@ -336,6 +338,8 @@ function refuseSharedEnvKeys(file: z.infer<typeof FileSchema>, accounts: Composi
 export function composioEntryProblems(entry: unknown, clots: string[]): string | undefined {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "an entry is an object";
   const toolkit = (entry as { toolkit?: unknown }).toolkit;
+  const legacy = legacyProblem(entry);
+  if (legacy !== undefined) return legacy;
   const schema: z.ZodType = COMPOSIO_TOOLKITS[toolkit as keyof typeof COMPOSIO_TOOLKITS] ?? GENERIC_TOOLKIT;
   const parsed = schema.safeParse(entry);
   if (!parsed.success) return composioIssues(0, parsed.error).replaceAll("sources.composio[0].", "");
@@ -407,6 +411,8 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
   }
 
   const composio: ComposioAccount[] = file.sources.composio.map((entry, index) => {
+    const legacy = legacyProblem(entry);
+    if (legacy !== undefined) throw new Error(`sources.composio[${index}]: ${legacy}`);
     const schema: z.ZodType = COMPOSIO_TOOLKITS[entry.toolkit as keyof typeof COMPOSIO_TOOLKITS] ?? GENERIC_TOOLKIT;
     const parsed = schema.safeParse(entry);
     if (!parsed.success) throw new Error(composioIssues(index, parsed.error));
@@ -425,12 +431,12 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
       ...(a.apiKey === undefined ? {} : { apiKey: secret(env, a.apiKey), apiKeyName: a.apiKey }),
       ...(a.fields === undefined ? {} : { fields: values(env, a.fields), fieldKeys: a.fields }),
       ...(a.scheme === undefined ? {} : { scheme: a.scheme }),
+      ...(a.connect === undefined ? {} : { connect: a.connect }),
       ...(a.oauthApp === undefined ? {} : { oauthApp: a.oauthApp, oauthValues: { clientId: secret(env, a.oauthApp.clientId), clientSecret: secret(env, a.oauthApp.clientSecret) } }),
       ...(a.verificationToken === undefined ? {} : { verificationToken: secret(env, a.verificationToken) }),
       triggers,
       ...(a.leadTimes === undefined ? {} : { leadMinutes: a.leadTimes, pollMinutes: a.pollMinutes }),
       ...(a.checkoutCompleted === undefined ? {} : { checkoutCompleted: a.checkoutCompleted }),
-      ...(a.region === undefined ? {} : { region: a.region, projectId: a.projectId, events: a.events }),
     };
   });
   const seenComposio = new Set<string>();

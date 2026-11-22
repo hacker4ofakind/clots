@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { authHash, chooseAuth, entryAuthKey, keyHash, secretsOf, toolkitInfoFrom, type AuthEntry } from "../src/composio/auth.js";
-import { defFor } from "../src/composio/toolkits/index.js";
 import { toolkitMeta } from "./fake-composio.js";
 
 const info = (slug: string) => toolkitMeta(slug).info;
@@ -78,14 +77,10 @@ describe("chooseAuth", () => {
 });
 
 describe("every built-in toolkit resolves to what it uses today", () => {
-  const key = (toolkit: string) => chooseAuth(entry(toolkit, { apiKeyName: "K" }), info(toolkit), Object.keys(defFor(toolkit).connectExtra?.({ toolkit, account: "a", region: "us" } as never) ?? {}));
+  const key = (toolkit: string) => chooseAuth(entry(toolkit, { apiKeyName: "K" }), info(toolkit));
 
   it.each(["linear", "notion", "stripe"])("%s: its API_KEY scheme, field generic_api_key", (toolkit) => {
     expect(key(toolkit)).toEqual({ kind: "key", scheme: "API_KEY", fields: { generic_api_key: "K" } });
-  });
-
-  it("posthog: generic_api_key, with the subdomain the def adds", () => {
-    expect(key("posthog")).toEqual({ kind: "key", scheme: "API_KEY", fields: { generic_api_key: "K" } });
   });
 
   it("the calendar: Composio's sign-in", () => {
@@ -95,6 +90,44 @@ describe("every built-in toolkit resolves to what it uses today", () => {
   it("keeps the hash of a lone generic_api_key as stage 2e made it, so upgrading replaces nothing", () => {
     const choice = key("linear") as never;
     expect(authHash(choice, { K: "lin_api_SECRET" })).toBe(keyHash("lin_api_SECRET"));
+  });
+});
+
+describe("connect: connection fields given in the entry itself", () => {
+  const posthog = (over: Partial<AuthEntry> = {}) => chooseAuth(entry("posthog", { apiKeyName: "K", connect: { subdomain: "eu" }, ...over }), info("posthog"));
+
+  it("counts a name in connect as given, so apiKey fills the one field left (PostHog: generic_api_key, with the region in connect)", () => {
+    expect(posthog()).toEqual({ kind: "key", scheme: "API_KEY", fields: { generic_api_key: "K" } });
+  });
+
+  it("without connect the key still cannot fill PostHog's two fields", () => {
+    expect((chooseAuth(entry("posthog", { apiKeyName: "K" }), info("posthog")) as { error: string }).error).toContain("API_KEY needs 2 fields (subdomain, generic_api_key), so apiKey cannot fill them");
+  });
+
+  it("refuses a name the scheme does not have, and one that is also named in fields", () => {
+    expect((posthog({ connect: { subdomian: "eu" } }) as { error: string }).error).toContain("API_KEY has no field subdomian");
+    const both = chooseAuth(entry("posthog", { fieldKeys: { generic_api_key: "K", subdomain: "S" }, connect: { subdomain: "eu" } }), info("posthog")) as { error: string };
+    expect(both.error).toContain("subdomain is named in both fields and connect");
+  });
+
+  it("works with fields too: connect names count as given there as well", () => {
+    expect(chooseAuth(entry("supabase", { fieldKeys: { bearer_token: "SB_KEY" }, connect: { full: "https://x.supabase.co" } }), info("supabase"))).toEqual({ kind: "key", scheme: "API_KEY", fields: { bearer_token: "SB_KEY" } });
+  });
+
+  it("does not apply to a connection that is not a key", () => {
+    expect((chooseAuth(entry("slack", { connect: { x: "y" } }), info("slack")) as { error: string }).error).toContain("connect gives fields of a key connection");
+    expect((chooseAuth(entry("slack", { connect: { x: "y" }, oauthApp: { clientId: "A", clientSecret: "B" } }), info("slack")) as { error: string }).error).toContain("connect gives fields of a key connection");
+  });
+
+  it("is not in the connection's hash, so changing it replaces nothing, and a lone generic_api_key keeps its 2e hash", () => {
+    const choice = posthog() as never;
+    expect(authHash(choice, { K: "phx_SECRET" })).toBe(keyHash("phx_SECRET"));
+  });
+
+  it("is in the entry's auth key by its names, so a new name makes the choice be made again, and its values do not", () => {
+    const base = entryAuthKey(entry("posthog", { apiKeyName: "K" }));
+    expect(entryAuthKey(entry("posthog", { apiKeyName: "K", connect: { subdomain: "eu" } }))).not.toBe(base);
+    expect(entryAuthKey(entry("posthog", { apiKeyName: "K", connect: { subdomain: "eu" } }))).toBe(entryAuthKey(entry("posthog", { apiKeyName: "K", connect: { subdomain: "us" } })));
   });
 });
 

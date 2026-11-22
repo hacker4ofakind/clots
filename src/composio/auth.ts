@@ -51,7 +51,7 @@ export type AuthChoice =
   | { kind: "oauthApp"; clientId: string; clientSecret: string };
 
 /** What the choice reads of an account's entry. */
-export type AuthEntry = Pick<ComposioAccount, "toolkit" | "account" | "apiKeyName" | "fieldKeys" | "scheme" | "oauthApp">;
+export type AuthEntry = Pick<ComposioAccount, "toolkit" | "account" | "apiKeyName" | "fieldKeys" | "scheme" | "oauthApp" | "connect">;
 
 const isOAuth = (scheme: string) => scheme.startsWith("OAUTH");
 
@@ -67,11 +67,14 @@ function acceptedText(info: ToolkitInfo): string {
 
 /**
  * The way to connect an account, from its entry and what Composio says of its toolkit, or why it cannot. Pure.
- * `provided` names the fields the toolkit's def adds itself (PostHog's `subdomain`), which an entry need not give.
+ * The names in the entry's `connect` (PostHog's `subdomain`) count as given, so `apiKey` fills the one field left.
  */
-export function chooseAuth(a: AuthEntry, info: ToolkitInfo, provided: string[] = []): AuthChoice | { error: string } {
+export function chooseAuth(a: AuthEntry, info: ToolkitInfo): AuthChoice | { error: string } {
   const fail = (reason: string) => ({ error: `${a.toolkit}:${a.account} cannot connect: ${reason}. ${acceptedText(info)}.` });
   const gave = a.apiKeyName !== undefined || a.fieldKeys !== undefined;
+  const connectNames = Object.keys(a.connect ?? {});
+  const connectText = (): { error: string } => fail("connect gives fields of a key connection, so it goes with apiKey or fields, and not with oauthApp or Composio's sign-in");
+  if (connectNames.length > 0 && (a.oauthApp !== undefined || !gave)) return connectText();
 
   if (a.oauthApp !== undefined) {
     const oauth = info.schemes.find((s) => isOAuth(s.scheme));
@@ -93,11 +96,15 @@ export function chooseAuth(a: AuthEntry, info: ToolkitInfo, provided: string[] =
     } else if (keySchemes.length > 1) {
       return fail(`${info.name} has several key schemes (${keySchemes.map((s) => s.scheme).join(", ")}); say which with scheme`);
     }
-    const needed = scheme.required.filter((n) => !provided.includes(n));
+    const needed = scheme.required.filter((n) => !connectNames.includes(n));
+    const unknownConnect = connectNames.filter((n) => !scheme.required.includes(n) && !scheme.optional.includes(n));
+    if (unknownConnect.length > 0) return fail(`${scheme.scheme} has no field ${unknownConnect.join(", ")}, which connect names`);
     if (a.fieldKeys !== undefined) {
       const named = Object.keys(a.fieldKeys);
       const unknown = named.filter((n) => !scheme.required.includes(n) && !scheme.optional.includes(n));
       if (unknown.length > 0) return fail(`${scheme.scheme} has no field ${unknown.join(", ")}`);
+      const twice = named.filter((n) => connectNames.includes(n));
+      if (twice.length > 0) return fail(`${twice.join(", ")} is named in both fields and connect`);
       const absent = needed.filter((n) => !named.includes(n));
       if (absent.length > 0) return fail(`${scheme.scheme} needs the field${absent.length === 1 ? "" : "s"} ${absent.join(", ")}`);
       return { kind: "key", scheme: scheme.scheme, fields: { ...a.fieldKeys } };
@@ -153,5 +160,6 @@ export function fieldValues(choice: Extract<AuthChoice, { kind: "key" }>, secret
 
 /** What the entry's auth fields are called, not what they hold: a change makes the choice be made again. */
 export function entryAuthKey(a: AuthEntry): string {
-  return sha256(JSON.stringify([a.apiKeyName ?? null, a.fieldKeys ?? null, a.scheme ?? null, a.oauthApp ?? null]));
+  // `connect` counts by its names (they decide whether the choice is valid), and only when there is one, so an entry without it keeps its earlier key.
+  return sha256(JSON.stringify([a.apiKeyName ?? null, a.fieldKeys ?? null, a.scheme ?? null, a.oauthApp ?? null, ...(a.connect === undefined ? [] : [Object.keys(a.connect).sort()])]));
 }

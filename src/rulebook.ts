@@ -4,6 +4,7 @@ import path from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 import { isBuiltinSource, isBuiltinToolkit, KIND_PATTERN, SOURCE_KINDS } from "./events/kinds.js";
+import { defaultRecipe } from "./composio/default-recipes.js";
 import { pathsIn } from "./paths.js";
 import type { ClotEvent } from "./events/types.js";
 import { callsPerMonth, MONTHLY_POLLING_CALLS } from "./config.js";
@@ -233,7 +234,7 @@ export const ComposioRecipeSchema = z
     toolkit: z
       .string()
       .regex(/^[a-z][a-z0-9_]*$/, "a toolkit is Composio's lowercase slug")
-      .refine((name) => !isBuiltinToolkit(name), "a Composio recipe cannot name a toolkit that has built-in support (linear, notion, stripe, googlecalendar, posthog)")
+      .refine((name) => !isBuiltinToolkit(name), "a Composio recipe cannot name a toolkit that has built-in support (linear, notion, stripe, googlecalendar)")
       .refine((name) => !isBuiltinSource(name), "a Composio recipe cannot name a toolkit like a built-in source: the toolkit becomes its events' source"),
     identity: z.strictObject({ tool: z.string().regex(COMPOSIO_SLUG), path: z.string().min(1) }).optional(),
     ownWrites: z.array(z.strictObject({ tool: z.string().regex(COMPOSIO_SLUG), ids: z.array(z.string().min(1)).min(1) })).optional(),
@@ -530,16 +531,20 @@ export class Rulebook {
     return entry === undefined ? undefined : this.file(entry.file).webhooks.find((recipe) => recipe.name === name);
   }
 
-  /** The Composio recipe in force for a toolkit: the first in file order. */
+  /** The Composio recipe in force for a toolkit: the first in file order; with none saved, the one the daemon ships for it, if it has one. */
   composioRecipe(toolkit: string): ComposioRecipe | undefined {
     const entry = this.recipes().find((candidate) => candidate.name === toolkit && candidate.kind === "composio");
-    return entry === undefined ? undefined : this.file(entry.file).composio.find((recipe) => recipe.toolkit === toolkit);
+    return entry === undefined ? defaultRecipe(toolkit) : this.file(entry.file).composio.find((recipe) => recipe.toolkit === toolkit);
   }
 
-  /** The file whose recipe is in force for the name (a toolkit, or a webhook or watch recipe's name), if any. */
-  recipeFile(name: string): { file: string; kind: "watch" | "webhook" | "composio" } | undefined {
+  /**
+   * The file whose recipe is in force for the name (a toolkit, or a webhook or watch recipe's name), if any. A toolkit
+   * with only the recipe the daemon ships has no file: it is `shipped`, and `file` is empty.
+   */
+  recipeFile(name: string): { file: string; kind: "watch" | "webhook" | "composio"; shipped?: true } | undefined {
     const entry = this.recipes().find((candidate) => candidate.name === name);
-    return entry === undefined ? undefined : { file: entry.file, kind: entry.kind };
+    if (entry === undefined) return defaultRecipe(name) === undefined ? undefined : { file: "", kind: "composio", shipped: true };
+    return { file: entry.file, kind: entry.kind };
   }
 
   /** Every recipe in force, with its file, in file order; of two with one name, the first. A watch or webhook recipe named like a configured toolkit is not in force. */

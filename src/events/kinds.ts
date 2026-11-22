@@ -11,10 +11,9 @@ export const SOURCE_KINDS = {
   calendar: ["reminder"],
   sentry: ["error_alert", "error_new"],
   vercel: ["deploy_failed"],
-  posthog: ["analytics_event"],
   // What the periodic read of the claude.ai connectors found.
   sweep: ["finding"],
-  // A Composio toolkit with no source of its own (slack, say) is a source under its slug, not listed here, and produces `trigger` events.
+  // A Composio toolkit with no source of its own (slack, posthog, say) is a source under its slug, not listed here: its kinds are its recipe's, or `trigger`.
 } as const satisfies Record<string, readonly string[]>;
 
 export type BuiltinSource = keyof typeof SOURCE_KINDS;
@@ -26,7 +25,7 @@ export function isBuiltinSource(name: string): name is BuiltinSource {
 }
 
 /** The toolkits with a built-in mapping and def: a Composio recipe cannot name one. */
-export const BUILTIN_TOOLKITS = ["linear", "notion", "stripe", "googlecalendar", "posthog"] as const;
+export const BUILTIN_TOOLKITS = ["linear", "notion", "stripe", "googlecalendar"] as const;
 
 export const isBuiltinToolkit = (name: string): boolean => (BUILTIN_TOOLKITS as readonly string[]).includes(name);
 
