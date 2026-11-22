@@ -1,6 +1,8 @@
 node_modules/
 .env
 clots.config.json
+clots.config.json.bak
+clots.config.json.tmp
 data/
 rulebook/
 .spike-2e/
