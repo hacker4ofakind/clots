@@ -326,6 +326,43 @@ function refuseSharedEnvKeys(file: z.infer<typeof FileSchema>, accounts: Composi
   });
 }
 
+/** A `sources.composio` entry the daemon left out because it is not usable, and why. */
+export interface SkippedAccount {
+  entry: string;
+  problem: string;
+}
+
+/**
+ * `loadConfig`, except that a bad `sources.composio` entry is left out and reported instead of stopping the
+ * daemon: one integration's mistake must not take every Clot offline. Anything wrong outside those entries
+ * still throws. Entries are tried in order, each on top of the ones kept, so a duplicate or a clash over a
+ * `.env` key skips the later entry.
+ */
+export function loadConfigLeaving(json: unknown, env: Record<string, string | undefined>): { config: Config; skipped: SkippedAccount[] } {
+  try {
+    return { config: loadConfig(json, env), skipped: [] };
+  } catch (error) {
+    const root = json as { sources?: { composio?: unknown } } | null;
+    const entries = root?.sources?.composio;
+    if (!Array.isArray(entries) || entries.length === 0) throw error;
+    const withEntries = (list: unknown[]) => ({ ...(json as object), sources: { ...root!.sources, composio: list } });
+    // A problem that stays with no entries at all is not an entry's: it stops the daemon as before.
+    loadConfig(withEntries([]), env);
+    const kept: unknown[] = [];
+    const skipped: SkippedAccount[] = [];
+    for (const entry of entries) {
+      try {
+        loadConfig(withEntries([...kept, entry]), env);
+        kept.push(entry);
+      } catch (problem) {
+        const e = entry as { toolkit?: unknown; account?: unknown } | null;
+        skipped.push({ entry: `${String(e?.toolkit ?? "?")}:${String(e?.account ?? "?")}`, problem: problem instanceof Error ? problem.message : String(problem) });
+      }
+    }
+    return { config: loadConfig(withEntries(kept), env), skipped };
+  }
+}
+
 export function loadConfig(json: unknown, env: Record<string, string | undefined>): Config {
   const raw = (json as { sources?: Record<string, unknown> } | null)?.sources;
   for (const name of MOVED_SOURCES) {

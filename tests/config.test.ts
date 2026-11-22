@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, loadConfigLeaving } from "../src/config.js";
 
 const json = {
   timeZone: "UTC",
@@ -315,4 +315,34 @@ it("reads the sweep and an explicit empty spend setting as no warning", () => {
 
 it("keeps the names daemon and sweep for the spend log", () => {
   for (const name of ["daemon", "sweep"]) expect(() => loadConfig({ ...json, clots: [{ name, repoUrl: "https://github.com/o/r.git" }] }, env)).toThrow();
+});
+
+describe("loadConfigLeaving", () => {
+  const withUrl = (...accounts: Record<string, unknown>[]) => ({ ...composio(...accounts), publicUrl: "https://x.ts.net" });
+  const linear = { toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY" };
+  const posthog = { toolkit: "posthog", account: "prod", clot: "graphite", audience: "team", selfIsUser: true, apiKey: "PH_KEY" };
+
+  it("leaves out an entry that is not usable and keeps the others", () => {
+    const { config, skipped } = loadConfigLeaving(withUrl(linear, posthog), composioKeys);
+    expect(config.sources.composio.map((a) => a.toolkit)).toEqual(["linear"]);
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.entry).toBe("posthog:prod");
+    expect(skipped[0]!.problem).toContain("projectId");
+  });
+
+  it("skips the later entry of a pair that clash, and one whose .env key is missing", () => {
+    const missing = { ...linear, account: "other", apiKey: "NOT_SET" };
+    const { config, skipped } = loadConfigLeaving(withUrl(linear, linear, missing), composioKeys);
+    expect(config.sources.composio).toHaveLength(1);
+    expect(skipped.map((s) => s.entry)).toEqual(["linear:team", "linear:other"]);
+  });
+
+  it("reports nothing when every entry is usable", () => {
+    expect(loadConfigLeaving(withUrl(linear), composioKeys).skipped).toEqual([]);
+  });
+
+  it("still stops for a problem outside the entries", () => {
+    expect(() => loadConfigLeaving(withUrl(posthog), { ...composioKeys, DISCORD_BOT_TOKEN: "" })).toThrow("DISCORD_BOT_TOKEN");
+    expect(() => loadConfigLeaving({ ...withUrl(linear), maxProposals: 0 }, composioKeys)).toThrow("maxProposals");
+  });
 });

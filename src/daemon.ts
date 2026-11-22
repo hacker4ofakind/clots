@@ -7,7 +7,7 @@ import { CLOT_SYSTEM_PROMPT, composioNote, HOME_SYSTEM_PROMPT } from "./agent/pr
 import { SdkRunner } from "./agent/runner.js";
 import { DiscordChat } from "./chat/discord.js";
 import { Clot } from "./clot.js";
-import { calendarPollingCalls, HOME_CLOT, isCalendar, loadConfig, type AccountBase, type NotionAccount } from "./config.js";
+import { calendarPollingCalls, HOME_CLOT, isCalendar, loadConfigLeaving, type AccountBase, type NotionAccount } from "./config.js";
 import { githubCommentSender } from "./events/github-comment.js";
 import { isSelfCaused, repoSlug } from "./events/github.js";
 import { enricherBySource, type Enricher } from "./enrich.js";
@@ -73,7 +73,8 @@ import { skipList, Sweeper } from "./sweep.js";
 import { CacheKeeper } from "./keep-warm.js";
 import { makeReground } from "./reground.js";
 
-const config = loadConfig(JSON.parse(fs.readFileSync("clots.config.json", "utf8")), process.env);
+const { config, skipped: skippedAccounts } = loadConfigLeaving(JSON.parse(fs.readFileSync("clots.config.json", "utf8")), process.env);
+for (const s of skippedAccounts) console.error(`[config] sources.composio entry ${s.entry} is not usable and is left out: ${s.problem}`);
 
 // The intake port is taken first, before anything is read or changed. It is what keeps a second
 // daemon from starting beside this one, and it lets GitHub's deliveries be stored while the rest
@@ -484,6 +485,8 @@ await asks.sweep(true);
 asks.startTimers();
 await waiting.init().catch((error) => console.error("[waiting] clots-waiting could not be set up; it is tried again at the next change:", error));
 setInterval(() => void asks.sweep(false).catch((error) => console.error("[asks] the hourly sweep failed:", error)), 60 * 60_000);
+
+for (const s of skippedAccounts) void tellHome(`The Composio entry \`${s.entry}\` in clots.config.json is not usable, so it is left out and everything else runs: ${s.problem}`).catch(() => undefined);
 
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
