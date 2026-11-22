@@ -38,7 +38,7 @@ node_now=$(node --version)
 node_recorded=""
 if [ -f data/node-version ]; then node_recorded=$(cat data/node-version); fi
 
-if echo "$changed" | grep -qx 'package-lock.json' || [ ! -d node_modules ] || [ "$node_recorded" != "$node_now" ]; then
+if grep -qx 'package-lock.json' <<< "$changed" || [ ! -d node_modules ] || [ "$node_recorded" != "$node_now" ]; then
   echo "npm ci: running"
   npm ci
   echo "$node_now" > data/node-version
@@ -46,7 +46,7 @@ else
   echo "npm ci: lockfile unchanged, skipped"
 fi
 
-if echo "$changed" | grep -q '^docker/' || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+if grep -q '^docker/' <<< "$changed" || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "image: rebuilding $IMAGE"
   docker build -t "$IMAGE" docker
 else

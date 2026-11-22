@@ -115,7 +115,7 @@ systemctl is-active --quiet docker || systemctl enable --now docker
 
 NEW_GROUPS=()
 for grp in docker systemd-journal; do
-  if ! id -nG "$CLOTS_USER" | tr ' ' '\n' | grep -qx "$grp"; then
+  if [[ " $(id -nG "$CLOTS_USER") " != *" $grp "* ]]; then
     usermod -aG "$grp" "$CLOTS_USER"
     NEW_GROUPS+=("$grp")
   fi
@@ -123,7 +123,8 @@ done
 
 # --- Node ----------------------------------------------------------------------------------------
 say "Node.js $NODE_VERSION"
-want=$(apt-cache madison nodejs | awk -v v="$NODE_VERSION" 'index($3, v "-") == 1 { print $3; exit }')
+# awk reads to the end: exiting early would break the pipe and, with pipefail, kill the script.
+want=$(apt-cache madison nodejs | awk -v v="$NODE_VERSION" 'index($3, v "-") == 1 && !found { print $3; found = 1 }')
 if [ -z "$want" ]; then
   echo "Node.js $NODE_VERSION is not in the NodeSource $NODE_MAJOR.x repository. Stopping." >&2
   exit 1
@@ -135,7 +136,8 @@ if [ "$have" != "$want" ]; then
 else
   done_already "nodejs $want"
 fi
-apt-mark showhold | grep -qx nodejs || apt-mark hold nodejs
+held=" $(apt-mark showhold | tr '\n' ' ') "
+[[ $held == *" nodejs "* ]] || apt-mark hold nodejs
 
 # --- cloud-init ----------------------------------------------------------------------------------
 say "cloud-init"
@@ -205,7 +207,8 @@ systemctl is-active --quiet clots-backup.timer || systemctl start clots-backup.t
 # --- Funnel --------------------------------------------------------------------------------------
 say "Tailscale Funnel on $FUNNEL_PORT"
 FUNNEL_FAILED=0
-if tailscale funnel status 2>&1 | grep -q "$FUNNEL_PORT"; then
+funnel_status=$(tailscale funnel status 2>&1 || true)
+if [[ $funnel_status == *"$FUNNEL_PORT"* ]]; then
   done_already "funnel"
 elif ! tailscale funnel --bg "$FUNNEL_PORT"; then
   FUNNEL_FAILED=1
@@ -238,7 +241,8 @@ if [ -n "$BUILD_SECONDS" ]; then build_note="${BUILD_SECONDS}s"; else build_note
 echo "  Image build: $build_note"
 echo "  .env:                $ENV_STATE ($CHECKOUT/.env)"
 echo "  clots.config.json:   $CONFIG_STATE ($CHECKOUT/clots.config.json)"
-echo "  Funnel:      $(tailscale funnel status 2>/dev/null | grep -o 'https://[^ ]*' | head -1 || true)"
+funnel_url=$(tailscale funnel status 2>/dev/null | grep -o 'https://[^ ]*' | head -1 || true)
+echo "  Funnel:      $funnel_url"
 if [ "${#NEW_GROUPS[@]}" -gt 0 ]; then
   echo "  '$CLOTS_USER' was added to: ${NEW_GROUPS[*]}. Log in again for that to take effect (the service is unaffected)."
 fi
