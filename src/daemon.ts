@@ -129,6 +129,11 @@ console.log(`[events] listening for webhooks on http://127.0.0.1:${config.intake
  */
 const definitions: { name: string; repoUrl?: string; testCommand?: string }[] = [...(config.home ? [{ name: HOME_CLOT }] : []), ...config.clots];
 const names = definitions.map((c) => c.name);
+/** Every Clot with a line on what it looks after: what the sweep and each Clot's own session are told of them. */
+const roster = (): { name: string; about: string }[] => [
+  ...(config.home ? [{ name: HOME_CLOT, about: "anything that belongs to no project" }] : []),
+  ...config.clots.map((c) => ({ name: c.name, about: c.about ?? `the project in the repository ${repoSlug(c.repoUrl)}` })),
+];
 
 const chat = new DiscordChat(config.discordToken, config.guildId);
 /** What the router, triage and the routing call cost, booked to the Clot they were for; the routing call belongs to the daemon. */
@@ -450,6 +455,7 @@ for (const c of definitions) {
     ...(calendarUndo ? { calendar: calendarUndo } : {}),
     ...(composioUndo && composio ? { composio: { undo: (clot: string) => composioUndo.undo(clot), reconnect: (name: string) => composio.reconnect(name) } } : {}),
     makeTools: (ctx) => makeTools(toolDeps, ctx),
+    roster,
     standingFor: (name, event) => matchStanding(rulebook.standingFor(name), event, event.kind === "batch" ? store.eventsMergedInto(event.id) : []),
     rules: {
       list: (name) => showRules(toolDeps, name),
@@ -711,7 +717,7 @@ const sweeper = new Sweeper({
   enabled: config.sweep.enabled,
   everyMinutes: config.sweep.everyMinutes,
   ...(sweepAccount === undefined ? {} : { run: (req) => runners.get(sweepAccount)!.runOneOff(req) }),
-  clots: () => [...config.clots.map((c) => ({ name: c.name, about: c.about ?? `the project in the repository ${repoSlug(c.repoUrl)}` })), ...(config.home ? [{ name: HOME_CLOT, about: "anything that belongs to no project" }] : [])],
+  clots: roster,
   skip: () => skipList(config),
   // A gate, or the usage limit for any Clot or the workers: the sweep waits.
   held: () => gate().holds !== null || workers.isPaused() || names.some((name) => (store.getClot(name)?.pausedUntil ?? 0) * 1000 > Date.now()),

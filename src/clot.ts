@@ -11,6 +11,7 @@ import { KEEP_WARM_PROMPT, KEEP_WARM_RETRY_MS } from "./keep-warm.js";
 import type { ClotEvent } from "./events/types.js";
 import { OPUS } from "./models.js";
 import { REGROUND_FAILED_NOTE, regroundNote, type RegroundOutcome } from "./reground.js";
+import { SessionRoster, type RosterEntry } from "./roster.js";
 import type { BookArgs } from "./spend.js";
 import type { Router } from "./router.js";
 import type { InboxRow, SessionRow, Store } from "./store.js";
@@ -62,6 +63,8 @@ export interface ClotDeps {
   spend?: { book(a: BookArgs): Promise<void>; report(clot: string): Promise<string> };
   /** Checks a recap against the current state before the new session's first turn. Absent: the recap is taken as written. */
   reground?: (clot: string, recap: string) => Promise<RegroundOutcome>;
+  /** Every Clot the daemon runs, this one included, each with a line on what it looks after. Absent: the Clot is told of no others. */
+  roster?: () => RosterEntry[];
 }
 
 /** A command the daemon answers at once, without a turn and without the session. */
@@ -97,10 +100,15 @@ export class Clot {
   private liveContext?: TurnContext;
   /** The last of the daemon's notes that the running turn was given, or 0 when it was given none. */
   private liveNotes = 0;
+  /** The roster the running turn was told of by a note, to be recorded once it has read it. */
+  private liveRoster?: { session: string; told: string };
+  private roster?: SessionRoster;
   private draining = false;
   private posts: Promise<void> = Promise.resolve();
 
-  constructor(private d: ClotDeps) {}
+  constructor(private d: ClotDeps) {
+    if (d.roster) this.roster = new SessionRoster({ store: d.store, name: d.name, roster: d.roster });
+  }
 
   async init(): Promise<void> {
     const { store, chat, name } = this.d;
@@ -194,7 +202,7 @@ export class Clot {
       seed: session.seed,
       seedReason: session.seedReason,
       interrupted: session.interrupted,
-      notes: this.takeNotes(),
+      notes: [...this.takeNotes(), ...this.rosterNote(session)],
       workers: this.workerLines(),
       ...(gate.holds === null ? {} : { tight: describeGate(gate, this.d.timeZone, this.d.now().getTime()) }),
     };
@@ -242,6 +250,7 @@ export class Clot {
         role: "main",
         model: OPUS,
         tools: this.d.makeTools?.({ clot: name, kind: "chat", outsider: true }),
+        roster: this.rosterPrompt(session),
         noTools: true,
         onText: (text) => void reply.push(text),
       });
@@ -411,6 +420,8 @@ export class Clot {
     // The notes this turn was given have been read, unless it failed. One that arrived meanwhile waits for the next turn.
     if (result.ok && this.liveNotes > 0) store.clearNotes(name, this.liveNotes);
     this.liveNotes = 0;
+    if (result.ok && this.liveRoster) this.roster?.markTold({ id: this.liveRoster.session }, this.liveRoster.told);
+    this.liveRoster = undefined;
 
     // The session exists on disk once any model response has come back.
     if (result.ok || result.contextPercent > 0) store.markSessionStarted(session.id);
@@ -502,6 +513,7 @@ export class Clot {
       role: "main",
       model: OPUS,
       tools: this.d.makeTools?.({ clot: name, kind: "event", event, outsider: row.outsider }),
+      roster: this.rosterPrompt(session),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -527,6 +539,7 @@ export class Clot {
       role: "main",
       model: OPUS,
       tools: this.d.makeTools?.({ clot: name, kind: "event", digest: events, outsider: row.outsider }),
+      roster: this.rosterPrompt(session),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -548,6 +561,7 @@ export class Clot {
       role: "main",
       model: OPUS,
       tools: this.d.makeTools?.({ clot: name, kind: "worker", outsider: row.outsider, ...(row.kind === "choice" ? { fromTimeout: true } : {}) }),
+      roster: this.rosterPrompt(session),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -571,6 +585,18 @@ export class Clot {
     const notes = this.d.store.notes(this.d.name);
     this.liveNotes = notes.at(-1)?.seq ?? 0;
     return notes.map((note) => note.text);
+  }
+
+  /** What this session's system prompt says of the other Clots. Only the turn that creates the session sets its prompt; later turns send the same text, which Claude Code ignores on a resume. */
+  private rosterPrompt(session: SessionRow): string | undefined {
+    return this.roster?.prompt(session);
+  }
+
+  /** A note for the turn that is about to start when the Clots changed after the session's prompt was written; recorded as given once the turn has read it. */
+  private rosterNote(session: SessionRow): string[] {
+    const note = this.roster?.note(session);
+    this.liveRoster = note === undefined ? undefined : { session: session.id, told: note.told };
+    return note === undefined ? [] : [note.text];
   }
 
   /** What to do with each piece of text the Clot writes during a turn: remember it and post it, in order. */
@@ -606,6 +632,7 @@ export class Clot {
       role: "main",
       model: OPUS,
       tools: this.d.makeTools?.(context),
+      roster: this.rosterPrompt(session),
       onText: this.sayIn(session.channelId),
     });
     return this.live.done;
@@ -648,6 +675,7 @@ export class Clot {
         effort: "medium",
         role: "main",
         model: OPUS,
+        roster: this.rosterPrompt(old),
         onText: (text) => void parts.push(text),
       });
       await chat.post(old.channelId, words.notice).catch(() => undefined);

@@ -37,6 +37,8 @@ export interface MainTurnRequest extends TurnBase {
   role: "main";
   /** The daemon's tools for this turn. They run in the daemon, and are made for the turn so that they know what kind it is. */
   tools?: DaemonTools;
+  /** What the session's system prompt says of the other Clots, appended after the Clot's own prompt. Only the turn that creates a session sets its prompt: on a resume Claude Code keeps the one the session began with. */
+  roster?: string;
   /**
    * A keep-warm turn: every tool call is refused. The tools stay in the request so that its prefix is the one
    * the Clot's other turns send, which is what the ping keeps cached.
@@ -191,12 +193,13 @@ export interface RunnerOptions {
 export function turnOptions(req: TurnRequest, o: RunnerOptions): Options {
   const cwd = req.cwd ?? o.cwd ?? CWD;
   const container = containerName(o.clot);
+  const roster = req.role === "main" ? (req.roster ?? "") : "";
   const common = {
     model: req.model,
     effort: req.effort,
     cwd,
     allowDangerouslySkipPermissions: true,
-    systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: req.systemPrompt ?? o.systemPrompt ?? CLOT_SYSTEM_PROMPT },
+    systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: (req.systemPrompt ?? o.systemPrompt ?? CLOT_SYSTEM_PROMPT) + roster },
   };
   if (req.role === "worker") {
     const env = { ...o.env, ...req.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
