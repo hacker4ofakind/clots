@@ -47,6 +47,7 @@ export const TOOL_AXES: Record<RatedTool, Axes> = {
   // The two that only read, and the two that rate nothing themselves: a draft's reads are counted like composio_run's, and a set recipe is a rulebook edit.
   composioToolkit: LOW,
   composioSamples: LOW,
+  composioCheckEntry: LOW,
   composioRecipeTry: LOW,
   composioRecipe: LOW,
   mcpList: LOW,

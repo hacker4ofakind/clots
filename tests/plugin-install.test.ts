@@ -47,7 +47,7 @@ describe("the skill", () => {
   });
 
   it("names all four tools, so a rename breaks this", () => {
-    for (const name of ["composio_toolkit", "composio_samples", "composio_try", "rulebook_composio"]) expect(SKILL).toContain(name);
+    for (const name of ["composio_toolkit", "composio_check_entry", "composio_samples", "composio_try", "rulebook_composio"]) expect(SKILL).toContain(name);
   });
 
   it("names the config fields of an entry", () => {

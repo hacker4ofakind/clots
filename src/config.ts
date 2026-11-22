@@ -326,6 +326,25 @@ function refuseSharedEnvKeys(file: z.infer<typeof FileSchema>, accounts: Composi
   });
 }
 
+/**
+ * What is wrong with one proposed `sources.composio` entry, by the same schemas the loader applies; undefined
+ * when it fits. It cannot see `.env`, so a key it names is not checked to exist. `clots` are the configured Clot names.
+ */
+export function composioEntryProblems(entry: unknown, clots: string[]): string | undefined {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return "an entry is an object";
+  const toolkit = (entry as { toolkit?: unknown }).toolkit;
+  const schema: z.ZodType = COMPOSIO_TOOLKITS[toolkit as keyof typeof COMPOSIO_TOOLKITS] ?? GENERIC_TOOLKIT;
+  const parsed = schema.safeParse(entry);
+  if (!parsed.success) return composioIssues(0, parsed.error).replaceAll("sources.composio[0].", "");
+  const a = parsed.data as { clot?: string; shared?: true; triggers?: { slug: string }[] };
+  if ((a.clot === undefined) === (a.shared === undefined)) return "give either clot or shared: true";
+  if (a.clot !== undefined && !clots.includes(a.clot)) return `there is no Clot named ${a.clot} (the Clots are ${clots.join(", ") || "none"})`;
+  const slugs = (a.triggers ?? []).map((t) => t.slug);
+  const twice = slugs.find((slug, i) => slugs.indexOf(slug) !== i);
+  if (twice !== undefined) return `the trigger ${twice} is listed twice`;
+  return undefined;
+}
+
 /** A `sources.composio` entry the daemon left out because it is not usable, and why. */
 export interface SkippedAccount {
   entry: string;

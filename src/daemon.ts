@@ -337,6 +337,7 @@ if (composio !== undefined && composioAsk !== undefined) {
     meter: composioMeter,
     now: () => Date.now(),
     recipe: (toolkit) => rulebook.composioRecipe(toolkit),
+    clotNames: () => [...names],
     recipeFile: (toolkit) => rulebook.recipeFile(toolkit)?.file,
   });
 }

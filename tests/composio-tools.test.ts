@@ -102,6 +102,7 @@ beforeEach(() => {
     meter,
     now: () => NOW,
     recipe: (t) => rulebook.composioRecipe(t),
+    clotNames: () => ["graphite"],
     recipeFile: (t) => rulebook.recipeFile(t)?.file,
   });
   store.composio.setAccount("slack:work", { connectionId: "ca_slack", status: "active" });
@@ -119,6 +120,31 @@ beforeEach(() => {
 
 const keep = (n: number, over: Partial<Parameters<Store["composio"]["keepDelivery"]>[0]> = {}) =>
   store.composio.keepDelivery({ webhookId: `msg_${n}`, user: "slack:work", slug: trig, eventId: `slack:work:${n}`, payload, receivedAt: NOW - n * 1000, ...over });
+
+describe("composio_check_entry", () => {
+  const check = (entry: Record<string, unknown>) => tools().composioCheckEntry!({ entry });
+
+  it("refuses the PostHog entry that stopped the daemon, naming each fault", async () => {
+    const text = await check({ toolkit: "posthog", account: "prod", clot: "graphite", selfIsUser: true, apiKey: "PH_KEY" });
+    expect(text).toContain("does not fit");
+    for (const word of ["projectId", "events", "selfIsUser"]) expect(text).toContain(word);
+  });
+
+  it("accepts a complete built-in entry and a clot that does not exist is refused", async () => {
+    const ok = { toolkit: "posthog", account: "prod", clot: "graphite", apiKey: "PH_KEY", projectId: 1, events: ["signup"] };
+    expect(await check(ok)).toContain("fits the daemon's schema");
+    expect(await check({ ...ok, clot: "nobody" })).toContain("no Clot named nobody");
+  });
+
+  it("checks a generic entry's triggers against Composio: they must exist and their required config must be given", async () => {
+    api.triggerDetails.set(trig, { slug: trig, name: "m", type: "webhook", config: { required: ["channel_id"], properties: { channel_id: {} } }, payload: {} });
+    const entry = (config: Record<string, unknown>, slug = trig) => ({ toolkit: "slack", account: "w", shared: true, triggers: [{ slug, config }] });
+    expect(await check(entry({}))).toContain("needs channel_id");
+    expect(await check(entry({ channel_id: "C1", extra: 1 }))).toContain("no field extra");
+    expect(await check(entry({ channel_id: "C1" }))).toContain("and Composio's trigger configs");
+    expect(await check(entry({}, "SLACK_NOPE"))).toContain("Composio has no such trigger");
+  });
+});
 
 describe("composio_toolkit", () => {
   it("lists Slack's managed scheme and its nine triggers as webhook triggers, and marks each tool read or write", async () => {

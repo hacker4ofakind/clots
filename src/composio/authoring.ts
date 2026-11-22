@@ -1,6 +1,6 @@
 import { clip } from "../events/body.js";
 import { dataBlock } from "../events/format.js";
-import type { ComposioAccount } from "../config.js";
+import { composioEntryProblems, type ComposioAccount } from "../config.js";
 import { parseComposioRecipe, problemText, type ComposioRecipe } from "../rulebook.js";
 import type { Store } from "../store.js";
 import type { ActionContext } from "./actions.js";
@@ -25,6 +25,8 @@ export interface AuthoringDeps {
   now(): number;
   /** The Composio recipe in force for a toolkit, and the file whose it is. */
   recipe(toolkit: string): ComposioRecipe | undefined;
+  /** The names of the configured Clots, which an entry's `clot` must be one of. */
+  clotNames(): string[];
   recipeFile(toolkit: string): string | undefined;
 }
 
@@ -84,6 +86,40 @@ export class ComposioAuthoring {
     if (t === undefined) return `Composio has no trigger named ${slug}.`;
     const text = `${t.name} (${t.slug}), type ${t.type}.\nConfig schema: ${JSON.stringify(t.config ?? {})}\nPayload schema: ${JSON.stringify(t.payload ?? {})}`;
     return text.length > AUTHORING_LIMITS.schemaChars ? `${text.slice(0, AUTHORING_LIMITS.schemaChars)}\n[cut at ${AUTHORING_LIMITS.schemaChars} characters]` : text;
+  }
+
+  /**
+   * `composio_check_entry`: a proposed `sources.composio` entry against the daemon's own schema for its toolkit, and
+   * its triggers against Composio's: each must exist, and every config field Composio requires must be given.
+   * The Clot runs this before it hands the user an entry. Reads only.
+   */
+  async checkEntry(a: { entry: unknown }): Promise<string> {
+    const problem = composioEntryProblems(a.entry, this.d.clotNames());
+    if (problem !== undefined) return `The entry does not fit: ${problem}. Fix it and check again.`;
+    const entry = a.entry as { toolkit: string; triggers?: { slug: string; config?: Record<string, unknown> }[] };
+    const notes: string[] = [];
+    for (const t of entry.triggers ?? []) {
+      let type;
+      try {
+        type = await this.d.api.triggerType(t.slug);
+      } catch (e) {
+        notes.push(`${t.slug}: Composio could not be asked (${e instanceof Error ? e.message : String(e)}), so its config is not checked.`);
+        continue;
+      }
+      if (type === undefined) {
+        notes.push(`${t.slug}: Composio has no such trigger. List the real ones with composio_toolkit.`);
+        continue;
+      }
+      const schema = (type.config ?? {}) as { required?: unknown; properties?: Record<string, unknown> };
+      const required = Array.isArray(schema.required) ? schema.required.filter((k): k is string => typeof k === "string") : [];
+      const missing = required.filter((k) => t.config?.[k] === undefined);
+      if (missing.length > 0) notes.push(`${t.slug}: its config needs ${missing.join(", ")}. Ask the user for the values; do not guess them.`);
+      const known = schema.properties === undefined ? undefined : Object.keys(schema.properties);
+      const unknown = known === undefined ? [] : Object.keys(t.config ?? {}).filter((k) => !known.includes(k));
+      if (unknown.length > 0) notes.push(`${t.slug}: Composio's config has no field ${unknown.join(", ")} (it has ${known!.join(", ")}).`);
+    }
+    if (notes.length > 0) return `The entry fits the daemon's schema, but:\n${notes.map((n) => `- ${n}`).join("\n")}`;
+    return `The entry fits the daemon's schema${(entry.triggers ?? []).length > 0 ? " and Composio's trigger configs" : ""}. The .env keys it names are not checked: the user must add them.`;
   }
 
   private account(name: string): ComposioAccount | string {

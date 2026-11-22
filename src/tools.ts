@@ -101,6 +101,7 @@ export interface DaemonTools {
   /** The four tools that extend a Composio integration; only when a Composio account is configured. Main session only. */
   composioToolkit?(a: { toolkit: string; trigger?: string }): Promise<string>;
   composioSamples?(a: { account: string; trigger?: string }): Promise<string>;
+  composioCheckEntry?(a: { entry: unknown }): Promise<string>;
   composioRecipeTry?(a: { recipe: unknown; account: string; sample?: string; payload?: unknown; trigger?: string }): Promise<string>;
   /** Sets or removes a Composio recipe: `name` is the toolkit. */
   composioRecipe?(a: { action: "set" | "remove"; file: RuleScope; recipe?: unknown; name?: string }): Promise<string>;
@@ -280,6 +281,7 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       : {
           composioToolkit: (a: { toolkit: string; trigger?: string }) => gate(ctx, "composioToolkit", () => d.composioAuthoring!.toolkit(a)),
           composioSamples: (a: { account: string; trigger?: string }) => gate(ctx, "composioSamples", async () => d.composioAuthoring!.samples(a)),
+          composioCheckEntry: (a: { entry: unknown }) => gate(ctx, "composioCheckEntry", () => d.composioAuthoring!.checkEntry(a)),
           composioRecipeTry: (a: { recipe: unknown; account: string; sample?: string; payload?: unknown; trigger?: string }) => gate(ctx, "composioRecipeTry", () => d.composioAuthoring!.try(ctx, a)),
           composioRecipe: async ({ action, file, recipe, name }: { action: "set" | "remove"; file: RuleScope; recipe?: unknown; name?: string }) => {
             if (action === "remove") return name === undefined ? "Not done: give the recipe's toolkit as name." : submit("composioRecipe", file, { op: "remove_composio", name });
