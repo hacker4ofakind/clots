@@ -20,6 +20,36 @@ export type OnCost = (usd: number, clot: string | null) => void;
  * the result's own cost, success or not. Never throws: a failed call answers nothing.
  */
 export async function structuredQuery(call: StructuredCall): Promise<{ output?: unknown; costUsd?: number }> {
+  await acquireSlot();
+  try {
+    return await run(call);
+  } finally {
+    releaseSlot();
+  }
+}
+
+/** Each call spawns its own Claude Code process, so only this many run at once; the rest wait their turn. */
+export const MAX_CONCURRENT_CALLS = 4;
+let running = 0;
+const waiting: (() => void)[] = [];
+
+async function acquireSlot(): Promise<void> {
+  if (running < MAX_CONCURRENT_CALLS) {
+    running++;
+    return;
+  }
+  // The releasing call hands its slot straight to the next waiter, so `running` stays put.
+  await new Promise<void>((resolve) => waiting.push(resolve));
+}
+
+function releaseSlot(): void {
+  const next = waiting.shift();
+  if (next) next();
+  else running--;
+}
+
+// The timeout starts when the call gets its slot, not while it waits in the queue.
+async function run(call: StructuredCall): Promise<{ output?: unknown; costUsd?: number }> {
   const abort = new AbortController();
   const timer = call.timeoutMs === undefined ? undefined : setTimeout(() => abort.abort(), call.timeoutMs);
   try {
