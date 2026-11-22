@@ -306,6 +306,7 @@ const composio =
         api: composioApi,
         store,
         accounts: config.sources.composio,
+        skipped: skippedAccounts.map((s) => s.entry),
         publicUrl: config.publicUrl,
         tell: (account, text) => tellComposio(account)(text),
         tellHome,

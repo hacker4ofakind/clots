@@ -24,6 +24,8 @@ export interface ComposioDeps {
   api: ComposioApi;
   store: Store;
   accounts: ComposioAccount[];
+  /** `<toolkit>:<account>` of entries the loader left out as unusable: not removed from the configuration, so their triggers and rows are kept until the entry is mended or taken out on purpose. */
+  skipped?: string[];
   /** The tunnel's address, without a trailing slash. Without it no webhook subscription is made. */
   publicUrl: string;
   /** Posts in the channel of the Clot the account is bound to (the home Clot's, for a shared account). Never throws. */
@@ -225,7 +227,7 @@ export class Composio implements ToolkitHost {
 
   /** Deletes the trigger instances of an account that left the configuration. Its connection stays: it is cheap, and reconnecting stays instant. */
   async reconcileRemoved(): Promise<void> {
-    const wanted = new Set(this.d.accounts.map(userOf));
+    const wanted = new Set([...this.d.accounts.map(userOf), ...(this.d.skipped ?? [])]);
     for (const row of this.d.store.composio.accounts()) {
       if (wanted.has(row.user)) continue;
       for (const t of this.d.store.composio.triggers(row.user)) {

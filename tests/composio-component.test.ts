@@ -324,6 +324,19 @@ describe("reconcile", () => {
     expect(api.connections.has(established)).toBe(true);
   });
 
+  it("keeps the triggers and row of an account whose entry was left out as unusable, until the entry is taken out on purpose", async () => {
+    make([linear, notion]);
+    await composio.reconcile();
+    make([notion]);
+    (composio as unknown as { d: { skipped: string[] } }).d.skipped = ["linear:proton"];
+    await composio.reconcileRemoved();
+    expect(store.composio.account("linear:proton")).toBeDefined();
+    expect(store.composio.triggers("linear:proton").length).toBeGreaterThan(0);
+    (composio as unknown as { d: { skipped: string[] } }).d.skipped = [];
+    await composio.reconcileRemoved();
+    expect(store.composio.account("linear:proton")).toBeUndefined();
+  });
+
   it("deletes the triggers of an account that left the configuration, leaving its connection", async () => {
     make([linear, notion]);
     await composio.reconcile();
