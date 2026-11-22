@@ -1,5 +1,6 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
-import { loadConfig, loadConfigLeaving } from "../src/config.js";
+import { composioEntryProblems, loadConfig, loadConfigLeaving } from "../src/config.js";
 
 const json = {
   timeZone: "UTC",
@@ -101,7 +102,7 @@ it("reads Composio accounts of every kind, replacing each .env key by its value 
       { toolkit: "notion", account: "space", shared: true, apiKey: "NOTION_KEY", audience: "private" },
       { toolkit: "stripe", account: "shop", clot: "graphite", apiKey: "STRIPE_KEY" },
       { toolkit: "googlecalendar", account: "me", shared: true, audience: "private", leadTimes: ["2d", "90m"], pollMinutes: 10 },
-      { toolkit: "posthog", account: "app", clot: "graphite", apiKey: "PH_KEY", projectId: 42, events: ["signup"] },
+      { toolkit: "posthog", account: "app", clot: "graphite", apiKey: "PH_KEY", connect: { subdomain: "eu" }, triggers: [{ slug: "POSTHOG_EVENT_CAPTURED", config: { project_id: 42, event_names: ["signup"] } }] },
     ),
     composioKeys,
   );
@@ -113,7 +114,47 @@ it("reads Composio accounts of every kind, replacing each .env key by its value 
   expect(stripe).toMatchObject({ toolkit: "stripe", audience: "public", apiKey: "rk_1", checkoutCompleted: false });
   expect(calendar).toMatchObject({ toolkit: "googlecalendar", audience: "private", leadMinutes: [2880, 90], pollMinutes: 10 });
   expect(calendar.apiKey).toBeUndefined();
-  expect(posthog).toMatchObject({ toolkit: "posthog", region: "us", projectId: 42, events: ["signup"] });
+  expect(posthog).toMatchObject({ toolkit: "posthog", apiKey: "phx_1", apiKeyName: "PH_KEY", connect: { subdomain: "eu" }, triggers: [{ slug: "POSTHOG_EVENT_CAPTURED", config: { project_id: 42, event_names: ["signup"] } }] });
+  expect(linear.connect).toBeUndefined();
+});
+
+describe("connect, for a toolkit without built-in support", () => {
+  const slack = { toolkit: "supabase", account: "db", shared: true, fields: { bearer_token: "LINEAR_KEY" } };
+
+  it("takes a record of non-empty strings with an apiKey or fields, and keeps it on the account", () => {
+    expect(loadConfig(composio({ ...slack, connect: { full: "https://x.supabase.co" } }), composioKeys).sources.composio[0].connect).toEqual({ full: "https://x.supabase.co" });
+    expect(loadConfig(composio({ toolkit: "posthog", account: "p", shared: true, apiKey: "PH_KEY", connect: { subdomain: "us" } }), composioKeys).sources.composio[0].connect).toEqual({ subdomain: "us" });
+  });
+
+  it("refuses a value that is empty or not a string, and a connect with neither apiKey nor fields", () => {
+    expect(() => loadConfig(composio({ ...slack, connect: { full: "" } }), composioKeys)).toThrow("connect");
+    expect(() => loadConfig(composio({ ...slack, connect: { full: 3 } }), composioKeys)).toThrow("connect");
+    expect(() => loadConfig(composio({ toolkit: "slack", account: "s", shared: true, connect: { x: "y" } }), composioKeys)).toThrow("connect goes with apiKey or fields");
+  });
+
+  it("is not for a built-in toolkit, which has its own strict entry", () => {
+    expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY", connect: { x: "y" } }), composioKeys)).toThrow("connect");
+  });
+});
+
+describe("PostHog's old entry", () => {
+  const old = { toolkit: "posthog", account: "prod", clot: "graphite", apiKey: "PH_KEY", region: "eu", projectId: 1, events: ["signup"] };
+  const message = "PostHog is a generic entry now: put the region in connect.subdomain and the project and events in a POSTHOG_EVENT_CAPTURED trigger's config (project_id, event_names)";
+
+  it("is refused with what to write instead, whichever of its keys is there", () => {
+    expect(() => loadConfig(composio(old), composioKeys)).toThrow(message);
+    const bare = { toolkit: "posthog", account: "prod", clot: "graphite", apiKey: "PH_KEY" };
+    expect(() => loadConfig(composio({ ...bare, region: "eu" }), composioKeys)).toThrow(message);
+    expect(() => loadConfig(composio({ ...bare, projectId: 1 }), composioKeys)).toThrow(message);
+    expect(() => loadConfig(composio({ ...bare, events: ["signup"] }), composioKeys)).toThrow(message);
+    expect(composioEntryProblems(old, ["graphite"])).toBe(message);
+  });
+
+  it("is accepted in the new shape", () => {
+    const entry = { toolkit: "posthog", account: "prod", clot: "graphite", audience: "team", apiKey: "PH_KEY", connect: { subdomain: "eu" }, triggers: [{ slug: "POSTHOG_EVENT_CAPTURED", config: { project_id: 1, event_names: ["signup"] } }] };
+    expect(composioEntryProblems(entry, ["graphite"])).toBeUndefined();
+    expect(loadConfig(composio(entry), composioKeys).sources.composio[0]).toMatchObject({ toolkit: "posthog", connect: { subdomain: "eu" } });
+  });
 });
 
 it("reads a calendar's lead times and poll interval with their defaults", () => {
@@ -135,8 +176,6 @@ it("refuses a field the toolkit does not take, and a key the toolkit needs, nami
   expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY", leadTimes: ["1h"] }), composioKeys)).toThrow("leadTimes");
   expect(() => loadConfig(composio({ toolkit: "notion", account: "s", shared: true, apiKey: "NOTION_KEY", checkoutCompleted: true }), composioKeys)).toThrow("checkoutCompleted");
   expect(() => loadConfig(composio({ toolkit: "stripe", account: "s", shared: true, apiKey: "STRIPE_KEY", region: "eu" }), composioKeys)).toThrow("region");
-  expect(() => loadConfig(composio({ toolkit: "posthog", account: "s", shared: true, apiKey: "PH_KEY", events: ["x"] }), composioKeys)).toThrow("projectId");
-  expect(() => loadConfig(composio({ toolkit: "posthog", account: "s", shared: true, apiKey: "PH_KEY", projectId: 1 }), composioKeys)).toThrow("events");
 });
 
 it("names the .env key that is missing, and wants COMPOSIO_API_KEY once there are Composio accounts", () => {
@@ -320,14 +359,14 @@ it("keeps the names daemon and sweep for the spend log", () => {
 describe("loadConfigLeaving", () => {
   const withUrl = (...accounts: Record<string, unknown>[]) => ({ ...composio(...accounts), publicUrl: "https://x.ts.net" });
   const linear = { toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY" };
-  const posthog = { toolkit: "posthog", account: "prod", clot: "graphite", audience: "team", selfIsUser: true, apiKey: "PH_KEY" };
+  const posthog = { toolkit: "posthog", account: "prod", clot: "graphite", audience: "team", apiKey: "PH_KEY", region: "us", projectId: 1, events: ["signup"] };
 
   it("leaves out an entry that is not usable and keeps the others", () => {
     const { config, skipped } = loadConfigLeaving(withUrl(linear, posthog), composioKeys);
     expect(config.sources.composio.map((a) => a.toolkit)).toEqual(["linear"]);
     expect(skipped).toHaveLength(1);
     expect(skipped[0]!.entry).toBe("posthog:prod");
-    expect(skipped[0]!.problem).toContain("projectId");
+    expect(skipped[0]!.problem).toContain("PostHog is a generic entry now");
   });
 
   it("skips the later entry of a pair that clash, and one whose .env key is missing", () => {
@@ -345,4 +384,9 @@ describe("loadConfigLeaving", () => {
     expect(() => loadConfigLeaving(withUrl(posthog), { ...composioKeys, DISCORD_BOT_TOKEN: "" })).toThrow("DISCORD_BOT_TOKEN");
     expect(() => loadConfigLeaving({ ...withUrl(linear), maxProposals: 0 }, composioKeys)).toThrow("maxProposals");
   });
+});
+
+it("accepts every Composio entry of the example configuration", () => {
+  const example = JSON.parse(fs.readFileSync("clots.config.example.json", "utf8"));
+  for (const entry of example.sources.composio) expect(composioEntryProblems(entry, ["graphite"]), entry.toolkit).toBeUndefined();
 });

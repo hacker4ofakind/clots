@@ -38,7 +38,6 @@ import { sdkWriteReviewer } from "./composio/reviewer.js";
 import { defFor } from "./composio/toolkits/index.js";
 import { ComposioUndo } from "./composio/undo.js";
 import { genericMapper } from "./sources/generic.js";
-import { posthogMapper } from "./sources/posthog.js";
 import { draftFates, imapflowClient, MailboxListener, saveDraft, saveSent } from "./sources/imap.js";
 import { Asks } from "./asks.js";
 import { askEmail, emailKind, type SendRequest } from "./asks/email.js";
@@ -358,7 +357,8 @@ if (composio !== undefined && composioAsk !== undefined) {
     now: () => Date.now(),
     recipe: (toolkit) => rulebook.composioRecipe(toolkit),
     clotNames: () => [...names],
-    recipeFile: (toolkit) => rulebook.recipeFile(toolkit)?.file,
+    // A shipped recipe is in no file, so nothing shadows a recipe set in one.
+    recipeFile: (toolkit) => rulebook.recipeFile(toolkit)?.file || undefined,
   });
 }
 onPullRequest = async (a) => {
@@ -571,7 +571,7 @@ if (config.sources.email.length > 0) {
   toolDeps.senders.email_reply = emailReplySender({ accounts: config.sources.email, store, send: sendMail });
 }
 
-// Composio: Stripe, Linear, Notion, the calendar, PostHog and any other toolkit. One path takes every delivery;
+// Composio: Stripe, Linear, Notion, the calendar and any other toolkit (PostHog's mapping is a recipe the daemon ships). One path takes every delivery;
 // each source keeps its enricher and its way of sending, now over Composio's tools. Notion's events still come on
 // its own path, since Composio's Notion triggers need an OAuth app (spec section 9).
 const feeds = new Map<string, CalendarFeed>();
@@ -580,7 +580,7 @@ if (composio !== undefined) {
   composioIntake = composioHandler({
     composio,
     secret: () => store.getState(WEBHOOK_SECRET_KEY),
-    mappers: { linear: linearMapper, stripe: stripeMapper, posthog: posthogMapper, generic: genericMapper },
+    mappers: { linear: linearMapper, stripe: stripeMapper, generic: genericMapper },
     insertEvent,
     now: () => Date.now(),
     meter: composioMeter,

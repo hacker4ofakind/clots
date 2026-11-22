@@ -287,7 +287,7 @@ export class Composio implements ToolkitHost {
       }
     }
     const info = await this.toolkitInfo(a.toolkit);
-    const chosen = chooseAuth(a, info, Object.keys(defFor(a.toolkit).connectExtra?.(a) ?? {}));
+    const chosen = chooseAuth(a, info);
     if ("error" in chosen) {
       this.log(chosen.error);
       await this.tellOnce(`auth:${user}`, a, chosen.error);
@@ -342,9 +342,9 @@ export class Composio implements ToolkitHost {
     this.log(`${name} (${a.account}) connected${held.length > 0 ? `, holding ${held.length} trigger${held.length === 1 ? "" : "s"}: ${[...new Set(held.map((t) => t.slug))].join(", ")}` : ""}`);
   }
 
-  /** What a key connection is made with: the entry's fields, and what the def adds (PostHog's region). */
+  /** What a key connection is made with: the `.env` fields, then the entry's `connect` (PostHog's region). */
   private keyFields(a: ComposioAccount, choice: Extract<AuthChoice, { kind: "key" }>, secrets: Record<string, string>): Record<string, string> {
-    return { ...fieldValues(choice, secrets), ...(defFor(a.toolkit).connectExtra?.(a) ?? {}) };
+    return { ...fieldValues(choice, secrets), ...(a.connect ?? {}) };
   }
 
   /** The connection of a key account: adopted, made, or replaced when a field changed. */

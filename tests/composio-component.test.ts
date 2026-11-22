@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { classifyComposioError, classifyFailedResult, TimeoutError } from "../src/composio/api.js";
+import { keyHash } from "../src/composio/auth.js";
 import { Composio } from "../src/composio/component.js";
 import { Meter } from "../src/composio/meter.js";
 import { LINEAR } from "../src/composio/toolkits/linear.js";
@@ -344,14 +345,59 @@ describe("reconcile", () => {
     expect(store.composio.triggers("linear:proton")).toHaveLength(2);
   });
 
-  it("makes Stripe's triggers, with checkout only when asked, and PostHog's with its project and events", async () => {
-    make([stripe, { ...base, toolkit: "posthog", account: "app", clot: "graphite", apiKey: "phx_x", apiKeyName: "PH_KEY", region: "us", projectId: 7, events: ["signup"] }]);
+  it("makes Stripe's triggers, with checkout only when asked", async () => {
+    make([stripe]);
     await composio.reconcile();
     const slugs = [...api.triggers.values()].map((t) => t.slug);
     expect(slugs).toContain("STRIPE_CHECKOUT_SESSION_COMPLETED");
     expect(slugs.filter((s) => s.startsWith("STRIPE_"))).toHaveLength(7);
-    expect([...api.triggers.values()].find((t) => t.slug === "POSTHOG_EVENT_CAPTURED")?.config).toEqual({ project_id: 7, event_names: ["signup"] });
-    expect(api.of("connectWithKey").some((c) => c.includes('"subdomain":"us"'))).toBe(true);
+  });
+
+  describe("a generic entry's connect", () => {
+    const posthog = { ...base, toolkit: "posthog", account: "app", clot: "graphite", apiKey: "phx_x", apiKeyName: "PH_KEY", connect: { subdomain: "eu" }, triggers: [{ slug: "POSTHOG_EVENT_CAPTURED", config: { project_id: 7, event_names: ["signup"] } }] };
+
+    it("connects with the .env fields and the entry's connect, and makes the entry's trigger", async () => {
+      make([posthog]);
+      await composio.reconcile();
+      expect(api.of("connectWithKey").some((c) => c.includes('"subdomain":"eu"') && c.includes("generic_api_key"))).toBe(true);
+      expect([...api.triggers.values()].find((t) => t.slug === "POSTHOG_EVENT_CAPTURED")?.config).toEqual({ project_id: 7, event_names: ["signup"] });
+    });
+
+    it("keeps the connection when only connect changes, since it is not in the connection's hash, and replaces it with a reconnect", async () => {
+      make([posthog]);
+      await composio.reconcile();
+      const first = store.composio.account("posthog:app")!.connectionId!;
+      api.calls.length = 0;
+      make([{ ...posthog, connect: { subdomain: "us" } }]);
+      await composio.reconcile();
+      expect(api.of("connectWithKey")).toEqual([]);
+      expect(store.composio.account("posthog:app")!.connectionId).toBe(first);
+      expect(await composio.reconnect("posthog:app")).toBe("Reconnecting posthog:app.");
+      for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+      expect(api.of("connectWithKey").some((c) => c.includes('"subdomain":"us"'))).toBe(true);
+      expect(store.composio.account("posthog:app")!.connectionId).not.toBe(first);
+    });
+
+    it("adopts the connection an old-shape entry made, with its 2e hash, and its trigger instance", async () => {
+      make([posthog]);
+      await composio.reconcile();
+      const row = store.composio.account("posthog:app")!;
+      expect(row.keyHash).toBe(keyHash("phx_x"));
+      const trigger = [...api.triggers.keys()][0];
+      api.calls.length = 0;
+      make([posthog]);
+      await composio.reconcile();
+      expect(api.of("connectWithKey")).toEqual([]);
+      expect(api.of("upsertTrigger")).toEqual([]);
+      expect([...api.triggers.keys()][0]).toBe(trigger);
+    });
+
+    it("tells a name the scheme lacks and does not connect", async () => {
+      make([{ ...posthog, connect: { subdomian: "eu" } }]);
+      await composio.reconcile();
+      expect(api.of("connectWithKey")).toEqual([]);
+      expect(told.map((t) => t.text).join(String.fromCharCode(10))).toContain("API_KEY has no field subdomian");
+    });
   });
 
   it("makes the configured triggers of any other toolkit", async () => {

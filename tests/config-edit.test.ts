@@ -13,7 +13,9 @@ const base = {
   home: true,
   publicUrl: "https://x.ts.net",
 };
-const posthog = { toolkit: "posthog", account: "prod", clot: "app", apiKey: "PH_NEW_KEY", region: "eu", projectId: 1, events: ["signup"] };
+const posthog = { toolkit: "posthog", account: "prod", clot: "app", apiKey: "PH_NEW_KEY", connect: { subdomain: "eu" }, triggers: [{ slug: "POSTHOG_EVENT_CAPTURED", config: { project_id: 1, event_names: ["signup"] } }] };
+// The shape PostHog's entry had before it became a generic entry.
+const oldPosthog = { toolkit: "posthog", account: "prod", clot: "app", apiKey: "PH_NEW_KEY", region: "eu", projectId: 1, events: ["signup"] };
 
 let dir: string;
 let file: string;
@@ -49,9 +51,9 @@ describe("check and apply", () => {
   });
 
   it("refuses an entry the loader would not take, and leaves the file as it was", () => {
-    const done = applyChange(file, "sources.composio", [{ ...posthog, projectId: undefined, selfIsUser: true }]);
+    const done = applyChange(file, "sources.composio", [oldPosthog]);
     expect(done.ok).toBe(false);
-    expect(done.text).toContain("projectId");
+    expect(done.text).toContain("PostHog is a generic entry now");
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(base);
     expect(fs.existsSync(`${file}.bak`)).toBe(false);
   });
@@ -77,9 +79,9 @@ describe("check and apply", () => {
   });
 
   it("does not blame a change for an entry that was already unusable", () => {
-    const broken = { ...base, sources: { composio: [{ toolkit: "posthog", account: "old", clot: "app", apiKey: "PH_OLD" }] } };
+    const broken = { ...base, sources: { composio: [{ ...oldPosthog, account: "old", apiKey: "PH_OLD" }] } };
     expect(check(broken, "rolloverPercent", 70)).not.toBeTypeOf("string");
-    expect(check(broken, "sources.composio", [...broken.sources.composio, { ...posthog, account: "bad", projectId: undefined }])).toBeTypeOf("string");
+    expect(check(broken, "sources.composio", [...broken.sources.composio, { ...oldPosthog, account: "bad" }])).toBeTypeOf("string");
   });
 
   it("finds the .env keys a candidate still needs", () => {

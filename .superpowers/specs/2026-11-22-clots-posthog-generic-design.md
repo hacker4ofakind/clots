@@ -25,13 +25,13 @@ Linear, Notion, Stripe and Google Calendar stay built in: they carry reads, writ
   "triggers": [{ "slug": "POSTHOG_EVENT_CAPTURED", "config": { "project_id": 199582, "event_names": ["user_signed_up"] } }] }
 ```
 
-`connect` is new, for any generic toolkit: connection fields whose values are not secrets, given in the entry itself (a region, an instance subdomain). They are merged into the fields of a key connection after the `.env` ones. A name the toolkit's key scheme does not have is refused, and a name in `connect` counts as given, so `apiKey` fills the one field left. `connect` is not part of the connection's hash: changing it does not replace the connection (as `region` does not today). The user replaces the connection with `&composio reconnect <toolkit>:<account>`.
+`connect` is new, for any generic toolkit: connection fields whose values are not secrets, given in the entry itself (a region, an instance subdomain). They are merged into the fields of a key connection after the `.env` ones, so `connect` goes with `apiKey` or `fields` (with `oauthApp` or no key at all it is refused). A name the toolkit's key scheme does not have is refused, as is one also named in `fields`, and a name in `connect` counts as given, so `apiKey` fills the one field left. The entry's auth choice is made again when the set of names in `connect` changes (not their values). `connect` is not part of the connection's hash: changing it does not replace the connection (as `region` does not today). The user replaces the connection with `&composio reconnect <toolkit>:<account>`.
 
 The old shape gets its own refusal: an entry for `posthog` with `region`, `projectId` or `events` is refused with "PostHog is a generic entry now: put the region in connect.subdomain and the project and events in a POSTHOG_EVENT_CAPTURED trigger's config (project_id, event_names)". It is left out by the loader like any bad entry.
 
 ## 4. The shipped recipe
 
-A recipe lives in the rulebook, which is the user's data, so an upgrade cannot rely on one being there. The daemon ships **default recipes**: data in code (`src/composio/default-recipes.ts`), one for `posthog`. `Rulebook.composioRecipe(toolkit)` returns the saved recipe if there is one and the shipped one otherwise. `rulebook_composio set` for `posthog` is now allowed and saves an override; `remove` of it falls back to the shipped one. Every consumer of `composioRecipe` (intake, `composio_try`, the enricher, `composio_samples` hints) gets this for free.
+A recipe lives in the rulebook, which is the user's data, so an upgrade cannot rely on one being there. The daemon ships **default recipes**: data in code (`src/composio/default-recipes.ts`), one for `posthog`. `Rulebook.composioRecipe(toolkit)` returns the saved recipe if there is one and the shipped one otherwise (parsed by `parseComposioRecipe` on first use, and by a test of every shipped recipe, so a bad one fails the tests, not the daemon). `Rulebook.recipeFile(toolkit)` says `shipped` for a toolkit that has only the shipped one. `rulebook_composio set` for `posthog` is now allowed and saves an override; `remove` of it falls back to the shipped one. Every consumer of `composioRecipe` (intake, `composio_try`, the enricher, `composio_samples` hints) gets this for free.
 
 ```yaml
 toolkit: posthog
@@ -44,7 +44,7 @@ triggers:
     body: |
       PostHog event: {payload.event.event}
       Project: {payload.project.name|payload.project.id}
-      Person: {payload.person.name|payload.person.distinct_id|payload.event.distinct_id}
+      Person: {payload.person.name|payload.event.distinct_id|payload.person.distinct_id}
       At: {payload.event.timestamp}
       {lines:payload.event.properties}
     url: "{payload.event.url|payload.person.url|payload.project.url}"
@@ -54,7 +54,13 @@ triggers:
     automatedWhen: {}
 ```
 
-The event ID comes out as `posthog:<account>:<event>:<distinct>:<timestamp>`, the old form exactly. Differences from the old mapper, accepted: with no distinct ID the ID falls back to the delivery's (the old one had an empty part); with no timestamp the `At:` line is empty and not left out; with no person at all the `Person:` line is empty and not `unknown`. PostHog's payload always carries all three.
+The event ID comes out as `posthog:<account>:<event>:<distinct>:<timestamp>`, the old form exactly. Differences from the old mapper, accepted, all for a payload PostHog does not send (its payload always carries the event's name, distinct ID and timestamp, and a project with a name):
+
+- With the event's name, distinct ID or timestamp missing, the ID falls back to the delivery's (the old one had an empty part).
+- With no timestamp the `At:` line is empty and not left out; with no person at all the `Person:` line is empty and not `unknown`; with no project name or ID the `Project:` line is empty and not the account's name (the place still falls back to the account).
+- With no distinct ID the title ends `in PostHog ()`, and the actor is `unknown`.
+- A payload that names no event is still an event (the old mapper ignored it).
+- An empty string counts as present in `{a|b}`, as it does in every recipe, so an empty person name or project name is not skipped for the next alternative (the old mapper skipped it).
 
 ### The `{lines:path}` template
 
