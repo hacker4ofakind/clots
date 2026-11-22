@@ -1,0 +1,15 @@
+[Unit]
+Description=Clots daemon
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=simple
+User=clots
+WorkingDirectory=/home/clots/clots
+ExecStart=/usr/bin/node --env-file=.env --import tsx src/daemon.ts
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
