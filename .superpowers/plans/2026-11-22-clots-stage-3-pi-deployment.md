@@ -206,6 +206,7 @@ Onboarding, the `clots` CLI, email and Composio on the Pi, the browser, the web 
 - Extra prerequisites and groups: `gnupg` (NodeSource key), and `clots` joins `systemd-journal` so `update.sh` can read `journalctl`.
 - A Funnel failure prints the output and exits non-zero after the summary, not before.
 - `update.sh` also runs `npm ci` when `data/node-version` differs from `node --version` or `node_modules` is missing, and builds the image when it is missing.
+- Review round 1 (two findings, both fixed): `backup.sh` stops if `docker volume ls` fails, and `update.sh` writes `data/deployed-commit` only after the daemon's `[events] ready` line appears in the journal from that restart (180 s limit), not after `sleep 5` plus `is-active`. `update.sh` is also one function called at the end, because `git pull` can replace the script while bash is reading it.
 - Tested differently: `backup.sh` was run directly as `clots` (starting the service through systemd needs the sudo password); the restore drill did not stop the daemon (it restores into a fresh volume); the second `setup-pi.sh` run's "changes nothing" check was run by the user and its timestamps were not seen by the executor.
 
 **Surprises**

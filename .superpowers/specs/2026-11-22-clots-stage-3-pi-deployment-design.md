@@ -115,9 +115,10 @@ deploy that failed partway is redone in full by the next one. On the Pi:
    an older image at startup, keeping its volumes.
 5. `sudo systemctl restart clots` (allowed without a password for that one
    command, through a file in `/etc/sudoers.d`, written by the setup script).
-6. Waits a few seconds and prints the service's state and its latest log lines.
-   Once the service is active, records the commit as deployed and removes the
-   image a rebuild replaced.
+6. Waits for the daemon's "ready" line in the journal from this restart (up to 3
+   minutes; a service that stops, or no line in time, fails the deploy), then prints the
+   service's state and its latest log lines. Once the daemon is ready, records the commit
+   as deployed and removes the image a rebuild replaced.
 
 Moving to the x64 machine keeps every URL: before it joins the tailnet, the Pi
 is renamed (`tailscale set --hostname=clots-pi`), so the new machine can take the
