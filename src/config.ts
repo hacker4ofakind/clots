@@ -169,6 +169,9 @@ const FileSchema = z.object({
   mcpServers: z.record(z.string().regex(NAME), McpServerSchema).default({}),
 });
 
+/** The top-level keys of the configuration file. */
+export const CONFIG_KEYS = Object.keys(FileSchema.shape);
+
 export interface AccountBase {
   account: string;
   /** The Clot the account is bound to. Without one, the account is shared and its events are routed. */

@@ -58,5 +58,10 @@ export const TOOL_AXES: Record<RatedTool, Axes> = {
   messageWorker: LOW,
   stopWorker: LOW,
   mergePullRequest: REACHES_OTHERS,
+  // Each decides in code: a plain tunable is saved, any other key and every restart is put to the user.
+  configGet: LOW,
+  configSet: LOW,
+  daemonRestart: LOW,
+  handToHome: LOW,
   askChoice: LOW,
 };

@@ -280,6 +280,24 @@ export class Clot {
     this.kick();
   }
 
+  /** A request the user made of another Clot that only this one can carry out: queued as the user's own message here, and posted in this Clot's channel. */
+  async queueRequest(from: string, request: string): Promise<string> {
+    const { store, chat, name } = this.d;
+    const session = store.activeSession(name)!;
+    store.enqueue({
+      id: `request:${name}:${this.d.now().getTime()}:${from}`,
+      clot: name,
+      channelId: session.channelId,
+      text: `[The user asked the ${from} Clot for the following, and it passed it to you. Carry it out as if the user said it here; answer here.]
+${request}`,
+      receivedAt: this.d.now().getTime(),
+    });
+    await chat.post(session.channelId, `Passed on from ${from}, at the user's request:
+${request}`.slice(0, 1900)).catch(() => undefined);
+    this.kick();
+    return chat.channelLink(session.channelId);
+  }
+
   /**
    * Puts an event in the queue for a locked turn of its own, and posts its one-line
    * notice. With kick false the caller is the Clot's own after-turn hook, and the

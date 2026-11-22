@@ -101,6 +101,42 @@ export function toolServer(tools: DaemonTools) {
         (a) => reply(() => tools.askChoice({ question: a.question, options: a.options, pick: a.pick })),
         always,
       ),
+      ...(tools.configGet === undefined
+        ? []
+        : [
+            tool(
+              "config_get",
+              "Reads clots.config.json: one key (`rolloverPercent`, `sources.composio`, `mcpServers.elevenlabs`) or, with no key, the whole file. It holds names of .env keys, never secrets. Read the current value before you change a key that holds a list or an object, so you add to it instead of replacing it.",
+              { key: z.string().min(1).optional().describe("A key of the file, or one inside it as `a.b`.") },
+              (a) => reply(() => tools.configGet!(a)),
+              always,
+            ),
+            tool(
+              "config_set",
+              "Sets one key of clots.config.json to a whole new value (for a list or object, the whole of it). Plain tunables (timeZone, hold, rolloverPercent, maxProposals, maxWorkers, choiceTimeoutMinutes, gates, sweep, spend) are saved at once; every other key is put to the user, who sees the old and the new value, and a yes saves it. home, publicUrl, discord and image can never be changed here, and an MCP server that runs a command cannot be set. The change takes effect when the daemon restarts (daemon_restart). Never put a secret in it: name the .env key that holds it.",
+              { key: z.string().min(1).describe("A key of the file, or one inside it as `a.b`, such as `sources.composio`."), value: z.unknown().describe("The key's whole new value, as JSON.") },
+              (a) => reply(() => tools.configSet!({ key: a.key, value: a.value })),
+              always,
+            ),
+            tool(
+              "daemon_restart",
+              "Asks the user to let the daemon restart, so a configuration change or a new .env key takes effect. Only the user's yes restarts it, and then only once every Clot's turn (yours included) has ended, so end your turn right after calling this. Say plainly why.",
+              { reason: z.string().min(1).describe("One sentence for the user: what the restart is for.") },
+              (a) => reply(() => tools.daemonRestart!(a)),
+              always,
+            ),
+          ]),
+      ...(tools.handToHome === undefined
+        ? []
+        : [
+            tool(
+              "hand_to_home",
+              "Passes a request to change the daemon's configuration (add a service or an account, change a setting, restart the daemon) to the home Clot, which alone can do it. Use it when the user asks for that. Give the whole request with every detail the user gave. Tell the user the home Clot has it and where to follow it.",
+              { request: z.string().min(1).describe("The user's request, in full.") },
+              (a) => reply(() => tools.handToHome!(a)),
+              always,
+            ),
+          ]),
       ...(tools.mergePullRequest === undefined
         ? []
         : [

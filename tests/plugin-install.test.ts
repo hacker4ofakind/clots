@@ -78,3 +78,16 @@ describe("the system prompt", () => {
     for (const name of ["composio_toolkit", "composio_samples", "composio_try", "rulebook_composio"]) expect(note).toContain(name);
   });
 });
+
+describe("the configuring-the-daemon skill", () => {
+  const CONFIGURING = fs.readFileSync("plugin/skills/configuring-the-daemon/SKILL.md", "utf8");
+
+  it("is named, and names the four tools, so a rename breaks this", () => {
+    expect(CONFIGURING).toMatch(/^---\nname: configuring-the-daemon\n/);
+    for (const name of ["config_get", "config_set", "daemon_restart", "hand_to_home"]) expect(CONFIGURING).toContain(name);
+  });
+
+  it("states the keys that can never be changed", () => {
+    for (const key of ["home", "publicUrl", "discord", "image"]) expect(CONFIGURING).toContain(`\`${key}\``);
+  });
+});

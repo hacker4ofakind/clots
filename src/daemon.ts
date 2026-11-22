@@ -7,6 +7,8 @@ import { CLOT_SYSTEM_PROMPT, composioNote, HOME_SYSTEM_PROMPT } from "./agent/pr
 import { SdkRunner } from "./agent/runner.js";
 import { DiscordChat } from "./chat/discord.js";
 import { Clot } from "./clot.js";
+import { applyChange, check, getAt, missingEnvKeys, needsAsk, parseKey } from "./config-edit.js";
+import { configKind, restartKind } from "./asks/config.js";
 import { calendarPollingCalls, HOME_CLOT, isCalendar, loadConfigLeaving, type AccountBase, type NotionAccount } from "./config.js";
 import { githubCommentSender } from "./events/github-comment.js";
 import { isSelfCaused, repoSlug } from "./events/github.js";
@@ -260,6 +262,24 @@ let memory: GlobalMemory;
 const memoryAsk = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload), inForce: (payload) => memory.inForce(payload) });
 const mergeAsk = mergeKind({ token: config.githubToken });
 const choiceAsk = choiceKind({ timeoutMinutes: config.choiceTimeoutMinutes });
+// Changing the configuration and restarting: asked of the user, and carried out by the home Clot's tools only.
+const CONFIG_FILE = "clots.config.json";
+const configAsk = configKind({ apply: (key, value) => applyChange(CONFIG_FILE, key, value) });
+/** Whether any Clot has a turn running, or any worker is running. */
+const turnsRunning = (): boolean => [...clots.values()].some((c) => c.isBusy()) || [...clots.keys()].some((name) => store.workersOf(name).some((w) => w.status === "running"));
+const restartAsk = restartKind({
+  async restartWhenIdle(beforeExit) {
+    const give = Date.now() + 30 * 60_000;
+    while (turnsRunning()) {
+      if (Date.now() > give) return false;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+    await beforeExit();
+    // The service's Restart=always starts it again after a few seconds.
+    setTimeout(() => process.exit(0), 1000);
+    return true;
+  },
+});
 const after = (ms: number, fn: () => void) => {
   const timer = setTimeout(fn, ms);
   return () => clearTimeout(timer);
@@ -313,7 +333,7 @@ const asks = new Asks({
   kick: (clot) => clots.get(clot)?.kick(),
   say,
   after,
-  kinds: [ruleAsk, memoryAsk, mergeAsk, choiceAsk, ...(emailAsk ? [emailAsk] : []), ...(composioAsk ? [composioAsk] : [])],
+  kinds: [ruleAsk, memoryAsk, mergeAsk, choiceAsk, configAsk, restartAsk, ...(emailAsk ? [emailAsk] : []), ...(composioAsk ? [composioAsk] : [])],
   // Nothing posted in clots-waiting is an answer, or reaches a Clot.
   ignore: (channelId) => waiting.isChannel(channelId),
 });
@@ -346,6 +366,48 @@ onPullRequest = async (a) => {
   await withdrawMerges(asks, a);
 };
 
+/** The home Clot's tools for the configuration and for restarting, and the other Clots' way to pass such a request on. */
+function daemonConfigTools(): NonNullable<ToolDeps["daemonConfig"]> {
+  const readFile = () => JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")) as Record<string, unknown>;
+  const show = (value: unknown, max = 3000) => {
+    const text = JSON.stringify(value, null, 2) ?? "not set";
+    return text.length > max ? `${text.slice(0, max)}\n[cut]` : text;
+  };
+  return {
+    get(key) {
+      const file = readFile();
+      const value = key === undefined ? file : getAt(file, key.split("."));
+      return value === undefined ? `${key} is not set.` : show(value, 20_000);
+    },
+    async set(clot, key, value) {
+      const path = parseKey(key);
+      if (typeof path === "string") return `Not changed: ${path}`;
+      if (!needsAsk(path)) {
+        const done = applyChange(CONFIG_FILE, key, value);
+        if (done.ok) await say(clot, `Configuration changed by ${clot}: \`${key}\` is now:\n\`\`\`json\n${show(value, 1500).replaceAll("```", "'''")}\n\`\`\`\nThe old file is kept as \`${CONFIG_FILE}.bak\`. It applies at the next restart.`);
+        return done.text;
+      }
+      // Checked before the user is asked: they are never shown a change that cannot be saved.
+      const file = readFile();
+      const checked = check(file, key, value);
+      if (typeof checked === "string") return checked;
+      const missing = missingEnvKeys(checked.candidate);
+      const filed = await asks.open(configAsk, clot, { key, value, current: getAt(file, path) }, { summary: `change ${key}`, dedupe: key, max: 3 });
+      return missing.length === 0 ? filed : `${filed}\nOnce it is saved the user must add ${missing.map((k) => `\`${k}\``).join(", ")} to the \`.env\` file in ${process.cwd()}.`;
+    },
+    async restart(clot, reason) {
+      if (process.env.INVOCATION_ID === undefined) return "Not asked: this daemon is not running as a systemd service, so nothing would start it again after it stopped. Tell the user to restart it themselves.";
+      return asks.open(restartAsk, clot, { reason }, { summary: "restart the daemon", dedupe: "restart", max: 1 });
+    },
+    async toHome(from, request) {
+      const home = clots.get(HOME_CLOT);
+      if (home === undefined) return "Not passed on: there is no home Clot.";
+      const link = await home.queueRequest(from, request);
+      return `Passed to the home Clot, which will carry it out and answer in ${link}. Tell the user to follow it there.`;
+    },
+  };
+}
+
 const toolDeps: ToolDeps = {
   watchBudgetProblem: (recipe) => rulebook.watchBudgetProblem(recipe),
   rulebook,
@@ -361,6 +423,7 @@ const toolDeps: ToolDeps = {
   senders: { github_comment: githubCommentSender(config.githubToken) },
   say,
   handOver: (from, eventId, to, byRequest) => handOver({ store, clots, say }, from, eventId, to, byRequest),
+  ...(config.home ? { daemonConfig: daemonConfigTools() } : {}),
   workers,
 };
 

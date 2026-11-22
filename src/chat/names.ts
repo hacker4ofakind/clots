@@ -38,6 +38,16 @@ export function mailChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-mail`, existing);
 }
 
+/** The temporary channel in which the user is asked about a change to the configuration: `home-config`, then `-2`, `-3` while others are open. */
+export function configChannelName(project: string, existing: string[]): string {
+  return firstFree(`${slug(project)}-config`, existing);
+}
+
+/** The temporary channel in which the user is asked to let the daemon restart. */
+export function restartChannelName(project: string, existing: string[]): string {
+  return firstFree(`${slug(project)}-restart`, existing);
+}
+
 /** The temporary channel in which the user is asked about a global memory from an outsider's turn: `home-memory`, then `-2`, `-3` while others are open. */
 export function memoryChannelName(project: string, existing: string[]): string {
   return firstFree(`${slug(project)}-memory`, existing);

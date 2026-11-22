@@ -1,5 +1,5 @@
 import { isHigh, TOOL_AXES, type RatedTool } from "./axes.js";
-import type { CalendarAccount, EmailAccount } from "./config.js";
+import { HOME_CLOT, type CalendarAccount, type EmailAccount } from "./config.js";
 import type { SendRequest } from "./asks/email.js";
 import { recordDraft } from "./drafts.js";
 import { describeSpan, parseWhen, type Occurrence } from "./sources/calendar.js";
@@ -115,6 +115,12 @@ export interface DaemonTools {
   stopWorker(a: { id: string }): Promise<string>;
   /** Only where GitHub can be asked. */
   mergePullRequest?(a: { number: number; repo?: string }): Promise<string>;
+  /** The home Clot's, in a turn the user's own message started: reading and changing the configuration, and restarting the daemon. */
+  configGet?(a: { key?: string }): Promise<string>;
+  configSet?(a: { key: string; value: unknown }): Promise<string>;
+  daemonRestart?(a: { reason: string }): Promise<string>;
+  /** Any other Clot's, in a turn the user's own message started: passes a request about the daemon on to the home Clot. */
+  handToHome?(a: { request: string }): Promise<string>;
   askChoice(a: { question: string; options: [string, string]; pick: 1 | 2 }): Promise<string>;
 }
 
@@ -159,6 +165,14 @@ export interface ToolDeps {
     hasAccount?(name: string): boolean;
     /** The configured accounts, for a refusal that names them. */
     accountNames?(): string[];
+  };
+  /** Changing the configuration and restarting. Absent when the daemon has no home Clot. */
+  daemonConfig?: {
+    get(key?: string): string;
+    /** Applies a plain tunable at once and puts any other key to the user. Returns what the tool tells the Clot. */
+    set(clot: string, key: string, value: unknown): Promise<string>;
+    restart(clot: string, reason: string): Promise<string>;
+    toHome(from: string, request: string): Promise<string>;
   };
   /** The workers. Absent where nothing can start one. */
   workers?: Pick<Workers, "start" | "message" | "stop">;
@@ -347,6 +361,16 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
     messageWorker: async ({ id, text }) => gate(ctx, "messageWorker", async () => (d.workers ? d.workers.message(ctx.clot, id, text, ctx.outsider) : "Refused: workers are not available.")),
     stopWorker: async ({ id }) => gate(ctx, "stopWorker", async () => (d.workers ? d.workers.stop(ctx.clot, id) : "Refused: workers are not available.")),
     // Merging is hard to undo and reaches everyone: it is always put to the user.
+    // Only the home Clot changes the daemon, and only in a turn the user's own message started: no text from an outsider reaches these.
+    ...(d.daemonConfig === undefined || ctx.kind !== "chat" || ctx.outsider
+      ? {}
+      : ctx.clot === HOME_CLOT
+        ? {
+            configGet: (a: { key?: string }) => gate(ctx, "configGet", async () => d.daemonConfig!.get(a.key)),
+            configSet: (a: { key: string; value: unknown }) => gate(ctx, "configSet", () => d.daemonConfig!.set(ctx.clot, a.key, a.value)),
+            daemonRestart: (a: { reason: string }) => gate(ctx, "daemonRestart", () => d.daemonConfig!.restart(ctx.clot, a.reason)),
+          }
+        : { handToHome: (a: { request: string }) => gate(ctx, "handToHome", () => d.daemonConfig!.toHome(ctx.clot, a.request)) }),
     ...(d.asks.merge === undefined ? {} : { mergePullRequest: (a: { number: number; repo?: string }) => gate(ctx, "mergePullRequest", undefined, () => d.asks.merge!(ctx.clot, a, ctx.outsider)) }),
     // Choosing between two ways commits no one to anything: the axes hold at each later step instead.
     askChoice: (a) =>
