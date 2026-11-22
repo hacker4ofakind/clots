@@ -202,7 +202,7 @@ A Clots server runs the daemon as a systemd service, started at boot and restart
 
 3. Run `sudo ./deploy/setup-pi.sh` again. It starts the service once both files exist.
 
-4. Log each container in to Claude once: `docker exec -it clot-<name> claude /login`.
+4. Log each container in to Claude once: `docker exec -it clot-<name> claude /login`, then `sudo systemctl restart clots`. The daemon looks for a login only when it prepares a container, so until the restart it keeps using the token from `.env`.
 
 To deliver new code, push it to GitHub and run `npm run deploy` on your computer. It runs `deploy/update.sh` on the server over SSH (`CLOTS_HOST` overrides the default `clots@clots`): pulls, runs `npm ci` and rebuilds the image only when the lockfile or `docker/` changed, restarts the service and prints its state. A deploy during a turn interrupts it; the daemon resumes it after the restart. If the checkout has local changes, or the service is not active afterwards, it exits non-zero, and the next deploy redoes every step.
 

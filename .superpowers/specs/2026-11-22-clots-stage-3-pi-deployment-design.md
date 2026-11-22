@@ -1,7 +1,7 @@
 # Clots stage 3: headless deployment on the Pi
 
 Date: 2026-11-22
-Status: designed; not built.
+Status: built; live checks passed except the first nightly backup and the merge to master.
 Parent design: `.superpowers/specs/2026-10-10-clots-design.md` (stage list in
 section 16). Plan: `.superpowers/plans/2026-11-22-clots-stage-3-pi-deployment.md`.
 
@@ -68,6 +68,8 @@ again safely:
 - Node.js 26.13.1 from NodeSource's apt repository, held at that version
   (`apt-mark hold nodejs`). A new version is installed by changing the version in
   the script and running it again.
+- The Ubuntu `<codename>-updates` apt source, added when the host lacks it: without it apt cannot
+  match the newer libraries already installed with the release-pocket `sqlite3`.
 - `git`, `sqlite3`, and the build tools `npm ci` needs if a native module has no
   prebuilt binary for arm64 (`build-essential`, `python3`).
 - cloud-init disabled (`/etc/cloud/cloud-init.disabled`), so it cannot rewrite
@@ -148,7 +150,8 @@ On GitHub, the user, an admin of Truecast-Org:
   requests, pull request reviews and workflow runs.
 
 Each container is logged in to Claude once by hand
-(`docker exec -it clot-<name> claude /login`), as in development.
+(`docker exec -it clot-<name> claude /login`), as in development, and the service is restarted
+afterwards: the daemon looks for a login only when it prepares a container.
 
 ## 9. Backups
 

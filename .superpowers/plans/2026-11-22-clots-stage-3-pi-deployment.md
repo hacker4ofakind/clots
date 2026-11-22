@@ -75,7 +75,7 @@
 
 **Done when:** shellcheck passes; both runs behave as above on the Pi.
 
-- [ ] Task 1 complete
+- [x] Task 1 complete
 
 ### Task 2: Deploying from the PC
 **Files:** `deploy/update.sh`, `scripts/deploy.mjs`, `package.json` (add `"deploy"`)
@@ -97,7 +97,7 @@
 
 **Done when:** shellcheck passes; the behaviours above observed from the PC through `npm run deploy`.
 
-- [ ] Task 2 complete
+- [x] Task 2 complete
 
 ### Task 3: Nightly backups
 **Files:** `deploy/backup.sh`, `deploy/clots-backup.service` (`Type=oneshot`, `User=clots`, the checkout as working directory), `deploy/clots-backup.timer`
@@ -117,7 +117,7 @@
 
 **Done when:** shellcheck passes; the behaviours above observed on the Pi.
 
-- [ ] Task 3 complete
+- [x] Task 3 complete
 
 ### Task 4: README and bring-up
 **Files:** `README.md`
@@ -128,7 +128,7 @@
 
 **Done when:** the service is `active` on the Pi with both Clots, and the checklist below passes.
 
-- [ ] Task 4 complete
+- [x] Task 4 complete
 
 ## Commit Strategy
 
@@ -199,4 +199,32 @@ One commit with all of Tasks 1–4's files on branch `stage-3`, pushed before th
 Onboarding, the `clots` CLI, email and Composio on the Pi, the browser, the web UI, copying backups off the Pi, and moving to the x64 machine.
 
 ## Implementation Notes
-_Filled in by the executor: deviations and why, changed names/interfaces, surprises, notes for the next stage's planner._
+**Result:** Tasks 1-4 done and run on the Pi. MV-1 to MV-8 pass. Open: MV-9 (the first 03:30 archive, checked the morning after) and MV-10 (after the merge).
+
+**Deviations**
+- `setup-pi.sh` also adds the Ubuntu `<codename>-updates` apt source when missing. The Pi had only `resolute` and `resolute-security`, so `apt install sqlite3` failed on a `libsqlite3-0` version conflict.
+- Extra prerequisites and groups: `gnupg` (NodeSource key), and `clots` joins `systemd-journal` so `update.sh` can read `journalctl`.
+- A Funnel failure prints the output and exits non-zero after the summary, not before.
+- `update.sh` also runs `npm ci` when `data/node-version` differs from `node --version` or `node_modules` is missing, and builds the image when it is missing.
+- Tested differently: `backup.sh` was run directly as `clots` (starting the service through systemd needs the sudo password); the restore drill did not stop the daemon (it restores into a fresh volume); the second `setup-pi.sh` run's "changes nothing" check was run by the user and its timestamps were not seen by the executor.
+
+**Surprises**
+- Under `set -o pipefail`, `cmd | awk '...exit'` and `cmd | grep -q` can kill the script silently (SIGPIPE on the writer). It stopped setup at the Node step with no message. All such pipes were replaced; keep that rule.
+- Archive entries are stored as `./name`, so extracting one file needs `tar xzf a.tar.gz ./clot-x-home.tar`.
+- A container's login is detected only when the daemon prepares it. Logging in after the service started changed nothing until a restart (README step 4 now says so).
+- The Clot refused an issue written as a command to the agent ("Please fix X and open a pull request"), as designed: issue text is untrusted data. The author's association was MEMBER, so it was not an outsider. A plain bug report ("README has no logo...") produced a PR. MV-3's `gh issue create` must be worded as a report.
+- Only the live session's channel is read by the daemon; an older channel for the same Clot is silently ignored, including `&` commands.
+- `gh api .../hooks` returns `[]` with the PC's token (no webhook scope), so the webhook's delivery page can't be read from the CLI; the Pi's `[intake] POST /webhooks/github: 200` line is the evidence.
+- The Pi has no battery clock: after a power cut `docker ps` says "Up 3 months" until NTP corrects the time. Cosmetic.
+- npm prints "install-scripts not covered by allowScripts" for `better-sqlite3`; it still builds and loads on arm64 (SQLite 3.53.4).
+
+**Measurements (Pi 5, 8 GB)**
+- First image build 98 s; `npm ci` 24 s; `deploy` restart to both Clots ready about 8 s.
+- Three workers at once (three docs PRs, no OOM lines): memory in use peaked at 1,498 MB, lowest available 6,433 MB; `clot-truecast` peaked near 498 MB. Sampling began shortly after the request, so the first seconds may be missed.
+- Reboot and a power cut while idle: service `active` without a manual step, `integrity_check` `ok`, session continued (reboot).
+- A deploy during a running turn (`sleep 300` in the Truecast Clot): the turn finished once, five minutes later, no duplicate.
+
+**For the next planner**
+- `update.sh` prunes dangling images only after a successful restart; no `<none>` images were left after rebuilds.
+- Backups hold the Clots' Claude logins (mode 600, same disk). Copying them off the machine is still open.
+- The audit advisories (undici, body-parser) are untouched.
