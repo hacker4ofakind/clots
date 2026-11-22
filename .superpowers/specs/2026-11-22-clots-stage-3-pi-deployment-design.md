@@ -157,9 +157,13 @@ writes one archive to `/home/clots/clots-backups` named by date, holding:
 
 - a consistent copy of the database, made with `sqlite3 data/clots.db
   ".backup ..."`, which is safe while the daemon runs;
-- the rulebook folder.
+- the rulebook folder;
+- each Clot's home volume (`clot-<name>-home`), which holds its Claude login and
+  its session transcripts, so a restored database finds the sessions it points
+  at. The work volumes are left out: they are clones of repositories GitHub
+  already holds.
 
-It keeps the 7 newest archives and deletes older ones. The backups sit on the
+The archives therefore contain the Clots' Claude logins. It keeps the 7 newest archives and deletes older ones. The backups sit on the
 same card as the data, so they protect against a broken database or a bad
 change, not a dead card. Copying them off the machine waits for the x64 machine.
 
