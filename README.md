@@ -220,3 +220,5 @@ npm run typecheck
 ## Running in a Claude Code cloud environment
 
 Run `npm run preflight` first. If it fails, the environment cannot run a Clot; use a local machine.
+
+<!-- mid-turn deploy test -->
