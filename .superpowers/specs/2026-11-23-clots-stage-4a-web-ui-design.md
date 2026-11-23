@@ -277,8 +277,9 @@ Each row links to its pull request once there is one.
 
 - **Install**: a web app manifest (name Clots, the mark as icon in all sizes,
   `display: standalone`, theme colours from `background`), and a service
-  worker that only handles `push` and `notificationclick`. No offline
-  caching.
+  worker that only handles `push` and `notificationclick`, plus one static
+  offline page: when a navigation fails (Tailscale off), it shows "Connect
+  Tailscale to reach Clots." with Retry. No data is cached.
 - **Keys**: VAPID keys created on first start and saved to `.env`
   (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`); the `web-push` package sends.
 - **Subscriptions** in SQLite, one per device; a send that gets 404 or 410

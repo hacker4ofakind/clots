@@ -110,6 +110,8 @@ Web (`web/` workspace):
 - **Accessibility:** keyboard reorder for the rail (move up/down in its context menu) and keyboard resize for the pane; `motion` honours reduced motion; timer states carry their text, not colour only; the email preview opens on focus and tap too.
 - **Code layout:** API schemas live in a workspace package `packages/ui-api-schemas` (imported by daemon and web), not under `src/`. Reuse `src/intake.ts`'s request helpers (body cap, JSON parsing) for the UI API server. New tables get their own modules (`src/conversation/store.ts`, `src/push.ts`), not more of `src/store.ts`. Ask deadlines and timers use an injected clock.
 - **shadcn components to add in Task 1:** button, input, textarea, select, switch, checkbox, label, dialog, sheet, drawer, dropdown-menu, context-menu, command, popover, tooltip, sonner, skeleton, scroll-area, resizable, toggle-group, tabs, card, badge, progress, spinner, empty. Icon picker loads its icon list lazily (a generated name list plus dynamic import), never the whole library in the main bundle.
+- **Offline page:** the service worker precaches only `/offline` (static, no data) and serves it when a navigation fetch fails: "Connect Tailscale to reach Clots." with a Retry button that reloads.
+- **Parser:** Claritee (4b) keeps its hand-written parser; `jsep`/`acorn` were considered and rejected (markup inside expressions, `++` on any variable).
 - **Backups:** `deploy/backup.sh` also covers `data/icons` and the conversation tables (already in SQLite).
 
 ## Tasks
