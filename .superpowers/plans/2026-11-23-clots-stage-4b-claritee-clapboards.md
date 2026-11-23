@@ -56,6 +56,21 @@
 - **Charts and tables** load lazily (`next/dynamic`, `ssr: false`) so a chat without them does not pay for ECharts.
 - **Evil Charts**: `npx shadcn@latest add @evilcharts/echarts-<chart>` per chart type used (line, bar, area, pie, radar); install their `echarts` dependency through npm in `web/`.
 - **System prompt section** is built from `catalog.ts` (component names, attributes, one example each) so the prompt and the linter never drift; keep it compact (aim ≤ 2,500 tokens) and place it in the cached static part of the main-session prompt.
+### From the stress test (apply all)
+- **Images and assets go through Next.js**: the browser never calls the daemon, so add route handlers `web/app/api/img/route.ts` and `web/app/api/clapboards/[clot]/assets/[file]/route.ts` that forward with the secret; render `Image` with `unoptimized` (no Next optimizer, so the proxy's checks are the only fetch path). The proxy serves only raster types (PNG, JPEG, GIF, WebP, AVIF; magic bytes checked, never SVG) with `nosniff` and `Content-Security-Policy: sandbox`.
+- **Proxy ranges** add `0.0.0.0/8`, IPv4-mapped IPv6, numeric/octal/hex IP forms (normalise before checking), and refuse any redirect to non-https. Shared with 4a's `src/net/safe-fetch.ts`. Cache evicts LRU at 200 MB.
+- **CSS injection**: style attribute values are parsed against a strict grammar (token names, Tailwind colour names, numbers, `/opacity`), never interpolated raw into CSS variables or the generated `hoverStyle` `<style>`.
+- **Resource caps** beyond steps: nesting depth 64, string 64 KB, array 10,000 items, recursion depth 256; the daemon lints in a worker thread with a 500 ms timeout so a pathological block can never stall a Clot.
+- **Where widgets render**: only in `clot` messages from main sessions with block status `ok`; never in notes, asks, user messages or quoted outsider text (those show fences as code).
+- **Rewrites keep the prose**: the Stop hook asks for the corrected block only, and the daemon **splices** it into the original message at the same block index (no superseded message, no lost text).
+- **Unclosed fences**: when a turn ends (or the stream drops) with a fence still open, that block resolves to the error placeholder, never an endless skeleton.
+- **Submissions persist**: the daemon stores each submit (`messageId`, block index, values, at); a widget with a stored submission renders frozen on every device and reload; a second submit is refused.
+- **Dates**: Calendar values are local calendar dates (`YYYY-MM-DD` from local parts), never `toISOString()`.
+- **`stored()` robustness**: flush on `visibilitychange`/`pagehide` (`navigator.sendBeacon` to the Next proxy) besides the 500 ms debounce; each write carries the version it was based on and the daemon keeps last-write-wins per variable with a timestamp; values whose variable disappears in a new version are **kept** (not dropped), and the linter warns the Clot when a new version drops a variable that has a saved value, naming it.
+- **Edits outside Write/Edit**: the hook also covers MultiEdit and NotebookEdit; for Bash, a PostToolUse hook re-checks the mtime of published files under `~/clapboards/` after any Bash call in that container and ingests changes.
+- **Hook paths**: canonicalise the path (`realpath` inside the container), refuse symlinks and anything outside `~/clapboards/`; the Clot comes from the calling session, never from a tool argument or URL.
+- **Push text**: a reply push strips `claritee` blocks and shows "Sent you a widget" in their place.
+- **Code layout**: split `catalog.ts` by component family under `src/catalog/`; the `stored` debounce takes an injected scheduler; icon lookup uses a generated name list (for the linter and prompt) and dynamic import per icon in the renderer, never the whole Phosphor package in the bundle.
 - **Skill copy**: `plugin/` is already copied to `/opt/clots/plugin` in every container; adding the folder is enough.
 
 ## Tasks

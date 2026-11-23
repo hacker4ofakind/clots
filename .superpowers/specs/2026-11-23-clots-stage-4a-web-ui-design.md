@@ -285,8 +285,9 @@ Each row links to its pull request once there is one.
   deletes it.
 - **What is sent**: a new ask or choice (title: the Clot's name; body: the ask's
   one-line summary); an ask entering its last minute; a choice the timeout
-  decided; a Clot paused or failed; a Clot's reply while no tab has the stream
-  open. Tapping opens the ask in its chat, or the chat.
+  decided; a Clot paused or failed; a Clot's reply while no device has been
+  visible and in use in the last 2 minutes (a desktop tab left open at home
+  does not count). Tapping opens the ask in its chat, or the chat.
 - On iOS, permission is asked only from the Turn on button, in the installed
   app.
 
@@ -316,7 +317,8 @@ pushed with the Clot's token. Checklist state is saved, so onboarding resumes.
 
 Steps slide: the current one leaves to the left, the next enters from the right.
 Reset clears the steps. Edit on an existing Clot opens the same steps,
-prefilled, with Save instead of Create.
+prefilled, with Save instead of Create. A Clot's name cannot be changed after
+creation; changing its repository re-clones into a fresh workspace.
 
 ## 10. Configuration and hot reload
 
@@ -333,8 +335,10 @@ prefilled, with Save instead of Create.
   accounts (reconnect the changed ones), MCP servers and recipes' secrets apply
   at once; adding or removing a Clot starts or stops its container. The intake
   port, the image and `ui.owner` apply after a restart, and the UI says so.
-- **`set_config`** (the Clot tool) saves through the store and applies at once;
-  it no longer asks for `daemon_restart`.
+- **`set_config`** (the Clot tool) always becomes a config ask: the user's yes
+  saves and applies it at once, with no `daemon_restart`. Because changes now
+  apply live, no key is changed by a Clot without a yes; `ui` joins the keys a
+  Clot can never change.
 - **Keys** are written to `.env` by name; the API never returns a value, only
   the last 4 characters. A key name is generated for new integrations
   (`<TOOLKIT>_<ACCOUNT>_KEY`).

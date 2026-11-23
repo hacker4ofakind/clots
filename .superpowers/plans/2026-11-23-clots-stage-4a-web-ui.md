@@ -79,13 +79,46 @@ Web (`web/` workspace):
 - **Discord leftovers**: `config.ts` must accept a file that still has `discord` (ignore with one log line) so the Pi does not fail to start after deploy; `ui.owner` missing → the web app shows a setup page naming the key.
 - **Tests that used `src/chat/fake.ts`** move to a fake `Conversation` with the same recording style.
 
+### From the stress test (apply all)
+- **Access (replaces the x-forwarded-for rule above, which would refuse every real request: serve sets it to the tailnet client):** middleware checks `Tailscale-User-Login` == `ui.owner` and `Host` == the configured serve host; `web/lib/daemon.ts` re-checks the owner on every server-side call (defence in depth against middleware bypasses); missing `ui.owner` fails closed to the setup page. The test-only owner env var is ignored when `NODE_ENV=production`.
+- **CSRF:** every mutating route handler goes through one wrapper requiring `Origin` == own origin, `Content-Type: application/json` (multipart only for uploads), and the owner check. One catch-all proxy route (`web/app/api/d/[...path]/route.ts`) forwards to the daemon through that wrapper, plus the separate stream route; no per-action route files.
+- **Pin and audit:** pin Next.js and React to patched versions (CVE-2025-29927, CVE-2025-55182); `npm audit --omit=dev` clean in Task 1 and Task 11.
+- **CSP:** site-wide CSP (`default-src 'self'`, `img-src 'self' data:` plus the proxy, no inline script beyond Next's nonce); `X-Content-Type-Options: nosniff` on every daemon-served file.
+- **Clot icons:** SVG uploads are rasterized with `sharp` to PNG; only PNG, JPEG, WebP (magic-byte checked) are stored; ICO is converted client-side or refused with a clear message (sharp cannot read it).
+- **Markdown:** images in markdown (`![]()`) are not loaded directly: they render as a link, or through the 4b proxy once it exists. Widgets render only in `clot` messages (4b), never in notes, asks or user text.
+- **Keys:** names must match `^[A-Z][A-Z0-9_]{0,63}$`; values may not contain `\r` or `\n`; `CLOTS_UI_SECRET`, `VAPID_*` and `CLAUDE_CODE_OAUTH_TOKEN` are not writable from the UI. Removing a key still named by the config is refused, naming the users of it.
+- **Runtime env:** the daemon was started with `node --env-file`, so keys written at runtime are not in `process.env`. Every secret lookup goes through the config store's live `.env` map, never `process.env`. The API-key connect flow writes the key **before** the entry (or saves the entry only once the key exists), because `loadConfig` requires every named key.
+- **Clot-made config changes:** hot reload removes today's de facto gate (changes took effect only after `daemon_restart`). So `set_config` from a Clot always goes through the existing `config` ask (no SAFE_KEYS shortcut); add `ui` to `BLOCKED_KEYS`. The UI's own saves apply directly.
+- **Configurer:** the daemon overwrites audience, scope and owning Clot in the saved entry with the user's Options choices; its `web_fetch` uses the same SSRF guard as the 4b image proxy (shared module `src/net/safe-fetch.ts`, built here).
+- **Push:** subscription endpoints must be https on known push hosts (`*.push.apple.com`, `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `*.notify.windows.com`); `notificationclick` opens only same-origin paths. "No tab open" means no client that was **visible and active in the last 2 minutes** (the client reports `visibilitychange` over a tiny POST), so a desktop tab left open at home does not suppress the phone's pushes; the SSE proxy aborts its upstream when the browser disconnects.
+- **Web service env:** `clots-web.service` gets its own env file with only `CLOTS_UI_SECRET` and the daemon URL, never the full `.env`.
+- **Input hardening:** per-route body limits (messages 20 MB with images, others 256 KB); Clot names `^[a-z][a-z0-9-]{0,30}$`; repo as `owner/name` validated; `docker`/`git` via argv arrays only; the token scrubbed from clone logs.
+- **Message idempotency:** the client generates the message id (UUID) and reuses it on Retry; the API keeps `INSERT OR IGNORE` semantics (today Discord's id did this). Same for ask answers (idempotency key).
+- **Event ids:** `<bootId>-<seq>`; a `Last-Event-ID` with another boot id gets `resync`. The stream route forwards `Last-Event-ID`; the page subscribes before its server data is considered fresh (or refetches after `open`).
+- **Phone resume:** on `visibilitychange` to visible and on stream reconnect, refetch the open screen and asks. Timers compute from the server deadline; a card past zero reads "Closing…" until `ask.closed` arrives.
+- **Asks UI:** buttons disable with a spinner until the daemon replies; failure keeps the card with Retry; the closed outcome shows on the card itself, not only a toast. An email edit that hits 409 keeps the edited text in the card with the outcome. `/commands`, widget submits and image-only messages are **not** feedback to an open ask. Answering a busy ask returns `{ outcome: "in progress" }`.
+- **Option numbering:** choices are stored with pick 1|2; the API uses 0|1. Convert in one place (`routes/asks.ts`) and test it.
+- **Upgrade:** asks open before the upgrade get `deadline = now + askTimeoutMinutes` at first start.
+- **Startup-captured config:** `src/daemon.ts` builds the email ask kind only when an inbox exists (lines ~256-259) and reads the ask timeout once (~263, ~421). Make both read the live config so adding the first inbox and changing the timeout work without restart.
+- **File watching:** watch the directory, not the file (atomic renames replace the inode); ignore the store's own writes by comparing content hash with the last write.
+- **Clot lifecycle:** delete refuses while config entries (accounts scoped to the Clot) still name it, listing them; pending inbox rows of a deleted Clot are dropped. Renaming a Clot is not offered in Edit (name is fixed once created); changing the repository in Edit re-clones into a fresh volume. Create starts the container in the create flow and the reload handler skips Clots whose create is in progress (no double `docker run`); a failed create removes the config entry so the name is free.
+- **Integration dialog:** re-Finish after Back updates the same job's entry, never duplicates it; an abandoned OAuth removes its config entry with the Composio connection; account names are slugged to `[A-Z0-9_]` for key names.
+- **Composer:** drafts persisted per Clot in `localStorage`; on touch devices Enter inserts a newline and the button sends; inputs ≥ 16px; layout uses `dvh`/`visualViewport` so the composer stays above the keyboard; pasted phone images are downscaled client-side to ≤ 2048 px JPEG before upload.
+- **Chat states:** skeletons shaped like the chat and the Clots list on first load; scroll anchoring when older pages prepend; auto-follow streaming only when already at the bottom, else a "New messages" pill; reserve image dimensions.
+- **Interrupted flows:** New Clot step state kept in the URL; Settings warns on leaving with unsaved edits; a reload during a build shows the build progress from the Clot's state.
+- **Notifications row:** phone Waiting shows the notification state (on, off, denied with how to fix) and "Send a test notification".
+- **Accessibility:** keyboard reorder for the rail (move up/down in its context menu) and keyboard resize for the pane; `motion` honours reduced motion; timer states carry their text, not colour only; the email preview opens on focus and tap too.
+- **Code layout:** API schemas live in a workspace package `packages/ui-api-schemas` (imported by daemon and web), not under `src/`. Reuse `src/intake.ts`'s request helpers (body cap, JSON parsing) for the UI API server. New tables get their own modules (`src/conversation/store.ts`, `src/push.ts`), not more of `src/store.ts`. Ask deadlines and timers use an injected clock.
+- **shadcn components to add in Task 1:** button, input, textarea, select, switch, checkbox, label, dialog, sheet, drawer, dropdown-menu, context-menu, command, popover, tooltip, sonner, skeleton, scroll-area, resizable, toggle-group, tabs, card, badge, progress, spinner, empty. Icon picker loads its icon list lazily (a generated name list plus dynamic import), never the whole library in the main bundle.
+- **Backups:** `deploy/backup.sh` also covers `data/icons` and the conversation tables (already in SQLite).
+
 ## Tasks
 
 ### Task 1: Workspaces, web scaffold, tokens, access check
 **Files:** `package.json`, `web/**` (Next app, shadcn init, `globals.css`, `layout.tsx`, `middleware.ts`), `web/lib/daemon.ts` (empty typed shell)
 **Interfaces:** Produces: `npm run web` (dev on :3000), `npm run web:build`.
 **Build:**
-- npm workspaces; Next.js App Router with TypeScript and Tailwind v4; shadcn init and the components used later (button, input, textarea, select, switch, checkbox, dialog, dropdown-menu, context-menu, toggle-group, tooltip, sonner, skeleton, scroll-area, label, separator-free).
+- npm workspaces; Next.js App Router with TypeScript and Tailwind v4; shadcn init and the components listed under "From the stress test".
 - Tokens from the design system in `globals.css` (light `:root`, `.dark`), `next-themes` with `attribute="class"`.
 - Middleware: Tailscale identity check against `ui.owner` (read from the daemon settings endpoint, cached 60 s; until Task 2 exists, from an env var in tests).
 **Tests (behaviours):**
@@ -111,6 +144,7 @@ Web (`web/` workspace):
 - [ ] Task 2 complete
 
 ### Task 3: Conversation store replaces Discord
+_Execute in two passes with a green test run between them: (a) store, migration, `Conversation`, routes and `asks`/`waiting` call sites; (b) `clot.ts` (about 40 call sites), runner streaming, activity lines, images, deleting `src/chat/`._
 **Files:** `src/conversation/{store,conversation,activity-lines}.ts`, `src/store.ts` (migration), `src/clot.ts`, `src/pipeline.ts`, `src/waiting.ts`, `src/workers.ts`, `src/global-memory.ts`, `src/daemon.ts`, `src/agent/runner.ts`, delete `src/chat/**`, remove `discord.js`; tests moved to a fake `Conversation`
 **Interfaces:**
 - Produces: `interface Conversation { post(clot, text, o?: { kind?: "clot" | "note"; recap?: boolean }): Promise<string>; postActivity(clot, a: TurnActivity): Promise<void>; activityLine(clot, l: { icon: string; text: string }): void; setState(clot, s: "idle" | "working" | "paused" | "failed", reason?: string): void; postAsk(clot, askId): Promise<string>; postWorkers(clot, turnId): Promise<string>; delta(clot, messageId, text): void }`.

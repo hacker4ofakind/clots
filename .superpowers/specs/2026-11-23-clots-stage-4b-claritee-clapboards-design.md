@@ -85,7 +85,8 @@ Card px=8 fg=muted-foreground {
 - **State**: `reactful(initial)` makes a value the UI follows; assigning to it
   re-renders. `stored(initial)` does the same and also keeps the value across
   reloads and for the Clot to read (Clapboards only; in an inline widget it
-  acts like `reactful`).
+  acts like `reactful`). A saved value whose variable a later version removes
+  is kept, and the linter tells the Clot so it can carry the value over.
 - **Operators**: those of JavaScript, plus `++`, `--`, `+=`, `-=`, `*=`, `/=` on
   any variable.
 - **Functions**: `fn total { a + b }`, with arguments only when there are any:
@@ -152,7 +153,8 @@ are letters, digits and `_` (no hyphens, so `a-b` is always subtraction).
 sends them as an ordinary message from the user, starting with "From the
 widget:" and one `label: value` line per input. An input's name is its `name=`
 attribute, or else its `Label`'s text. After sending, the widget freezes and
-shows what was submitted.
+shows what was submitted, on every device and after a reload; a widget is
+submitted once.
 
 ### 3.7 Corner radii
 
@@ -301,7 +303,7 @@ loads data.
   from emails or issues that a Clot puts in a widget cannot run code.
 - Markdown in widgets and replies renders no raw HTML.
 - External links open in a new tab with `rel="noopener noreferrer"`.
-- `Image` loads through the daemon's image proxy (`/api/v1/img?url=`): https
+- `Image` loads through the image proxy (the web app forwards `/api/img` to the daemon's `/api/v1/img?url=`; images are not run through Next's optimizer, and only raster images are served): https
   only, `image/*` responses only, at most 10 MB, private and loopback addresses
   refused, results cached. A Clot's own file can be shown from
   `~/clapboards/assets/`, served by the daemon.
