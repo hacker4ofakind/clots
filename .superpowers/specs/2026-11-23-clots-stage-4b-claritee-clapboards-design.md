@@ -60,6 +60,15 @@ Card px=8 fg=muted-foreground {
 - **Text** in children is literal. Inline markdown works inside it: `**bold**`,
   `*italic*`, `` `code` ``, `[label](https://…)`. Escape a literal `[`, `]`,
   `{` or `}` with `\`.
+- **Telling markup from text**: inside children, a word starts a component only
+  when it is a catalog name or a `comp` defined in the block, and is followed
+  on the same line by attributes and `{`, or by `{` directly, or (for a
+  component that takes no children) by attributes and the end of the line.
+  Otherwise it is text: `Desc { Card payments failed. }` is one sentence.
+- `[` followed by `](` later on the same line, as in `[label](https://…)`, is a
+  markdown link; any other `[` opens an expression.
+- `@name` is an icon only at the start of text or after a space or `{`, and
+  only when `name` is a Phosphor icon; `lukas@tady.ch` stays text.
 - **Expressions** in markup are written in square brackets, `[counter]`,
   `[user.name]`, `[items.length > 3 && Desc { Showing the first three. }]`.
   Ternaries and `&&` may return markup:
