@@ -29,6 +29,9 @@ if [ -f clots.config.json ]; then cp -a clots.config.json "$work/clots.config.js
 # Each Clot's home volume holds its Claude login and its session transcripts. The work volumes are
 # left out: they are clones GitHub already holds. .credentials.json is mode 600 and owned by the
 # container's user, so the volume is read as root, and the archive is handed back to this user.
+# The npm and tool caches are left out too: they refill themselves and one npm install made a
+# home tar ten times bigger. A running Clot can write while tar reads; GNU tar then exits 1
+# ("file changed as we read it") with a usable archive, so only an exit above 1 fails the run.
 uid=$(id -u)
 gid=$(id -g)
 # A failing `docker volume ls` stops the script (set -e) instead of looking like "no volumes".
@@ -36,7 +39,7 @@ all_volumes=$(docker volume ls --format '{{.Name}}')
 while read -r vol; do
   [ -n "$vol" ] || continue
   docker run --rm -v "$vol:/v:ro" -v "$work:/out" --user 0 --entrypoint sh "$IMAGE" \
-    -c "tar cf /out/$vol.tar -C /v . && chown $uid:$gid /out/$vol.tar"
+    -c "tar cf /out/$vol.tar --exclude=./.npm --exclude=./.cache -C /v .; rc=\$?; [ \$rc -le 1 ] && chown $uid:$gid /out/$vol.tar"
 done < <(grep -E '^clot-.*-home$' <<< "$all_volumes" || true)
 
 # Write under a temp name, then rename, so a failed run never leaves a half archive.
