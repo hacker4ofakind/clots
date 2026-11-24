@@ -1,12 +1,12 @@
+import { labelOf } from "../clot-name.js";
 import type { AskKind, Asks } from "../asks.js";
-import { ruleChannelName } from "../chat/names.js";
-import { matchYesNo, RULE_REPLIES, RULE_RETRY } from "../events/reply.js";
+import { blockedLine, minutes, waitedMinutes } from "./common.js";
 import { UNLOGGED_NOTE, type WriteResult } from "../rule-writer.js";
 import type { RuleEdit, RuleScope } from "../rulebook-edit.js";
 
 /** What the Clot is told when its edit has been put to the user. */
 export const RULE_FILED =
-  "Put to the user in a separate channel. Do not wait for the answer, and do not say the rule is in force. You will be told the outcome at the start of a later turn.";
+  "Put to the user in your chat. Do not wait for the answer, and do not say the rule is in force. You will be told the outcome at the start of a later turn.";
 
 export interface RulePayload {
   scope: RuleScope;
@@ -29,15 +29,21 @@ export interface RuleKindDeps {
 const headline = (summary: string) => summary.split("\n")[0];
 
 /**
- * A rule change that waits for the user's yes: a standing rule, or any edit from a turn an
+ * A rule change that waits for the user's answer: a standing rule, or any edit from a turn an
  * outsider's text started. A yes applies it, a no declines it, and anything else repeats the
  * question. It stays open until answered, across rollovers.
  */
 export function ruleKind(d: RuleKindDeps): AskKind<RulePayload> {
   return {
     kind: "rule",
-    channelName: ruleChannelName,
-    render: (_clot, p) => `asks for a change to \`${p.file}.yaml\`:\n\n${p.text}\n\n${RULE_REPLIES}`,
+    answers: ["allow", "block"],
+    view: (clot, p) => ({
+      heading: `Allow ${labelOf(clot)} to change a rule?`,
+      shortHeading: "Allow a rule change?",
+      rows: [{ label: "File", value: `${p.file}.yaml` }],
+      body: p.text,
+      labels: { allow: "Apply", block: "Decline" },
+    }),
     texts: {
       filed: RULE_FILED,
       already: "This is already with the user, waiting for their answer.",
@@ -45,15 +51,13 @@ export function ruleKind(d: RuleKindDeps): AskKind<RulePayload> {
       notAsked: (reason) => `The user could not be asked just now${reason ? ` (${reason})` : ""}. Put the suggestion in your reply instead.`,
     },
 
-    async onReply(ask, text, io) {
-      const answer = matchYesNo(text);
-      if (answer === undefined) return io.repeat(RULE_RETRY);
+    async onAnswer(ask, answer, io) {
       const what = headline(ask.payload.text);
-      if (answer === "no") {
+      if (answer.action === "block") {
         await io.close(`The user declined the rule change you asked for: ${what}. Do not ask for it again.`, `Declined: ${what}`);
         return;
       }
-      if (!io.setBusy()) return;
+      if (answer.action !== "allow" || !io.setBusy()) return;
       // Applied to the file as it is now, which may not be as it was when the question was asked.
       let done: WriteResult;
       try {
@@ -64,16 +68,21 @@ export function ruleKind(d: RuleKindDeps): AskKind<RulePayload> {
         done = { ok: false, reason: `it failed in an unexpected way (${error instanceof Error ? error.message : String(error)}); check the file` };
       }
       if (!done.ok && done.retry) {
-        // Nothing was changed and the cause was not the edit: the question is open again, in the same channel.
+        // Nothing was changed and the cause was not the edit: the question is open again.
         io.reopen();
-        await io.repeat(`That could not be applied just now (${done.reason}), and nothing was changed. Reply \`yes\` to try again, or \`no\` to decline it.`);
+        await io.say(`That rule change could not be applied just now (${done.reason}), and nothing was changed. Answer it again to try again.`);
         return;
       }
       if (done.ok) {
-        await io.close(`The user approved the rule change you asked for, and it is in force: ${what}`, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`&rules undo\` takes it back.${done.unlogged ? `\n${UNLOGGED_NOTE}` : ""}`);
+        await io.close(`The user approved the rule change you asked for, and it is in force: ${what}`, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`/rules undo\` takes it back.${done.unlogged ? `\n${UNLOGGED_NOTE}` : ""}`);
       } else {
         await io.close(`The user approved the rule change you asked for, but it could not be applied (${done.reason}): ${what}`, `Approved, but it could not be applied (${done.reason}), so nothing was changed: ${what}`);
       }
+    },
+
+    async onDeadline(ask, io) {
+      const what = headline(ask.payload.text);
+      await io.close(`The user did not answer the rule change you asked for within ${minutes(waitedMinutes(ask))}, so it was not applied: ${what}. Do not ask for it again unless the user asks.`, blockedLine(ask));
     },
   };
 }

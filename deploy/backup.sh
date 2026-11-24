@@ -23,6 +23,9 @@ sqlite3 data/clots.db ".backup '$work/clots.db'"
 
 if [ -d rulebook ]; then cp -a rulebook "$work/rulebook"; fi
 
+# The icons the user uploaded for their Clots (the conversation itself is in the database above).
+if [ -d data/icons ]; then cp -a data/icons "$work/icons"; fi
+
 # The configuration is gitignored and the Clots edit it, so it is kept too. It names .env keys and holds no secret; .env itself is not backed up here.
 if [ -f clots.config.json ]; then cp -a clots.config.json "$work/clots.config.json"; fi
 

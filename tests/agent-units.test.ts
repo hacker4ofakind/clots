@@ -154,6 +154,9 @@ describe("container helpers", () => {
 
   it("names the container after the clot", () => {
     expect(containerName("graphite")).toBe("clot-graphite");
+    // Docker names are lowercase: a Clot named Truecast runs in clot-truecast, and a lowercase one keeps the container it had.
+    expect(containerName("Truecast")).toBe("clot-truecast");
+    expect(gitIdentity("Truecast")).toEqual({ name: "truecast-clot", email: "truecast-clot@clots.invalid" });
   });
 
   it("drops the host runtime and script path", () => {

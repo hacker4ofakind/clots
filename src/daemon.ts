@@ -1,15 +1,31 @@
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { addWorktree, containerName, defaultBranch, ensureContainer, hasOwnLogin, installPlugin, killStrayClaude, prsForBranch, refreshMainCheckout, removeWorktree, sessionEnv, sessionExistsAsync, worktreeExists } from "./agent/container.js";
+import { stopContainer, addWorktree, containerName, defaultBranch, ensureContainer, hasOwnLogin, installPlugin, killStrayClaude, prsForBranch, refreshMainCheckout, removeWorktree, sessionEnv, sessionExistsAsync, worktreeExists } from "./agent/container.js";
 import { DockerMemoryFolders } from "./agent/memory-folder.js";
 import { CLOT_SYSTEM_PROMPT, composioNote, HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
 import { SdkRunner } from "./agent/runner.js";
-import { DiscordChat } from "./chat/discord.js";
 import { Clot } from "./clot.js";
 import { applyChange, check, getAt, missingEnvKeys, needsAsk, parseKey } from "./config-edit.js";
 import { configKind, restartKind } from "./asks/config.js";
-import { calendarPollingCalls, HOME_CLOT, isCalendar, loadConfigLeaving, type AccountBase, type NotionAccount } from "./config.js";
+import { calendarPollingCalls, HOME_CLOT, isCalendar, legacyKeysIn, renamedKeysIn, type AccountBase, type NotionAccount } from "./config.js";
+import { ConfigStore } from "./config-store.js";
+import { registerSettingsRoutes } from "./ui-api/routes/settings.js";
+import { registerIntegrationRoutes } from "./ui-api/routes/integrations.js";
+import { registerClotAdminRoutes } from "./ui-api/routes/clots-admin.js";
+import { ClotCreator, onboardingMessage } from "./onboarding/create.js";
+import { IconStore } from "./onboarding/icons.js";
+import { ConversationService } from "./conversation/conversation.js";
+import { LiveEnv } from "./live-env.js";
+import { EventBus } from "./ui-api/events.js";
+import { registerClotRoutes } from "./ui-api/routes/clots.js";
+import { registerPrefsRoutes } from "./ui-api/routes/prefs.js";
+import { registerPushRoutes } from "./ui-api/routes/push.js";
+import { newVapidKeys, Push, webPushSender } from "./push.js";
+import { setEnvKey } from "./env-file.js";
+import { registerWorkerRoutes } from "./ui-api/routes/workers.js";
+import { ensureEnvKey } from "./ui-api/secrets.js";
+import { UiApi } from "./ui-api/server.js";
 import { githubCommentSender } from "./events/github-comment.js";
 import { isSelfCaused, repoSlug } from "./events/github.js";
 import { enricherBySource, type Enricher } from "./enrich.js";
@@ -45,9 +61,7 @@ import { askChoice, choiceKind } from "./asks/choice.js";
 import { askMerge, mergeKind, withdrawMerges } from "./asks/merge.js";
 import { memoryKind } from "./asks/memory.js";
 import { askRule, ruleKind } from "./asks/rule.js";
-import { migrateAsks } from "./asks-migration.js";
 import { CalendarUndo } from "./calendar-undo.js";
-import { Waiting } from "./waiting.js";
 import { DraftTracker } from "./drafts.js";
 import { linearCommentSender, linearEnricher, linearMapper } from "./sources/linear.js";
 import { notionCommentSender, notionEnricher, notionHandler } from "./sources/notion.js";
@@ -74,7 +88,32 @@ import { skipList, Sweeper } from "./sweep.js";
 import { CacheKeeper } from "./keep-warm.js";
 import { makeReground } from "./reground.js";
 
-const { config, skipped: skippedAccounts } = loadConfigLeaving(JSON.parse(fs.readFileSync("clots.config.json", "utf8")), process.env);
+// The daemon starts with `node --env-file`, so a key written to .env later never reaches process.env: secrets are read through this.
+const bus = new EventBus();
+const ENV_FILE = ".env";
+const uiSecret = ensureEnvKey(ENV_FILE, "CLOTS_UI_SECRET");
+const liveEnv = new LiveEnv(ENV_FILE);
+const configFile: unknown = JSON.parse(fs.readFileSync("clots.config.json", "utf8"));
+for (const key of legacyKeysIn(configFile)) console.log(`[config] "${key}" in clots.config.json is not used any more and is ignored.`);
+for (const [old, now] of renamedKeysIn(configFile)) console.log(`[config] "${old}" in clots.config.json is now called "${now}"; its value is used as it is. Rename it when you next edit the file.`);
+// The configuration is owned by the config store: it validates every change, writes atomically, watches the file and applies what it can live.
+const configStore = new ConfigStore({
+  file: "clots.config.json",
+  envFile: ENV_FILE,
+  env: liveEnv,
+  log: (text) => console.log(text),
+  onChanged: (e) => {
+    config = configStore.current;
+    announceConfig({ applied: e.keys.filter((k) => !e.needsRestart.includes(k)), needsRestart: e.needsRestart, fromFile: e.fromFile, error: e.error });
+  },
+});
+let config = configStore.current;
+const skippedAccounts = configStore.skipped;
+/** Tells the UI what changed in the configuration, and whether a hand edit was picked up or refused. */
+function announceConfig(e: { applied: string[]; needsRestart: string[]; fromFile: boolean; error?: string }): void {
+  bus.emit("config.changed", { keys: e.applied, needsRestart: e.needsRestart, fromFile: e.fromFile, ...(e.error === undefined ? {} : { error: e.error }) });
+}
+if (config.ui.owner === undefined) console.warn('[config] "ui.owner" is not set in clots.config.json: the web app refuses everyone until it is.');
 for (const s of skippedAccounts) console.error(`[config] sources.composio entry ${s.entry} is not usable and is left out: ${s.problem}`);
 
 // The intake port is taken first, before anything is read or changed. It is what keeps a second
@@ -97,8 +136,9 @@ const deliver = (event: ClotEvent, dropped?: string): void => {
  */
 /** Set once the workers exist. A pull request closed before then is caught by their check with GitHub at startup. */
 let onPullRequest: (a: PullRequestChange) => Promise<void> = async () => undefined;
+const pingedRepos = new Set<string>();
 const handlers = new Map<string, Handler>([
-  ["/webhooks/github", githubHandler({ secret: config.webhookSecret, insertEvent: (event) => store.insertEvent(event), now: () => Date.now(), onPullRequest: (a) => onPullRequest(a) })],
+  ["/webhooks/github", githubHandler({ secret: config.webhookSecret, insertEvent: (event) => store.insertEvent(event), now: () => Date.now(), onPullRequest: (a) => onPullRequest(a), onPing: (repo) => void pingedRepos.add(repo) })],
 ]);
 /**
  * Composio's path answers from the start: 503 until the daemon has set it up, which tells Composio to deliver
@@ -137,7 +177,33 @@ const roster = (): { name: string; about: string }[] => [
   ...config.clots.map((c) => ({ name: c.name, about: c.about ?? `the project in the repository ${repoSlug(c.repoUrl)}` })),
 ];
 
-const chat = new DiscordChat(config.discordToken, config.guildId);
+// Push: the keys are made at first start and kept in .env.
+if (!readEnvFile(ENV_FILE).VAPID_PUBLIC_KEY || !readEnvFile(ENV_FILE).VAPID_PRIVATE_KEY) {
+  const keys = newVapidKeys();
+  setEnvKey(ENV_FILE, "VAPID_PUBLIC_KEY", keys.publicKey);
+  setEnvKey(ENV_FILE, "VAPID_PRIVATE_KEY", keys.privateKey);
+  liveEnv.reload();
+}
+const push = new Push({
+  store: store.push,
+  now: () => Date.now(),
+  send: webPushSender({ publicKey: liveEnv.get("VAPID_PUBLIC_KEY")!, privateKey: liveEnv.get("VAPID_PRIVATE_KEY")!, subject: config.publicUrl === "" ? "https://localhost" : config.publicUrl }),
+});
+const conv = new ConversationService({
+  store,
+  bus,
+  now: () => Date.now(),
+  newId: randomUUID,
+  onReply: (clot, message) => void push.reply(clot, message.text).catch(() => undefined),
+});
+// What the user is told while away: a new ask, one in its last minute, a choice the timeout decided, a Clot paused or failed.
+bus.subscribe((event) => {
+  const d = event.data as any;
+  if (event.type === "ask.opened") void push.askOpened(d).catch(() => undefined);
+  else if (event.type === "ask.updated" && d.timer === "urgent") void push.askUrgent(d).catch(() => undefined);
+  else if (event.type === "ask.closed" && d.kind === "choice" && String(d.outcome).startsWith("No answer within")) void push.choiceDecided(d.clot, d.id, d.outcome).catch(() => undefined);
+  else if (event.type === "clot.state" && (d.state === "paused" || d.state === "failed")) void push.clotStopped(d.clot, d.state, d.reason).catch(() => undefined);
+});
 /** What the router, triage and the routing call cost, booked to the Clot they were for; the routing call belongs to the daemon. */
 const bookCall = (who: "triage" | "routing") => (usd: number, clot: string | null) => void spend.book({ clot: clot ?? "daemon", who, total: usd }).catch((error) => console.error("booking a call's cost failed:", error));
 const router = new SdkRouter({ onCost: bookCall("triage") });
@@ -181,15 +247,13 @@ meter.onChange(() => ticker.recheck());
 
 const spend = new SpendLog({ store, now: () => Date.now(), timeZone: config.timeZone, weeklyWarnUsd: config.spend.weeklyWarnUsd, post: (clot, text) => postLive(clot, text), gate, meter });
 
-/** Posts in a Clot's live channel. What the daemon says there never enters the Clot's session. */
+/** Posts a note in a Clot's chat. What the daemon says there never enters the Clot's session. */
 const say = async (clot: string, text: string): Promise<void> => {
-  const session = store.activeSession(clot);
-  if (session) await chat.post(session.channelId, text).catch(() => undefined);
+  await conv.post(clot, text, { kind: "note" }).catch(() => undefined);
 };
 /** Like say, but a failed post throws: the spend warning is tried again when it fails. */
 const postLive = async (clot: string, text: string): Promise<void> => {
-  const session = store.activeSession(clot);
-  if (session) await chat.post(session.channelId, text);
+  await conv.post(clot, text, { kind: "note" });
 };
 
 const rulebook = new Rulebook(config.rulebookDir, names, (file, problem) => {
@@ -233,11 +297,7 @@ const workers = new Workers({
   },
   kick: (clot) => clots.get(clot)?.kick(),
   pause: async (clot, resetsAt) => clots.get(clot)?.pauseFor(resetsAt),
-  say,
-  postActivity: async (clot, activity) => {
-    const session = store.activeSession(clot);
-    if (session) await chat.postActivity(session.channelId, activity);
-  },
+  announce: async (clot, turnId) => void (await conv.postWorkers(clot, turnId)),
   gate,
   timeZone: config.timeZone,
   book: (a) => spend.book(a),
@@ -251,16 +311,13 @@ const writer = new RuleWriter({ rulebook, store });
 /** Sends as the user: standing-rule replies and approved emails, each with a copy in Sent where the server does not file one. */
 const sendMail = mailer({ store, transport: smtpTransport, saveSent, log: (text, error) => console.warn(text, error) });
 
-// The kinds of ask. Email is asked only with email set up and send review on.
+// The kinds of ask. The email kind reads the accounts as they are now, so the first inbox added needs no restart.
 const ruleAsk = ruleKind({ writer, store });
-const emailAsk =
-  config.sources.email.length === 0 || !config.sendReview.enabled
-    ? undefined
-    : emailKind({ store, accounts: config.sources.email, maxMs: config.sendReview.maxMs, now: () => Date.now(), send: sendMail, saveDraft, say });
+const emailAsk = emailKind({ store, accounts: () => config.sources.email, send: sendMail });
 let memory: GlobalMemory;
 const memoryAsk = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload), inForce: (payload) => memory.inForce(payload) });
 const mergeAsk = mergeKind({ token: config.githubToken });
-const choiceAsk = choiceKind({ timeoutMinutes: config.choiceTimeoutMinutes });
+const choiceAsk = choiceKind();
 // Changing the configuration and restarting: asked of the user, and carried out by the home Clot's tools only.
 const CONFIG_FILE = "clots.config.json";
 const configAsk = configKind({ apply: (key, value) => applyChange(CONFIG_FILE, key, value) });
@@ -323,21 +380,16 @@ const calendars = new Map(config.sources.composio.filter(isCalendar).map((accoun
 const calendarUndo = calendars.size === 0 ? undefined : new CalendarUndo({ store, call: (account, req) => calendars.get(account)!.call(req), timeZone: config.timeZone });
 const composioUndo = composio === undefined ? undefined : new ComposioUndo({ composio, store });
 
-/** The pinned list of everything waiting for the user, at the top of the server. */
-const waiting = new Waiting({ store, chat, after });
 const asks = new Asks({
   store,
-  chat,
-  userId: config.userId,
+  conv,
   now: () => Date.now(),
   kick: (clot) => clots.get(clot)?.kick(),
-  say,
   after,
-  kinds: [ruleAsk, memoryAsk, mergeAsk, choiceAsk, configAsk, restartAsk, ...(emailAsk ? [emailAsk] : []), ...(composioAsk ? [composioAsk] : [])],
-  // Nothing posted in clots-waiting is an answer, or reaches a Clot.
-  ignore: (channelId) => waiting.isChannel(channelId),
+  kinds: [ruleAsk, memoryAsk, mergeAsk, choiceAsk, configAsk, restartAsk, emailAsk, ...(composioAsk ? [composioAsk] : [])],
+  emit: (type, data) => void bus.emit(type, data),
+  timeoutMs: () => config.askTimeoutMinutes * 60_000,
 });
-asks.onChange(() => waiting.refresh());
 let composioAuthoring: ComposioAuthoring | undefined;
 if (composio !== undefined && composioAsk !== undefined) {
   composioActions = new ComposioActions({
@@ -383,11 +435,6 @@ function daemonConfigTools(): NonNullable<ToolDeps["daemonConfig"]> {
     async set(clot, key, value) {
       const path = parseKey(key);
       if (typeof path === "string") return `Not changed: ${path}`;
-      if (!needsAsk(path)) {
-        const done = applyChange(CONFIG_FILE, key, value);
-        if (done.ok) await say(clot, `Configuration changed by ${clot}: \`${key}\` is now:\n\`\`\`json\n${show(value, 1500).replaceAll("```", "'''")}\n\`\`\`\nThe old file is kept as \`${CONFIG_FILE}.bak\`. It applies at the next restart.`);
-        return done.text;
-      }
       // Checked before the user is asked: they are never shown a change that cannot be saved.
       const file = readFile();
       const checked = check(file, key, value);
@@ -415,10 +462,10 @@ const toolDeps: ToolDeps = {
   writer,
   asks: {
     rule: (clot, scope, edit, outsider) => askRule(asks, ruleAsk, { writer, store, max: config.maxProposals }, clot, scope, edit, outsider),
-    ...(emailAsk ? { email: (clot: string, req: SendRequest, outsider: boolean) => askEmail(asks, emailAsk, config.maxProposals, clot, req, outsider) } : {}),
+    email: (clot: string, req: SendRequest, outsider: boolean) => askEmail(asks, emailAsk, config.maxProposals, clot, req, outsider),
     merge: (clot, a, outsider) =>
       askMerge(asks, mergeAsk, { token: config.githubToken, repoOf: (name) => repoOf.get(name) ?? null, workerRepos: (name) => [...new Set(store.workersOf(name).flatMap((w) => (w.prRepo === null ? [] : [w.prRepo])))] }, clot, a, outsider),
-    choice: (clot, a, outsider) => askChoice(asks, choiceAsk, { now: () => Date.now(), timeoutMinutes: config.choiceTimeoutMinutes }, clot, a, outsider),
+    choice: (clot, a, outsider) => askChoice(asks, choiceAsk, clot, a, outsider),
   },
   store,
   senders: { github_comment: githubCommentSender(config.githubToken) },
@@ -442,21 +489,109 @@ memory = new GlobalMemory({
   },
 });
 
-await chat.start((m) => {
-  void (async () => {
-    // A reply in a temporary channel is an answer to the daemon's question there, not a message for the Clot.
-    if (await asks.onReply(m)) return;
-    const session = store.sessionByChannel(m.channelId);
-    const clot = session && clots.get(session.clot);
-    if (clot) await clot.onMessage(m);
-  })().catch((error) => console.error("[chat]", error));
+// The UI's API: loopback only, on a port of its own (8788), refusing every request without the shared secret.
+const UI_API_PORT = 8788;
+const ui = new UiApi({ secret: () => uiSecret, bus });
+registerClotRoutes(ui, { store, conv, asks, config: () => config, clots: () => clots, names: () => names, now: () => Date.now() });
+registerWorkerRoutes(ui, { store });
+registerSettingsRoutes(ui, {
+  config: configStore,
+  announce: announceConfig,
+  reorder: (order) => {
+    names.splice(0, names.length, ...order);
+  },
+  removeClot: (name) => removeClotLive(name),
 });
-
-// The rule proposals, send reviews and memory questions an earlier version kept are withdrawn, once.
-await migrateAsks({ store, chat });
-// Steering questions an earlier version opened about events have no one to answer them any more.
-for (const channelId of store.steeringAskChannels()) await chat.deleteChannel(channelId).catch(() => undefined);
-store.clearSteeringAsks();
+/** Takes a Clot out of the running daemon: its container stops, what waits for it is dropped. Its volumes and its chat stay. */
+async function removeClotLive(name: string): Promise<void> {
+  const at = names.indexOf(name);
+  if (at >= 0) names.splice(at, 1);
+  const definition = definitions.findIndex((c) => c.name === name);
+  if (definition >= 0) definitions.splice(definition, 1);
+  clots.delete(name);
+  runners.delete(name);
+  repoOf.delete(name);
+  store.clearInbox(name);
+  await stopContainer(containerName(name));
+  bus.emit("clot.state", { clot: name, state: "idle", removed: true });
+}
+registerIntegrationRoutes(ui, { config: configStore });
+// New Clots: made from the UI, started here once. A Clot whose create is in progress is not started again by anything else.
+const icons = new IconStore("data/icons");
+const creator: ClotCreator = new ClotCreator({
+  config: configStore,
+  token: () => config.githubToken,
+  start: async (def, step) => {
+    if (!definitions.some((c) => c.name === def.name)) {
+      definitions.push(def);
+      names.push(def.name);
+      repoOf.set(def.name, repoSlug(def.repoUrl) ?? null);
+    }
+    step("cloning");
+    try {
+      await startClot(def);
+    } catch (error) {
+      const at = names.indexOf(def.name);
+      if (at >= 0) names.splice(at, 1);
+      const d = definitions.findIndex((c) => c.name === def.name);
+      if (d >= 0) definitions.splice(d, 1);
+      clots.delete(def.name);
+      repoOf.delete(def.name);
+      throw error;
+    }
+    step("starting");
+  },
+  emit: (e) => void bus.emit("clot.build", e),
+  onReady: async (name, repo) => {
+    const { text, data } = onboardingMessage({ name, repo, webhookUrl: `${config.publicUrl}/webhooks/github` });
+    await conv.post(name, text, { kind: "onboarding", data });
+  },
+});
+registerClotAdminRoutes(ui, {
+  creator,
+  icons,
+  config: configStore,
+  webhookSecret: () => config.webhookSecret,
+  onboarding: (name) => {
+    const repo = repoOf.get(name);
+    const tools = config.sources.composio.filter((a) => a.clot === name);
+    return [
+      { id: "webhook", done: repo != null && pingedRepos.has(repo), detail: repo != null && pingedRepos.has(repo) ? "GitHub's ping arrived." : `Waiting for GitHub's ping from ${repo ?? "the repository"}.` },
+      { id: "tools", done: tools.every((a) => store.composio.account(composio?.userOf(a) ?? "")?.status === "active"), detail: tools.length === 0 ? "No tool is connected yet." : `${tools.length} connected.` },
+      { id: "push-branch", done: store.workersOf(name).some((w) => w.branch !== null && w.started), detail: "Done once the Clot has pushed a branch with its own token." },
+    ];
+  },
+});
+// A Clot added to the file by hand starts; one taken out stops. One made from the UI is started by its create, and one deleted from it was stopped by its delete.
+configStore.onChange(["clots"], async (next) => {
+  for (const c of next.clots) {
+    if (names.includes(c.name) || creator.building.has(c.name)) continue;
+    definitions.push(c);
+    names.push(c.name);
+    repoOf.set(c.name, repoSlug(c.repoUrl) ?? null);
+    void startClot(c).catch((error) => console.error(`[${c.name}] could not be started:`, error));
+  }
+  for (const name of [...names]) if (name !== HOME_CLOT && !next.clots.some((c) => c.name === name) && !creator.building.has(name)) await removeClotLive(name);
+});
+// What a change reaches at once. Everything else a change touches takes effect at the next restart, which the answer says.
+configStore.onChange(["askTimeoutMinutes", "maxProposals"], () => undefined);
+configStore.onChange(["maxWorkers"], (next) => workers.setLimit(next.maxWorkers));
+configStore.onChange(["rolloverPercent", "timeZone"], (next) => {
+  for (const clot of clots.values()) clot.configure({ rolloverPercent: next.rolloverPercent, timeZone: next.timeZone });
+});
+registerPushRoutes(ui, { push, subscriptions: store.push, publicKey: () => liveEnv.get("VAPID_PUBLIC_KEY") ?? "", now: () => Date.now() });
+registerPrefsRoutes(ui, { store, emit: (prefs) => void bus.emit("config.changed", { ui: prefs }) });
+// The worker card follows each worker's state: any change tells the UI which turn's card to refetch.
+store.onWorkerChange((w) => {
+  if (w.turnId !== null) bus.emit("workers.updated", { clot: w.clot, turnId: w.turnId });
+});
+try {
+  await ui.listen(UI_API_PORT);
+  console.log(`[ui] the web app's API is listening on http://127.0.0.1:${UI_API_PORT}`);
+} catch (error) {
+  console.error(`[ui] the UI API could not start on port ${UI_API_PORT}:`, error);
+  process.exit(1);
+}
 
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check. */
 /** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Set up with the email sources. */
@@ -468,7 +603,7 @@ const repoToClot = new Map<string, string>();
 /** The daemon's plugin (skills for the Clots), shipped in the repository next to src/. */
 const PLUGIN_SOURCE = fileURLToPath(new URL("../plugin", import.meta.url));
 
-for (const c of definitions) {
+async function startClot(c: (typeof definitions)[number]): Promise<void> {
   console.log(`[${c.name}] preparing container`);
   const login = await ensureContainer({ clot: c.name, image: config.image, repoUrl: c.repoUrl, githubToken: config.githubToken });
   if (login) clotLogin = login;
@@ -492,14 +627,13 @@ for (const c of definitions) {
   const clot = new Clot({
     name: c.name,
     store,
-    chat,
+    conv,
     router,
     runner,
     workerLines: (name) => workers.lines(name),
     onLimit: (resetsAt) => workers.onLimit(resetsAt),
     keepWarmLog: (name, text) => console.log(`[${name}] keep-warm: ${text}`),
     timeZone: config.timeZone,
-    userId: config.userId,
     gate,
     spend: { book: (a) => spend.book(a), report: (name) => spend.report(name) },
     reground: makeReground({ run: (name, req) => runners.get(name)!.runOneOff(req), workerLines: (name) => workers.lines(name), book: (a) => spend.book(a) }),
@@ -535,6 +669,7 @@ for (const c of definitions) {
   await clot.init();
   console.log(`[${c.name}] ready`);
 }
+for (const c of [...definitions]) await startClot(c);
 
 // Every Clot is ready: the workers' queue starts, after a check of their worktrees and pull requests.
 await workers.startUp();
@@ -548,7 +683,6 @@ setInterval(() => void ticker.tick(), 60_000);
 // then every hour. Deadlines are scheduled once the Clots can take what they hand over.
 await asks.sweep(true);
 asks.startTimers();
-await waiting.init().catch((error) => console.error("[waiting] clots-waiting could not be set up; it is tried again at the next change:", error));
 setInterval(() => void asks.sweep(false).catch((error) => console.error("[asks] the hourly sweep failed:", error)), 60 * 60_000);
 
 for (const s of skippedAccounts) void tellHome(`The Composio entry \`${s.entry}\` in clots.config.json is not usable, so it is left out and everything else runs: ${s.problem}`).catch(() => undefined);
@@ -758,7 +892,7 @@ const eventRouter = new EventRouter({
 
 const pipeline = new Pipeline({
   store,
-  chat,
+  conv,
   rulebook,
   triage: new SdkTriage({ onCost: bookCall("triage") }),
   clots,

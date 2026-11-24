@@ -284,7 +284,7 @@ export class ComposioActions {
 
     const link = linkIn(result.data);
     const detail = link ?? clip(JSON.stringify(result.data ?? null), 120);
-    const undo = made === undefined ? " (no undo)" : " `&composio undo` reverses it.";
+    const undo = made === undefined ? " (no undo)" : " `/composio undo` reverses it.";
     await this.d.say(o.clot, `${label}, ${detail}${o.reviewed ? " (reviewed)" : ""}.${undo}`);
     return { ok: true, text: `Done: ${o.tool.name} in ${user}.${link ? ` ${link}` : ""}${made === undefined ? " It cannot be undone." : " It was posted with its undo."}\n${untrustedResult(user, slug, result.data)}` };
   }

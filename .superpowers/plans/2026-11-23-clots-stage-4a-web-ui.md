@@ -263,14 +263,17 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 **Files:** `src/onboarding/{create,repo-access,icons,checklist}.ts`, `src/ui-api/routes/clots.ts`, `web/app/(app)/new/**`, `web/components/clots/icon-picker.tsx`, tests
 **Interfaces:**
 - Produces: `POST /clots/validate` (`{ name, repo }` → field errors or ok; accepts a pending invitation), `POST /clots/icons` (upload → `{ iconId }`), `POST /clots` (create; progress as `clot.build` events `{ clot, step: "cloning" | "building" | "starting" | "done" | "failed", log? }`), `POST /clots/:clot/retry`.
-- Produces: checklist items `{ id: "webhook" | "tools" | "push-branch", done: boolean, detail }` stored per Clot.
+- Produces: checklist items `{ id: "webhook" | "tools" | "push-branch", done: boolean, detail }` stored per Clot; `GET /clots/:clot/webhook-secret` (`{ secret }`, read only when the user presses Copy).
+- A Clot's name keeps its capitals (letters, digits, hyphens); `src/clot-name.ts` gives `slugOf` (lower case), which container, volume, rule-file and uniqueness checks use.
 **Build:**
 - Steps 1 to 3 with slide transitions (`motion`), heading animates to icon + "Creating <name>", Reset, Edit mode with Save.
 - Icon picker: all Phosphor icons (regular), search, eight colours, upload or paste; active variant via `sharp`.
 - Create writes the config entry through the config store (Task 8), clones, builds, starts; failure shows log + Retry.
-- First Clot message = the checklist; webhook item turns done on GitHub's `ping` for that repo; branch item on the first push by the Clot's token.
+- First Clot message = one line plus the checklist card (message kind `onboarding`, data `{ repo, webhookUrl }`, never the secret); the card lists the steps, ticks them live, and puts the webhook address and the secret behind Copy buttons. Webhook item turns done on GitHub's `ping` for that repo; branch item on the first push by the Clot's token.
 **Tests (behaviours):**
 - a taken name or invalid container name → field error; no access → the invite instructions; pending invitation → accepted.
+- a name with capitals is accepted and kept as typed; `Truecast` is taken when `truecast` exists; the container is `clot-truecast`; a lowercase Clot keeps its container.
+- the first message's text and data hold no secret; the secret route answers only with the UI secret.
 - a two-colour PNG's active variant has its colours swapped; a photo's is inverted.
 - a failed build reports `failed` with the log; Retry continues.
 - a GitHub ping for the repo marks the webhook item done.
@@ -373,7 +376,7 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 
 #### MV-13: New Clot end to end
 - **Steps:** 1. Click + in the rail. 2. Pick the Sliders icon, name `graphite`, repository `hacker4ofakind/chess-gpt`. Next. 3. No tools; Next/Create graphite.
-- **Expected:** progress shows cloning, building, starting; you land in graphite's chat with the onboarding checklist showing the webhook address and secret; after adding the webhook on GitHub, the webhook item turns done.
+- **Expected:** progress shows cloning, building, starting; you land in graphite's chat with the onboarding checklist, the webhook address and a Copy button for the secret (the secret is not in the message); after adding the webhook on GitHub, the webhook item turns done.
 - **How the executor runs it:** browser + GitHub in the built-in browser. Delete the Clot afterwards (Settings → Manage Clots → Delete, typing the name).
 
 #### MV-14: Connect a Composio toolkit with OAuth

@@ -2,6 +2,32 @@ import http from "node:http";
 import { normalizeGithub, verifySignature } from "./events/github.js";
 import type { ClotEvent } from "./events/types.js";
 
+/**
+ * Reads a request's body, up to `max` bytes. A larger one is cut off, `tooLarge` is called, and the result
+ * is undefined. Shared with the UI API's server.
+ */
+export function readBody(req: http.IncomingMessage, max: number, tooLarge: () => void): Promise<Buffer | undefined> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let over = false;
+    req.on("data", (chunk: Buffer) => {
+      if (over) return;
+      size += chunk.length;
+      if (size > max) {
+        over = true;
+        tooLarge();
+        req.destroy();
+        resolve(undefined);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(over ? undefined : Buffer.concat(chunks)));
+    req.on("error", () => resolve(undefined));
+  });
+}
+
 /** Larger requests are refused. Every source's payloads are far smaller. */
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
 
@@ -57,6 +83,8 @@ export interface IntakeDeps {
   now: () => number;
   /** Told of every pull request opened, reopened or closed, before anything is stored. */
   onPullRequest?: (a: PullRequestChange) => Promise<void>;
+  /** GitHub's ping when a webhook is added, with the repository it is for (owner/name, lowercased). A Clot's onboarding checks its webhook by it. */
+  onPing?: (repo: string) => void;
 }
 
 export interface PullRequestChange {
@@ -100,6 +128,11 @@ export function acceptGithub(d: Delivery, deps: IntakeDeps): Answer {
   if (!d.eventName || !d.deliveryId) return { status: 400, text: "missing GitHub headers" };
   const payload = jsonBody(d.rawBody);
   if (payload === undefined) return { status: 400, text: "body is not JSON" };
+  if (d.eventName === "ping") {
+    const repo = (payload as { repository?: { full_name?: unknown } } | null)?.repository?.full_name;
+    if (typeof repo === "string") deps.onPing?.(repo.toLowerCase());
+    return { status: 200, text: "ignored" };
+  }
   // A pull request's own lifecycle is the workers' business, and is read before the Clot's own events are dropped.
   const pr = pullRequestChange(d.eventName, payload);
   if (pr && deps.onPullRequest) void deps.onPullRequest(pr).catch((error) => console.error("[events] handling a pull request's change failed:", error));
@@ -128,24 +161,16 @@ export function startIntake(o: { port: number; handlerFor: (path: string) => Han
       res.writeHead(req.method === "GET" && url.pathname === "/" ? 200 : 404).end("clots intake");
       return;
     }
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_REQUEST_BYTES) {
-        console.log(`[intake] ${req.method} ${url.pathname}: 413 too large`);
-        res.writeHead(413).end("too large");
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
+    const body = readBody(req, MAX_REQUEST_BYTES, () => {
+      console.log(`[intake] ${req.method} ${url.pathname}: 413 too large`);
+      res.writeHead(413).end("too large");
     });
-    req.on("end", () => {
-      if (res.writableEnded) return;
+    void body.then((rawBody) => {
+      if (rawBody === undefined || res.writableEnded) return;
       const headers: Record<string, string> = {};
       for (const [name, value] of Object.entries(req.headers)) if (value !== undefined) headers[name] = Array.isArray(value) ? value[0] : value;
       Promise.resolve()
-        .then(() => handler({ method: req.method ?? "GET", headers, query: url.searchParams, rawBody: Buffer.concat(chunks) }))
+        .then(() => handler({ method: req.method ?? "GET", headers, query: url.searchParams, rawBody }))
         .catch((error): Answer => {
           console.error(`[intake] ${url.pathname} failed:`, error);
           return { status: 500, text: "error" };

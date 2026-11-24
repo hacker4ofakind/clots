@@ -12,7 +12,7 @@ import type { RuleEditRow, Store } from "./store.js";
 export type WriteResult = { ok: true; file: string; summary: string; unlogged?: true } | { ok: false; reason: string; retry?: true };
 
 /** Added to what the user and the Clot are told about an edit that was made but whose undo record could not be saved. */
-export const UNLOGGED_NOTE = "Its undo record could not be saved yet, so `&rules undo` is not available until it can be.";
+export const UNLOGGED_NOTE = "Its undo record could not be saved yet, so `/rules undo` is not available until it can be.";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 

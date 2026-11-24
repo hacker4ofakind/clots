@@ -1,41 +1,37 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Asks, type AskKind } from "../src/asks.js";
 import { askChoice, choiceKind, type ChoicePayload } from "../src/asks/choice.js";
-import type { InboundMessage } from "../src/chat/adapter.js";
-import { FakeChat } from "../src/chat/fake.js";
-import { matchChoice } from "../src/events/reply.js";
 import { Store } from "../src/store.js";
 import { makeTools, type ToolDeps } from "../src/tools.js";
+import { FakeConversation } from "./helpers/conversation.js";
 
-const USER = "user-1";
 const MINUTE = 60_000;
 const START = Date.parse("2026-10-29T09:00:00Z");
 
 let store: Store;
-let chat: FakeChat;
-let said: string[];
+let conv: FakeConversation;
 let kicked: string[];
 let clock: number;
 let timers: { at: number; fn: () => void; cancelled: boolean }[];
 let kind: AskKind<ChoicePayload>;
 let asks: Asks;
-let n: number;
+let timeoutMinutes: number;
 
 const build = () => {
-  kind = choiceKind({ timeoutMinutes: 10 });
+  kind = choiceKind();
   asks = new Asks({
     store,
-    chat,
-    userId: USER,
+    conv,
     now: () => clock,
     kick: (clot) => void kicked.push(clot),
-    say: async (_clot, text) => void said.push(text),
     after: (ms, fn) => {
       const timer = { at: clock + ms, fn, cancelled: false };
       timers.push(timer);
       return () => void (timer.cancelled = true);
     },
     kinds: [kind],
+    emit: () => undefined,
+    timeoutMs: () => timeoutMinutes * MINUTE,
   });
 };
 
@@ -49,13 +45,8 @@ async function advance(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function reply(channelId: string, text: string, authorId = USER): InboundMessage {
-  n += 1;
-  return { id: `r${n}`, channelId, authorId, text, at: new Date(0) };
-}
-
 const choice = { question: "How to fix the login bug?", options: ["Retry the token refresh", "Log the user out and back in"] as [string, string], pick: 1 as const };
-const open = (o: { question?: string; outsider?: boolean } = {}) => askChoice(asks, kind, { now: () => clock, timeoutMinutes: 10 }, "graphite", { ...choice, question: o.question ?? choice.question }, o.outsider ?? false);
+const open = (o: { question?: string; outsider?: boolean } = {}) => askChoice(asks, kind, "graphite", { ...choice, question: o.question ?? choice.question }, o.outsider ?? false);
 const choices = () => store.openAsks().filter((row) => row.kind === "choice");
 const pending = () => {
   const row = store.nextPending("graphite");
@@ -63,96 +54,86 @@ const pending = () => {
   return row;
 };
 
-beforeEach(async () => {
+beforeEach(() => {
   store = new Store(":memory:");
-  chat = new FakeChat();
-  said = [];
+  conv = new FakeConversation();
   kicked = [];
   clock = START;
   timers = [];
-  n = 0;
-  const category = await chat.ensureCategory("graphite");
-  store.upsertClot("graphite", category);
-  store.createSession({ id: "s1", clot: "graphite", channelId: await chat.createChannel(category, "graphite-2910"), seed: null });
+  timeoutMinutes = 10;
+  store.upsertClot("graphite");
+  store.createSession({ id: "s1", clot: "graphite", seed: null });
   build();
 });
 
-describe("matchChoice", () => {
-  it("reads 1, 2, the Clot's pick, and nothing else", () => {
-    for (const text of ["1", "one", "First!"]) expect(matchChoice(text)).toBe(1);
-    for (const text of ["2", "Two", "second"]) expect(matchChoice(text)).toBe(2);
-    for (const text of ["Your pick!", "go ahead"]) expect(matchChoice(text)).toBe("pick");
-    expect(matchChoice("go with 1 but add a test")).toBeUndefined();
-  });
-});
-
 describe("ask_choice", () => {
-  it("posts the exact prompt with the deadline as a Discord time, and tells the Clot not to wait", async () => {
+  it("opens with the deadline from the ask timeout, and tells the Clot not to wait", async () => {
     const result = await open();
     expect(result).toContain("Do not wait for the answer");
     const [row] = choices();
-    expect(row).toMatchObject({ channelName: "graphite-choice", deadline: START + 10 * MINUTE });
-    expect(chat.postsIn(row.channelId)).toEqual([
-      `<@user-1> graphite asks: How to fix the login bug?\n\n**1.** Retry the token refresh\n**2.** Log the user out and back in\n\nMy pick: 1. Answer 1 or 2, "your pick", or write what you want instead. I'll go with 1 at <t:${(START + 10 * MINUTE) / 1000}:t> if I don't hear from you.`,
-    ]);
+    expect(row.deadline).toBe(START + 10 * MINUTE);
+    expect(asks.snapshot(row)!.view).toMatchObject({ heading: "How to fix the login bug?", options: ["Retry the token refresh", "Log the user out and back in"], pick: 0 });
   });
 
-  it("is a turn of the user's own naming the option on an exact answer, and the channel goes", async () => {
+  it("numbers the options 0 and 1 for the API and 1 and 2 in what it stores, in one place", async () => {
     await open();
-    const channel = choices()[0].channelId;
-    await asks.onReply(reply(channel, "2"));
+    const [row] = choices();
+    expect(row.payload).toMatchObject({ pick: 1 });
+    expect(await asks.answer(row.id, { action: "pick", option: 1 })).toMatchObject({ status: "answered" });
     expect(pending()).toMatchObject({ kind: "message", text: '[Your choice "How to fix the login bug?": the user picked 2: Log the user out and back in.]' });
-    expect(chat.deleted).toContain(channel);
-    expect(kicked).toEqual(["graphite"]);
-    expect(choices()).toEqual([]);
+    await open({ question: "Which one?" });
+    expect(choices()[0]!.payload).toMatchObject({ pick: 1 });
+    await asks.answer(choices()[0]!.id, { action: "pick", option: 0 });
+    expect(pending()!.text).toContain("the user picked 1: Retry the token refresh");
+    expect(kicked).toEqual(["graphite", "graphite"]);
   });
 
-  it("takes the Clot's pick for your pick, and hands any other text over with the choice", async () => {
-    await open();
-    await asks.onReply(reply(choices()[0].channelId, "Your pick!"));
-    expect(pending()!.text).toContain("the user picked 1: Retry the token refresh");
+  it("shows the Clot's pick as the second option when it is 2", async () => {
+    await askChoice(asks, kind, "graphite", { ...choice, pick: 2 }, false);
+    expect(asks.snapshot(choices()[0]!)!.view.pick).toBe(1);
+  });
 
+  it("takes only a pick, not an allow", async () => {
+    await open();
+    expect(await asks.answer(choices()[0]!.id, { action: "allow" })).toMatchObject({ status: "invalid" });
+  });
+
+  it("hands any text typed in the chat over with the choice, as the user's own words", async () => {
     await open({ question: "Which one?" });
-    await asks.onReply(reply(choices()[0].channelId, "go with 1 but add a test"));
+    expect(await asks.onUserMessage("graphite", "go with 1 but add a test")).toBe(true);
     expect(pending()!.text).toBe('[The user answered your choice "Which one?" (1. Retry the token refresh 2. Log the user out and back in; your pick was 1):]\ngo with 1 but add a test');
+    expect(choices()).toEqual([]);
   });
 
   it("carries an outsider's taint into the answer's turn", async () => {
     await open({ outsider: true });
-    await asks.onReply(reply(choices()[0].channelId, "1"));
+    await asks.answer(choices()[0]!.id, { action: "pick", option: 0 });
     expect(pending()).toMatchObject({ outsider: true });
   });
 
-  it("ignores anyone but the user", async () => {
+  it("with no answer by the deadline, goes with the Clot's pick: a choice row, not a block", async () => {
     await open();
-    expect(await asks.onReply(reply(choices()[0].channelId, "2", "someone-else"))).toBe(true);
-    expect(choices()).toHaveLength(1);
-    expect(store.nextPending("graphite")).toBeUndefined();
-  });
-
-  it("with no answer in 10 minutes, hands the Clot a choice row telling it to go with its pick", async () => {
-    await open();
-    const channel = choices()[0].channelId;
-    const id = choices()[0].id;
+    const id = choices()[0]!.id;
     await advance(10 * MINUTE - 1);
     expect(choices()).toHaveLength(1);
     await advance(1);
     expect(choices()).toEqual([]);
-    expect(chat.deleted).toContain(channel);
+    expect(conv.postsFor("graphite")).toEqual(["No answer within 10 minutes: going with the Clot's pick, 1: Retry the token refresh"]);
+    expect(store.conversation.askOutcome(id)!.outcome).toContain("going with the Clot's pick");
     expect(pending()).toMatchObject({
       id: `choice:${id}`,
       kind: "choice",
-      text: '[The user did not answer your choice "How to fix the login bug?" within 10 minutes and appears to be busy. Go with your pick, 1: Retry the token refresh. Tell the user in one line which you took, and that a reply in this channel switches it. Carry on with the pick; do not start a second worker for the same work.]',
+      text: '[The user did not answer your choice "How to fix the login bug?" within 10 minutes and appears to be busy. Go with your pick, 1: Retry the token refresh. Tell the user in one line which you took, and that a reply in this chat switches it. Carry on with the pick; do not start a second worker for the same work.]',
     });
   });
 
   it("makes exactly one turn when the answer and the timer race", async () => {
     await open();
-    const channel = choices()[0].channelId;
+    const id = choices()[0]!.id;
     clock += 10 * MINUTE;
-    const due = timers[0];
+    const due = timers.find((t) => !t.cancelled && t.at <= clock)!;
     due.cancelled = true;
-    await Promise.all([asks.onReply(reply(channel, "2")), Promise.resolve(due.fn())]);
+    await Promise.all([asks.answer(id, { action: "pick", option: 1 }), Promise.resolve(due.fn())]);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(pending()).toBeDefined();
     expect(pending()).toBeUndefined();
@@ -161,10 +142,9 @@ describe("ask_choice", () => {
   it("after a restart, fires at once when the deadline has passed, and at the deadline when it has not", async () => {
     await open();
     await open({ question: "Later one?" });
-    const later = choices()[1];
+    const later = choices()[1]!;
     store.closeAsk(later.id, "graphite", null);
     const laterId = store.createAsk({ ...later, deadline: START + 20 * MINUTE });
-    store.moveAsk(laterId, "posting", "open");
     clock = START + 15 * MINUTE;
     timers = [];
     build();
@@ -182,6 +162,12 @@ describe("ask_choice", () => {
     clock += 11 * MINUTE;
     await asks.sweep(false);
     expect(pending()).toMatchObject({ kind: "choice" });
+  });
+
+  it("reads the timeout when it opens, so a changed setting applies to the next ask", async () => {
+    timeoutMinutes = 20;
+    await open();
+    expect(choices()[0]!.deadline).toBe(START + 20 * MINUTE);
   });
 
   it("refuses a fourth open choice with the exact text", async () => {

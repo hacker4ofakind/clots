@@ -95,7 +95,7 @@ describe("composio_run", () => {
     expect(text).toContain("Done: ");
     expect(asked).toEqual([]);
     expect(reviews).toEqual([]);
-    expect(said).toEqual(["Composio (linear proton): linear create linear issue, https://linear.app/x/issue/CLO-30. `&composio undo` reverses it."]);
+    expect(said).toEqual(["Composio (linear proton): linear create linear issue, https://linear.app/x/issue/CLO-30. `/composio undo` reverses it."]);
     const write = store.composio.latestUndoable("graphite")!;
     expect(write).toMatchObject({ account: "linear:proton", slug: LINEAR.createIssue, outcome: "ran", created: expect.arrayContaining(["issue-uuid-1", "CLO-30"]), inverse: { slug: LINEAR.archiveIssue, args: { issue_id: "issue-uuid-1" } } });
     expect(logs.at(-1)).toMatch(/^\[composio\] graphite linear:proton LINEAR_CREATE_LINEAR_ISSUE → run \{/);

@@ -2,10 +2,8 @@ import fs from "node:fs";
 import { CONFIG_KEYS, loadConfigLeaving } from "./config.js";
 
 /** Keys a Clot may never change: who the daemon is, where it is reached, and which bot and server it runs on. */
-export const BLOCKED_KEYS = ["home", "publicUrl", "discord", "image"];
+export const BLOCKED_KEYS = ["home", "publicUrl", "discord", "image", "ui"];
 
-/** Plain tunables that reach no one and name no secret: a change to one applies at once. Any other key is put to the user first. */
-export const SAFE_KEYS = ["timeZone", "hold", "rolloverPercent", "maxProposals", "maxWorkers", "choiceTimeoutMinutes", "gates", "sweep", "spend"];
 
 type Json = Record<string, unknown>;
 
@@ -21,7 +19,11 @@ export function parseKey(key: string): string[] | string {
   return path;
 }
 
-export const needsAsk = (path: string[]): boolean => !SAFE_KEYS.includes(path[0]!);
+/**
+ * Every change a Clot proposes is put to the user. Changes now apply live, so there is no longer a restart in between that the
+ * user had to allow: nothing a Clot asks for is saved without a yes.
+ */
+export const needsAsk = (_path: string[]): boolean => true;
 
 export function getAt(json: Json, path: string[]): unknown {
   let at: unknown = json;

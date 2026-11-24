@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Clot } from "../src/clot.js";
-import { FakeChat } from "../src/chat/fake.js";
+import { FakeConversation } from "./helpers/conversation.js";
 import type { AgentRunner, TurnHandle, TurnRequest, TurnResult } from "../src/agent/runner.js";
 import { rosterBlock, rosterChangeNote, SessionRoster, type RosterEntry } from "../src/roster.js";
 import { Store } from "../src/store.js";
@@ -99,7 +99,7 @@ describe("Clot and the roster", () => {
   }
 
   let store: Store;
-  let chat: FakeChat;
+  let conv: FakeConversation;
   let runner: Runner;
   let clot: Clot;
   let now: Date;
@@ -107,7 +107,7 @@ describe("Clot and the roster", () => {
 
   beforeEach(async () => {
     store = new Store(":memory:");
-    chat = new FakeChat();
+    conv = new FakeConversation();
     runner = new Runner();
     now = new Date("2026-10-10T12:00:00Z");
     roster = [HOME, GRAPHITE];
@@ -115,11 +115,10 @@ describe("Clot and the roster", () => {
     clot = new Clot({
       name: "graphite",
       store,
-      chat,
+      conv,
       router: { decide: async () => ({ effort: "medium" }) },
       runner,
       timeZone: "UTC",
-      userId: "user-1",
       rolloverPercent: 65,
       now: () => now,
       newId: () => `sess-${++ids}`,
@@ -129,7 +128,7 @@ describe("Clot and the roster", () => {
     await clot.init();
   });
 
-  const say = (text: string) => clot.onMessage({ id: text, channelId: store.activeSession("graphite")!.channelId, authorId: "user-1", text, at: now });
+  const say = (text: string) => clot.onMessage({ id: text, text, at: now });
   const main = (call: TurnRequest) => (call.role === "main" ? call : undefined)!;
 
   it("gives every turn of a session the same roster, and a Clot added meanwhile arrives as a note, once", async () => {

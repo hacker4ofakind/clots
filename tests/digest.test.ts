@@ -6,7 +6,7 @@ import type { InboxRow } from "../src/store.js";
 let n = 0;
 function row(kind: InboxRow["kind"], o: Partial<InboxRow> = {}): InboxRow {
   n += 1;
-  return { id: o.id ?? `r${n}`, clot: "c", channelId: "ch", text: "", receivedAt: n, status: "pending", kind, eventId: kind === "event" ? `e${n}` : null, workerId: null, outsider: false, gated: false, urgent: false, ...o };
+  return { id: o.id ?? `r${n}`, clot: "c", text: "", receivedAt: n, status: "pending", kind, eventId: kind === "event" ? `e${n}` : null, workerId: null, outsider: false, gated: false, urgent: false, ...o };
 }
 const ids = (rows: InboxRow[]) => rows.map((r) => r.id);
 

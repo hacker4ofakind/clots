@@ -296,8 +296,14 @@ Each row links to its pull request once there is one.
 
 1. **Icon, name, repository.** The icon picker offers every Phosphor icon
    (regular weight, searchable, eight colours) or an upload (SVG, PNG, JPG,
-   WebP, ICO, or pasted). The daemon checks the name is free and a valid
-   container name, and that `clots-dot-dev` can reach the repository; if an
+   WebP, ICO, or pasted). A name is shown exactly as typed ("Truecast",
+   "Encryptify"): letters, digits and hyphens, starting with a letter, up to 31
+   characters, capitals allowed. Docker names, volumes and rule files use its
+   slug, the name in lower case, and the name is free only when its slug is: a
+   Clot named `Truecast` and one named `truecast` are the same Clot. A Clot made
+   before capitals were allowed has a lowercase name, so its slug is its name and
+   it keeps its container and volumes. The daemon checks the name is free and a
+   valid container name, and that `clots-dot-dev` can reach the repository; if an
    invitation is pending it accepts it with its own token, and if there is
    none the step shows how to invite `clots-dot-dev` with Check again.
    Uploaded icons are stored under `data/icons/`, with an active variant made
@@ -311,10 +317,18 @@ Each row links to its pull request once there is one.
    building, starting). A failure shows its log with Retry. When the container
    runs, the user lands in the new Clot's chat.
 
-The Clot's first message is the onboarding checklist (parent section 11), with
-each item checked by a real test: the GitHub webhook (the address and secret to
-paste, checked when GitHub's ping arrives), each tool's connection, and a branch
-pushed with the Clot's token. Checklist state is saved, so onboarding resumes.
+The Clot's first message is one line ("<name> is ready. Three steps finish its
+setup.") and the onboarding checklist (parent section 11) as a card at normal
+chat size: each step with a done or not-done mark, ticking itself as the step
+is done. Each is checked by a real test: the GitHub webhook (checked when
+GitHub's ping arrives), each tool's connection, and a branch pushed with the
+Clot's token. The webhook step shows the address to send to and the secret, each
+behind a Copy button. The secret is never in the message text (it would sit in
+the chat history in the database and in push previews): the message carries
+only the repository and the address, and the card asks the daemon for the
+secret (`GET /clots/:clot/webhook-secret`) when Copy is pressed. The steps are
+fetched from the daemon and kept current while any is open, so onboarding
+resumes after a reload.
 
 Steps slide: the current one leaves to the left, the next enters from the right.
 Reset clears the steps. Edit on an existing Clot opens the same steps,

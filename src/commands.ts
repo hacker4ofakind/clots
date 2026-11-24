@@ -1,8 +1,8 @@
 import type { MainEffort } from "./types.js";
 
 /**
- * Commands start with "&" and are handled by the daemon. They never reach the
- * model: at most the text after `&effort <level>` is passed on.
+ * Commands start with "/" and are handled by the daemon. They never reach the
+ * model: at most the text after `/effort <level>` is passed on.
  */
 export type Command =
   | { kind: "none" }
@@ -16,12 +16,26 @@ export type Command =
   | { kind: "spend" }
   | { kind: "invalid"; name: string };
 
-export const COMMAND_USAGE = "Commands: `&close`, `&close nosummary`, `&effort low|medium [message]`, `&rules`, `&rules undo`, `&memory`, `&memory undo`, `&calendar undo`, `&composio undo`, `&composio reconnect <toolkit>:<account>`, `&spend`.";
+/** The commands as the slash menu lists them: plain English, one entry for each form. */
+export const COMMAND_LIST: { name: string; options: string; description: string }[] = [
+  { name: "close", options: "optionally without summary", description: "Starts a new session, after writing a recap of this one" },
+  { name: "effort", options: "low or medium", description: "Sets the effort for your next message" },
+  { name: "rules", options: "", description: "Shows the rules in force for this Clot" },
+  { name: "rules undo", options: "", description: "Takes back the last rule change" },
+  { name: "memory", options: "", description: "Shows the global memories every Clot has" },
+  { name: "memory undo", options: "", description: "Takes back the last global memory change" },
+  { name: "spend", options: "", description: "Shows what this Clot has spent this week" },
+  { name: "calendar undo", options: "", description: "Takes back the last calendar change" },
+  { name: "composio undo", options: "", description: "Takes back the last write in a connected tool" },
+  { name: "composio reconnect", options: "an account such as slack:work", description: "Signs a connected tool in again" },
+];
+
+export const COMMAND_USAGE = "Commands: `/close`, `/close nosummary`, `/effort low|medium [message]`, `/rules`, `/rules undo`, `/memory`, `/memory undo`, `/calendar undo`, `/composio undo`, `/composio reconnect <toolkit>:<account>`, `/spend`.";
 
 const EFFORTS: MainEffort[] = ["low", "medium"];
 
 export function parseCommand(text: string): Command {
-  const match = /^&([a-z]+)(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  const match = /^\/([a-z]+)(?:\s+([\s\S]*))?$/i.exec(text.trim());
   if (!match) return { kind: "none" };
   const name = match[1].toLowerCase();
   const args = (match[2] ?? "").trim();

@@ -1,26 +1,24 @@
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
-import { composioEntryProblems, loadConfig, loadConfigLeaving } from "../src/config.js";
+import { composioEntryProblems, legacyKeysIn, loadConfig, loadConfigLeaving, renamedKeysIn } from "../src/config.js";
 
 const json = {
   timeZone: "UTC",
   image: "clots-clot:dev",
-  discord: { guildId: "g", userId: "u" },
+  ui: { owner: "me@example.com" },
   clots: [{ name: "graphite", repoUrl: "https://github.com/o/r.git" }],
 };
-const env = { DISCORD_BOT_TOKEN: "d", CLAUDE_CODE_OAUTH_TOKEN: "c", CLOT_GITHUB_TOKEN: "gh", GITHUB_WEBHOOK_SECRET: "w" };
+const env = { CLAUDE_CODE_OAUTH_TOKEN: "c", CLOT_GITHUB_TOKEN: "gh", GITHUB_WEBHOOK_SECRET: "w" };
 
 it("merges the config file and the environment", () => {
   expect(loadConfig(json, env)).toEqual({
     timeZone: "UTC",
     image: "clots-clot:dev",
-    guildId: "g",
-    userId: "u",
+    ui: { owner: "me@example.com" },
     intakePort: 8787,
     rulebookDir: "rulebook",
     hold: { quietMs: 60_000, capMs: 120_000 },
     clots: [{ name: "graphite", repoUrl: "https://github.com/o/r.git" }],
-    discordToken: "d",
     claudeToken: "c",
     githubToken: "gh",
     webhookSecret: "w",
@@ -28,9 +26,8 @@ it("merges the config file and the environment", () => {
     home: false,
     maxProposals: 3,
     maxWorkers: 3,
-    choiceTimeoutMinutes: 10,
+    askTimeoutMinutes: 10,
     publicUrl: "",
-    sendReview: { enabled: true, maxMs: 3 * 86_400_000 },
     gates: expect.any(Object),
     sweep: { enabled: true, everyMinutes: 180 },
     spend: { weeklyWarnUsd: 50 },
@@ -40,10 +37,20 @@ it("merges the config file and the environment", () => {
   });
 });
 
-it("reads the send review switch and how many days a review waits", () => {
-  expect(loadConfig({ ...json, sendReview: { enabled: false, days: 0.5 } }, env).sendReview).toEqual({ enabled: false, maxMs: 43_200_000 });
-  expect(loadConfig({ ...json, sendReview: { days: 7 } }, env).sendReview).toEqual({ enabled: true, maxMs: 7 * 86_400_000 });
-  expect(() => loadConfig({ ...json, sendReview: { days: 0 } }, env)).toThrow();
+it("ignores the discord and sendReview keys an earlier version wrote, and says which it found", () => {
+  const old = { ...json, discord: { guildId: "g", userId: "u" }, sendReview: { enabled: false, days: 0.5 } };
+  const config = loadConfig(old, env);
+  expect(config).not.toHaveProperty("sendReview");
+  expect(config).not.toHaveProperty("discordToken");
+  expect(legacyKeysIn(old)).toEqual(["discord", "sendReview"]);
+  expect(legacyKeysIn(json)).toEqual([]);
+});
+
+it("reads ui.owner, and leaves it unset when the file has none", () => {
+  expect(loadConfig(json, env).ui).toEqual({ owner: "me@example.com" });
+  const { ui: _ui, ...without } = json;
+  expect(loadConfig(without, env).ui).toEqual({});
+  expect(() => loadConfig({ ...json, ui: { owner: "" } }, env)).toThrow();
 });
 
 it("reads the home Clot and the limit on open proposals", () => {
@@ -66,7 +73,7 @@ it("reads the rollover percent, from 1 to 100, and names rolloverPercent when it
 });
 
 it("names the missing secret", () => {
-  expect(() => loadConfig(json, { ...env, DISCORD_BOT_TOKEN: "" })).toThrow("DISCORD_BOT_TOKEN");
+  expect(() => loadConfig(json, { ...env, CLOT_GITHUB_TOKEN: "" })).toThrow("CLOT_GITHUB_TOKEN");
 });
 
 it("reads the intake port, the rulebook folder and a Clot's test command", () => {
@@ -240,7 +247,7 @@ describe("a toolkit without built-in support connects from one entry", () => {
   });
 
   it("refuses an .env key the daemon uses for something else", () => {
-    for (const key of ["COMPOSIO_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "DISCORD_BOT_TOKEN", "CLOT_GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "RECIPE_X"]) {
+    for (const key of ["COMPOSIO_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLOTS_UI_SECRET", "VAPID_PRIVATE_KEY", "CLOT_GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "RECIPE_X"]) {
       const withKey = { ...keys, [key]: "value" };
       expect(() => only({ apiKey: key }, withKey)).toThrow(key);
       expect(() => only({ fields: { a: key } }, withKey)).toThrow(key);
@@ -315,11 +322,30 @@ it("reads the worker limit, from 1 to 20, and names maxWorkers when it is wrong"
   for (const bad of [0, 21, 2.5, "many"]) expect(() => loadConfig({ ...json, maxWorkers: bad }, env)).toThrow("maxWorkers");
 });
 
-it("reads the choice timeout, from 1 to 1440 minutes, and names choiceTimeoutMinutes when it is wrong", () => {
-  expect(loadConfig(json, env).choiceTimeoutMinutes).toBe(10);
-  expect(loadConfig({ ...json, choiceTimeoutMinutes: 1 }, env).choiceTimeoutMinutes).toBe(1);
-  expect(loadConfig({ ...json, choiceTimeoutMinutes: 1440 }, env).choiceTimeoutMinutes).toBe(1440);
-  for (const bad of [0, 1441, 2.5, "soon"]) expect(() => loadConfig({ ...json, choiceTimeoutMinutes: bad }, env)).toThrow("choiceTimeoutMinutes");
+it("reads the ask timeout, from 1 to 1440 minutes, and names askTimeoutMinutes when it is wrong", () => {
+  expect(loadConfig(json, env).askTimeoutMinutes).toBe(10);
+  expect(loadConfig({ ...json, askTimeoutMinutes: 1 }, env).askTimeoutMinutes).toBe(1);
+  expect(loadConfig({ ...json, askTimeoutMinutes: 1440 }, env).askTimeoutMinutes).toBe(1440);
+  for (const bad of [0, 1441, 2.5, "soon"]) expect(() => loadConfig({ ...json, askTimeoutMinutes: bad }, env)).toThrow("askTimeoutMinutes");
+});
+
+it("keeps a Clot's name as typed, and refuses two names that differ only in capitals, or the daemon's own names in any case", () => {
+  const clot = (name: string) => ({ name, repoUrl: `https://github.com/o/${name}.git` });
+  expect(loadConfig({ ...json, clots: [clot("Truecast"), clot("Encryptify")] }, env).clots.map((c) => c.name)).toEqual(["Truecast", "Encryptify"]);
+  expect(() => loadConfig({ ...json, clots: [clot("Truecast"), clot("truecast")] }, env)).toThrow("same name");
+  expect(() => loadConfig({ ...json, clots: [clot("Home")] }, env)).toThrow("daemon's own");
+  expect(() => loadConfig({ ...json, clots: [clot("two words")] }, env)).toThrow();
+  expect(() => loadConfig({ ...json, clots: [clot("Truecast")], sources: { email: [{ account: "a", clot: "Truecast", address: "a@gmail.com", password: "P", mailboxes: ["INBOX"] }] } }, { ...env, P: "x" })).not.toThrow();
+});
+
+it("loads a config with choiceTimeoutMinutes as askTimeoutMinutes, and prefers the new name when both are there", () => {
+  expect(loadConfig({ ...json, choiceTimeoutMinutes: 20 }, env).askTimeoutMinutes).toBe(20);
+  expect(loadConfig({ ...json, choiceTimeoutMinutes: 20, askTimeoutMinutes: 5 }, env).askTimeoutMinutes).toBe(5);
+  // It is renamed, not ignored: the daemon says which, and must not call its value unused.
+  expect(legacyKeysIn({ ...json, choiceTimeoutMinutes: 20 })).toEqual([]);
+  expect(renamedKeysIn({ ...json, choiceTimeoutMinutes: 20 })).toEqual([["choiceTimeoutMinutes", "askTimeoutMinutes"]]);
+  expect(renamedKeysIn({ ...json, choiceTimeoutMinutes: 20, askTimeoutMinutes: 5 })).toEqual([]);
+  expect(legacyKeysIn({ ...json, discord: {}, sendReview: {} })).toEqual(["discord", "sendReview"]);
 });
 
 const defaultWindows = (window: { start: number; end: number }) => Object.fromEntries(["mon", "tue", "wed", "thu", "fri"].map((day) => [day, window]));
@@ -381,7 +407,7 @@ describe("loadConfigLeaving", () => {
   });
 
   it("still stops for a problem outside the entries", () => {
-    expect(() => loadConfigLeaving(withUrl(posthog), { ...composioKeys, DISCORD_BOT_TOKEN: "" })).toThrow("DISCORD_BOT_TOKEN");
+    expect(() => loadConfigLeaving(withUrl(posthog), { ...composioKeys, CLOT_GITHUB_TOKEN: "" })).toThrow("CLOT_GITHUB_TOKEN");
     expect(() => loadConfigLeaving({ ...withUrl(linear), maxProposals: 0 }, composioKeys)).toThrow("maxProposals");
   });
 });

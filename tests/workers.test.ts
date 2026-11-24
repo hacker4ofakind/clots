@@ -62,11 +62,10 @@ let store: Store;
 let runner: FakeRunner;
 let clock: number;
 let timers: Timer[];
-let said: { clot: string; text: string }[];
+let announced: { clot: string; turnId: string }[];
 let toMain: { clot: string; id: string; text: string; workerId: string; outsider: boolean }[];
 let enqueued: InboxInsert[];
 let paused: { clot: string; resetsAt: number }[];
-let activities: TurnActivity[];
 let removed: string[];
 let addFails: string | undefined;
 let existing: Set<string>;
@@ -135,15 +134,13 @@ function build(overrides: Partial<WorkersDeps> = {}): Workers {
       }
     },
     pause: async (clot, resetsAt) => void paused.push({ clot, resetsAt }),
-    say: async (clot, text) => void said.push({ clot, text }),
-    postActivity: async (_clot, activity) => void activities.push(activity),
+    announce: async (clot, turnId) => void announced.push({ clot, turnId }),
     ...overrides,
   };
   return new Workers(deps);
 }
 
 const fix = { title: "Fix X", brief: "Fix X in a.ts. Done when npm test passes.", model: "sonnet" as const, effort: "high" as const, urgent: false, gateOk: true };
-const lines = (clot = "graphite") => said.filter((s) => s.clot === clot).map((s) => s.text);
 
 beforeEach(async () => {
   store = new Store(":memory:");
@@ -151,17 +148,16 @@ beforeEach(async () => {
   const enqueue = store.enqueue.bind(store);
   store.enqueue = (row) => (enqueued.push(row), enqueue(row));
   for (const name of ["graphite", "shop", "home"]) {
-    store.upsertClot(name, `cat-${name}`);
-    store.createSession({ id: `s-${name}`, clot: name, channelId: `ch-${name}`, seed: null });
+    store.upsertClot(name);
+    store.createSession({ id: `s-${name}`, clot: name, seed: null });
   }
   runner = new FakeRunner();
   ended.clear();
   clock = 1_000_000;
   timers = [];
-  said = [];
+  announced = [];
   toMain = [];
   paused = [];
-  activities = [];
   removed = [];
   addFails = undefined;
   existing = new Set();
@@ -180,8 +176,23 @@ describe("Workers", () => {
     expect(runner.turns).toHaveLength(1);
     expect(runner.turns[0].req).toMatchObject({ role: "worker", model: "claude-sonnet-5-5", effort: "high", cwd: "/workspace/worktrees/00000001-0000-0000-0000-000000000000", prompt: fix.brief, guard: { branch: "clot/fix-x-1a2b", base: "main", repo: "o/r" }, env: { PORT: "4100" } });
     expect(runner.turns[0].req.systemPrompt).toContain("You are a worker for the Clot graphite");
-    expect(lines()).toEqual(["Started: Fix X (Sonnet 5.5 high)"]);
     expect(workers.lines("graphite")).toEqual(['- 00000001 "Fix X": running, Sonnet 5.5 high, branch clot/fix-x-1a2b, pull request none yet']);
+  });
+
+  it("groups the workers a turn starts under the turn, and asks for its card with the first", async () => {
+    await workers.start("graphite", { ...fix, turnId: "turn-1" });
+    await workers.start("graphite", { ...fix, title: "Fix Y", turnId: "turn-1" });
+    await workers.start("graphite", { ...fix, title: "Fix Z", turnId: "turn-2" });
+    expect(store.workersOfTurn("turn-1").map((w) => w.title)).toEqual(["Fix X", "Fix Y"]);
+    expect(store.workersOfTurn("turn-2").map((w) => w.title)).toEqual(["Fix Z"]);
+    expect(announced.map((a) => a.turnId)).toEqual(["turn-1", "turn-1", "turn-2"]);
+  });
+
+  it("says nothing in the chat itself when a worker starts, queues, finishes or fails: the card shows it", async () => {
+    await workers.start("graphite", { ...fix, turnId: "turn-1" });
+    finishTurn(runner.turns[0]);
+    await settle();
+    expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("idle");
   });
 
   it("queues beyond the limit, and starts the next when a turn ends, urgent first", async () => {
@@ -189,7 +200,7 @@ describe("Workers", () => {
     expect(await workers.start("graphite", { ...fix, title: "Four" })).toContain("Queued");
     await workers.start("shop", { ...fix, title: "Five", urgent: true });
     expect(runner.turns).toHaveLength(3);
-    expect(lines()).toContain("Queued: Four (Sonnet 5.5 high). 3 workers are already running; it starts when one finishes.");
+    expect(store.workersOf("graphite").map((w) => [w.title, w.status])).toEqual([["One", "running"], ["Two", "running"], ["Three", "running"], ["Four", "queued"]]);
 
     finishTurn(runner.turns[0]);
     await settle();
@@ -209,19 +220,6 @@ describe("Workers", () => {
     expect(runner.turns.slice(3).map((t) => t.req.prompt)).toEqual([fix.brief, fix.brief]);
   });
 
-  it("posts the latest step every 20 minutes while a turn runs, and nothing after it ends", async () => {
-    await workers.start("graphite", fix);
-    runner.turns[0].req.onStep("npm test");
-    await advance(20 * 60_000);
-    expect(lines().at(-1)).toBe("Still on it: Fix X. Latest: npm test");
-    finishTurn(runner.turns[0]);
-    await settle();
-    const count = lines().length;
-    await advance(40 * 60_000);
-    expect(lines().filter((l) => l.startsWith("Still on it"))).toHaveLength(1);
-    expect(lines()).toHaveLength(count);
-  });
-
   it("reports only what was written after the last step, and stores the pull request it names", async () => {
     await workers.start("graphite", fix);
     const t = runner.turns[0];
@@ -234,8 +232,6 @@ describe("Workers", () => {
     expect(toMain[0].text).toBe('[Report from worker 00000001, "Fix X". Written by your worker, not by the user.]\nChanged\n- a.ts\nPull request\nhttps://github.com/o/r/pull/9');
     expect(toMain[0].id).toBe("worker:00000001-0000-0000-0000-000000000000:1");
     expect(store.nextPending("graphite")).toMatchObject({ kind: "worker", workerId: "00000001-0000-0000-0000-000000000000" });
-    expect(lines().at(-1)).toBe("Finished: Fix X");
-    expect(activities).toHaveLength(1);
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")).toMatchObject({ status: "idle", prUrl: "https://github.com/o/r/pull/9", started: true });
   });
 
@@ -246,7 +242,6 @@ describe("Workers", () => {
     finishTurn(t);
     await settle();
     expect(toMain[0].text).toBe('[Question from worker 00000001, "Fix X". Answer it with message_worker, or ask the user.]\nKeep the old API?');
-    expect(lines()).not.toContain("Finished: Fix X");
 
     expect(await workers.message("graphite", "00000001", "Yes, keep it.")).toContain("Sent");
     await settle();
@@ -280,7 +275,6 @@ describe("Workers", () => {
     expect(await workers.stop("graphite", "00000001")).toContain("Stopped worker 00000001");
     expect(runner.turns[0].stopped).toBe(true);
     await settle();
-    expect(lines().at(-1)).toBe("Stopped: Fix X");
     expect(removed).toEqual(["/workspace/worktrees/00000001-0000-0000-0000-000000000000"]);
     expect(toMain).toEqual([]);
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("stopped");
@@ -301,7 +295,6 @@ describe("Workers", () => {
     finishTurn(runner.turns[1], { ok: false, limit: { resetsAt } });
     await settle();
     expect(paused).toEqual([{ clot: "graphite", resetsAt }]);
-    expect(lines()).not.toContain("Finished: Fix X");
     expect(toMain).toEqual([]);
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")).toMatchObject({ status: "idle", interrupted: true });
 
@@ -338,7 +331,6 @@ describe("Workers", () => {
     finishTurn(runner.turns.at(-1)!, { ok: false, responded: false });
     await settle();
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("failed");
-    expect(lines().at(-1)).toBe("Worker failed: Fix X");
     expect(toMain[0].text).toContain("failed: its session could not be started");
   });
 
@@ -347,8 +339,6 @@ describe("Workers", () => {
     await advance(90 * 60_000);
     await settle();
     expect(runner.turns[0].stopped).toBe(true);
-    expect(lines().filter((l) => l.startsWith("Still on it"))).toHaveLength(4);
-    expect(lines().at(-1)).toBe("Worker failed: Fix X");
     expect(toMain[0].text).toBe('[Worker 00000001, "Fix X", failed: ran past 90 minutes.]');
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("idle");
   });
@@ -363,7 +353,6 @@ describe("Workers", () => {
   it("marks failed a worker whose worktree could not be made", async () => {
     addFails = "fatal: a branch named 'clot/fix-x-1a2b' already exists";
     expect(await workers.start("graphite", fix)).toBe("Not started: fatal: a branch named 'clot/fix-x-1a2b' already exists.");
-    expect(lines()).toEqual(["Worker failed: Fix X"]);
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")!.status).toBe("failed");
   });
 
@@ -422,7 +411,7 @@ describe("Workers after a restart", () => {
     // The daemon stops: a fresh Workers on the same database.
     runner = new FakeRunner();
     timers = [];
-    said = [];
+    announced = [];
     const again = build();
     again.recover();
     expect(store.getWorker("00000001-0000-0000-0000-000000000000")).toMatchObject({ status: "queued", interrupted: true });
@@ -431,7 +420,7 @@ describe("Workers after a restart", () => {
     expect(store.getWorker("00000002-0000-0000-0000-000000000000")).toMatchObject({ status: "failed", failure: "its worktree is gone" });
     expect(runner.turns).toHaveLength(1);
     expect(runner.turns[0].req.prompt.startsWith("[Your previous turn was cut off")).toBe(true);
-    expect(said).toEqual([]);
+    expect(announced).toEqual([]);
     await advance(30_000);
     await settle();
     expect(runner.turns).toHaveLength(2);
@@ -439,8 +428,8 @@ describe("Workers after a restart", () => {
 
   it("does not take a worker a Clot's backlog turn started before startUp for a cut-off one", async () => {
     store = new Store(":memory:");
-    store.upsertClot("graphite", "cat");
-    store.createSession({ id: "s", clot: "graphite", channelId: "ch", seed: null });
+    store.upsertClot("graphite");
+    store.createSession({ id: "s", clot: "graphite", seed: null });
     runner = new FakeRunner();
     const fresh = build();
     fresh.recover();
@@ -547,7 +536,6 @@ describe("Workers cancelled while a turn is being prepared", () => {
     await settle();
     expect(runner.turns).toHaveLength(0);
     expect(existing.has("/workspace/worktrees/00000001-0000-0000-0000-000000000000")).toBe(false);
-    expect(lines()).toEqual(["Stopped: Fix X"]);
   });
 
   it("does not start a turn for a worker whose pull request closed while it was being prepared", async () => {
@@ -685,7 +673,7 @@ describe("workers under a gate", () => {
     const reply = await start("worker");
     expect(reply).toContain("Queued worker");
     expect(reply).toMatch(/usage is tight \(scarce mode until \d\d:\d\d\)/);
-    expect(lines().at(-1)).toMatch(/^Queued: Fix [A-Z] \(Sonnet 5\.5 high\)\. Usage is tight \(scarce mode until \d\d:\d\d\); it starts when that lifts\.$/);
+    expect(store.workersOf("graphite").every((w) => w.status === "queued")).toBe(true);
     expect(runner.turns).toHaveLength(0);
     expect(store.queuedWorkers()[0].gateOk).toBe(false);
     gate = FREE;

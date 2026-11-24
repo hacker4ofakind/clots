@@ -8,7 +8,7 @@ import { makeTools, type ToolDeps } from "../src/tools.js";
 const base = {
   timeZone: "UTC",
   image: "clots-clot:dev",
-  discord: { guildId: "g", userId: "u" },
+  ui: { owner: "me@example.com" },
   clots: [{ name: "app", repoUrl: "https://github.com/o/r.git" }],
   home: true,
   publicUrl: "https://x.ts.net",
@@ -28,15 +28,16 @@ beforeEach(() => {
 });
 
 describe("keys", () => {
-  it("refuses home, publicUrl, discord and image, and keys the file does not have", () => {
-    for (const key of ["home", "publicUrl", "discord", "image", "discord.userId"]) expect(parseKey(key)).toContain("cannot be changed");
+  it("refuses home, publicUrl, ui and image, and keys the file does not have", () => {
+    for (const key of ["home", "publicUrl", "ui", "image", "ui.owner"]) expect(parseKey(key)).toContain("cannot be changed");
     expect(parseKey("nonsense")).toContain("no key nonsense");
     expect(parseKey("a.b.c")).toContain("top-level");
     expect(parseKey("sources.composio")).toEqual(["sources", "composio"]);
   });
 
-  it("applies plain tunables at once and asks for everything else", () => {
-    for (const key of ["rolloverPercent", "maxWorkers", "gates", "spend", "timeZone"]) expect(needsAsk(parseKey(key) as string[])).toBe(false);
+  it("puts every change to the user", () => {
+    // Every key is put to the user: nothing a Clot proposes is saved without a yes.
+    for (const key of ["rolloverPercent", "maxWorkers", "gates", "spend", "timeZone"]) expect(needsAsk(parseKey(key) as string[])).toBe(true);
     for (const key of ["sources.composio", "mcpServers.x", "clots", "sendReview", "intake", "rulebookDir"]) expect(needsAsk(parseKey(key) as string[])).toBe(true);
   });
 });

@@ -579,7 +579,7 @@ export class Composio implements ToolkitHost {
   }
 
   /**
-   * `&composio reconnect <toolkit>:<account>`: deletes the account's connection at Composio and what the daemon
+   * `/composio reconnect <toolkit>:<account>`: deletes the account's connection at Composio and what the daemon
    * stored of it (its connection, identity and staged marker), then connects again: a new sign-in link for a
    * managed or OAuth-app account, a fresh connection from the `.env` values for a key one. It puts right a sign-in
    * made with the wrong account. The account's triggers are made again on the new connection by the usual sync.

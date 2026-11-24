@@ -346,7 +346,7 @@ describe("PostHog's shipped recipe", () => {
     expect(rulebook.recipeFile("posthog")?.shipped).toBe(true);
   });
 
-  it("is undone by &rules undo, which returns to the shipped one", async () => {
+  it("is undone by /rules undo, which returns to the shipped one", async () => {
     const own = JSON.parse(JSON.stringify(defaultRecipe("posthog")));
     own.triggers.POSTHOG_EVENT_CAPTURED.title = "changed";
     await tools().composioRecipe!({ action: "set", file: "own", recipe: own });
@@ -365,7 +365,7 @@ describe("rulebook_composio", () => {
     expect(reply).toContain("Applied");
     expect(ownFile().composio).toMatchObject([{ toolkit: "slack" }]);
     expect(said[0]).toContain("Composio recipe `slack`");
-    expect(said[0]).toContain("`&rules undo` takes it back.");
+    expect(said[0]).toContain("`/rules undo` takes it back.");
     expect(opened).toEqual([]);
     expect(writer.undo("graphite").ok).toBe(true);
     expect(ownFile().composio).toEqual([]);

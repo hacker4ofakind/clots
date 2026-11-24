@@ -1,0 +1,214 @@
+CREATE TABLE IF NOT EXISTS clots (
+  name TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'action',
+  paused_until INTEGER
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE,
+  seed TEXT,
+  started INTEGER NOT NULL DEFAULT 0,
+  interrupted INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS inbox (
+  id TEXT PRIMARY KEY,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  text TEXT NOT NULL,
+  received_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending'
+);
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  url TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '',
+  automated INTEGER NOT NULL DEFAULT 0,
+  received_at INTEGER NOT NULL,
+  clot TEXT,
+  status TEXT NOT NULL DEFAULT 'received',
+  note TEXT,
+  triage_message TEXT,
+  urgent INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS asks (
+  event_id TEXT PRIMARY KEY,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS tail (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  role TEXT NOT NULL,
+  text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE,
+  channel_name TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  edit TEXT NOT NULL,
+  summary TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS send_reviews (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE,
+  account TEXT NOT NULL,
+  event_id TEXT,
+  mail TEXT NOT NULL,
+  opened_at INTEGER NOT NULL,
+  state TEXT NOT NULL DEFAULT 'open'
+);
+CREATE TABLE IF NOT EXISTS notes (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rule_edits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  file TEXT NOT NULL,
+  inverse TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  undone INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sends (
+  event_id TEXT NOT NULL,
+  rule TEXT NOT NULL,
+  url TEXT,
+  PRIMARY KEY (event_id, rule)
+);
+CREATE TABLE IF NOT EXISTS global_memories (
+  file TEXT PRIMARY KEY,
+  text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_questions (
+  file TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE,
+  channel_name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memory_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file TEXT NOT NULL,
+  old_text TEXT,
+  new_text TEXT,
+  undone INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS memory_restores (
+  file TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS workers (
+  id TEXT PRIMARY KEY,
+  clot TEXT NOT NULL,
+  title TEXT NOT NULL,
+  brief TEXT NOT NULL,
+  model TEXT NOT NULL,
+  effort TEXT NOT NULL,
+  branch TEXT,
+  base TEXT,
+  worktree TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'queued',
+  urgent INTEGER NOT NULL DEFAULT 0,
+  queued_seq INTEGER,
+  started INTEGER NOT NULL DEFAULT 0,
+  interrupted INTEGER NOT NULL DEFAULT 0,
+  asked TEXT,
+  pr_url TEXT,
+  pr_number INTEGER,
+  pr_repo TEXT,
+  last_step TEXT,
+  turn_seq INTEGER NOT NULL DEFAULT 0,
+  failure TEXT,
+  retries INTEGER NOT NULL DEFAULT 0,
+  idle_since INTEGER
+);
+CREATE TABLE IF NOT EXISTS worker_messages (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  worker_id TEXT NOT NULL,
+  text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS user_asks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  clot TEXT NOT NULL,
+  channel_id TEXT NOT NULL UNIQUE,
+  channel_name TEXT NOT NULL,
+  payload TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'posting',
+  opened_at INTEGER NOT NULL,
+  deadline INTEGER,
+  dedupe TEXT NOT NULL,
+  outsider INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS calendar_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  clot TEXT NOT NULL,
+  account TEXT NOT NULL,
+  op TEXT NOT NULL,
+  uid TEXT NOT NULL,
+  before TEXT,
+  after TEXT,
+  by_clot INTEGER NOT NULL DEFAULT 1,
+  outsider INTEGER NOT NULL DEFAULT 0,
+  at INTEGER NOT NULL,
+  restoring INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS spend (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  clot TEXT NOT NULL,
+  who TEXT NOT NULL,
+  usd REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS spend_at ON spend (at);
+CREATE TABLE IF NOT EXISTS session_costs (
+  session_id TEXT PRIMARY KEY,
+  total REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS digests (
+  digest_id TEXT NOT NULL,
+  event_id TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  PRIMARY KEY (digest_id, event_id)
+);
+CREATE TABLE IF NOT EXISTS state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+ALTER TABLE sessions ADD COLUMN seed_reason TEXT NOT NULL DEFAULT 'context';
+ALTER TABLE clots ADD COLUMN next_effort TEXT;
+ALTER TABLE inbox ADD COLUMN kind TEXT NOT NULL DEFAULT 'message';
+ALTER TABLE sessions ADD COLUMN interrupted_kind TEXT NOT NULL DEFAULT 'message';
+ALTER TABLE events ADD COLUMN enriched INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE events ADD COLUMN subject TEXT NOT NULL DEFAULT '';
+ALTER TABLE events ADD COLUMN automated INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE inbox ADD COLUMN event_id TEXT;
+ALTER TABLE sessions ADD COLUMN interrupted_event TEXT;
+ALTER TABLE proposals ADD COLUMN session_id TEXT;
+ALTER TABLE send_reviews ADD COLUMN state TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE events ADD COLUMN account TEXT NOT NULL DEFAULT 'github';
+ALTER TABLE events ADD COLUMN place TEXT NOT NULL DEFAULT '';
+ALTER TABLE events ADD COLUMN outsider INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE inbox ADD COLUMN worker_id TEXT;
+ALTER TABLE inbox ADD COLUMN outsider INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE inbox ADD COLUMN gated INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE workers ADD COLUMN gate_ok INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE sessions ADD COLUMN interrupted_outsider INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE workers ADD COLUMN outsider INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE rule_edits ADD COLUMN edit TEXT;
+ALTER TABLE sessions ADD COLUMN channel_removed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE calendar_changes ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE calendar_changes ADD COLUMN restored INTEGER NOT NULL DEFAULT 0;

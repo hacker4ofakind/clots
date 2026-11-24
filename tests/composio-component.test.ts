@@ -946,7 +946,7 @@ describe("any toolkit's auth", () => {
   });
 });
 
-describe("&composio reconnect", () => {
+describe("/composio reconnect", () => {
   const slack: ComposioAccount = { ...base, toolkit: "slack", account: "work", shared: true };
 
   it("deletes the connection and the stored identity and posts one new sign-in link", async () => {

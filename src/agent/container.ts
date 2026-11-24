@@ -1,11 +1,12 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
+import { slugOf } from "../clot-name.js";
 
 const run = promisify(execFile);
 
 export function containerName(clot: string): string {
-  return `clot-${clot}`;
+  return `clot-${slugOf(clot)}`;
 }
 
 /** The address GitHub attributes to an account whatever its email privacy settings. */
@@ -19,7 +20,7 @@ export function noreplyEmail(id: number, login: string): string {
  * account. Without it the address is on a reserved domain that matches nobody.
  */
 export function gitIdentity(clot: string, email?: string): { name: string; email: string } {
-  return { name: `${clot}-clot`, email: email ?? `${clot}-clot@clots.invalid` };
+  return { name: `${slugOf(clot)}-clot`, email: email ?? `${slugOf(clot)}-clot@clots.invalid` };
 }
 
 /** The SDK hands us a host command line. Inside the container the binary is always `claude`. */
@@ -271,6 +272,11 @@ export async function refreshMainCheckout(container: string, githubToken: string
 }
 
 /** Stops every Claude Code process left in the container: a `docker exec` can outlive the daemon that started it. */
+/** Stops a Clot's container. Its volumes stay, so a Clot of the same name later finds them again. */
+export async function stopContainer(container: string): Promise<void> {
+  await run("docker", ["stop", container]).catch(() => undefined);
+}
+
 export async function killStrayClaude(container: string): Promise<void> {
   // pkill exits 1 when there was nothing to stop.
   await docker(workerExec.killStray(container)).catch(() => undefined);

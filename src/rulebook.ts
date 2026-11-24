@@ -5,6 +5,7 @@ import { parse } from "yaml";
 import { z } from "zod";
 import { isBuiltinSource, isBuiltinToolkit, KIND_PATTERN, SOURCE_KINDS } from "./events/kinds.js";
 import { defaultRecipe } from "./composio/default-recipes.js";
+import { CLOT_NAME, slugOf } from "./clot-name.js";
 import { pathsIn } from "./paths.js";
 import type { ClotEvent } from "./events/types.js";
 import { callsPerMonth, MONTHLY_POLLING_CALLS } from "./config.js";
@@ -123,7 +124,7 @@ function matchSchema<T extends z.ZodRawShape>(shape: T, message: string) {
 
 const PrefilterSchema = matchSchema(MATCH_FIELDS, "a pre-filter must name at least one of source, account, kind, place, repo, actor and titleContains");
 
-const RoutingSchema = matchSchema({ ...MATCH_FIELDS, clot: z.string().regex(NAME, "clot is a Clot's name") }, "a routing rule must name at least one field to match on");
+const RoutingSchema = matchSchema({ ...MATCH_FIELDS, clot: z.string().regex(CLOT_NAME, "clot is a Clot's name") }, "a routing rule must name at least one field to match on");
 
 const StandingSchema = z
   .strictObject({
@@ -627,7 +628,7 @@ export class Rulebook {
 
   /** Where a rule file is on disk. */
   pathOf(name: string): string {
-    return path.join(this.dir, `${name}.yaml`);
+    return path.join(this.dir, `${slugOf(name)}.yaml`);
   }
 
   private names(): string[] {

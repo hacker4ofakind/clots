@@ -54,7 +54,7 @@ describe("the system prompts", () => {
 
   it("tell the Clots that a calendar change needs no question and can be undone", () => {
     expect(CLOT_SYSTEM_PROMPT).toContain("calendar_remove removes one without guests");
-    expect(CLOT_SYSTEM_PROMPT).toContain("`&calendar undo` reverses it");
+    expect(CLOT_SYSTEM_PROMPT).toContain("`/calendar undo` reverses it");
     expect(CLOT_SYSTEM_PROMPT).not.toContain("ask the user in chat first");
   });
 
@@ -133,7 +133,7 @@ describe("composioNote", () => {
     expect(note).toContain("composio_run");
     expect(note).toContain("a destructive one in a team account may be reviewed first");
     expect(note).toContain("A write in a public account");
-    expect(note).toContain("`&composio undo`");
+    expect(note).toContain("`/composio undo`");
     expect(note).toContain("calendar_write");
   });
 

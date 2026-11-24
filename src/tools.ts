@@ -28,6 +28,8 @@ export type TurnKind = "chat" | "event" | "worker";
 export interface TurnContext {
   clot: string;
   kind: TurnKind;
+  /** This main-session turn's own ID: the workers it starts are grouped under it in the chat. */
+  turnId?: string;
   /** The event an investigation was started for. */
   event?: ClotEvent;
   /** The events of a digest turn: several that waited behind a gate, each named by its ID in the tools that act on one. */
@@ -189,7 +191,7 @@ export interface ToolDeps {
 /** The longest text of its own a Clot may hand to a send. A template is at most 2,000 characters. */
 const MAX_SEND_TEXT = 4000;
 
-/** The rules in force for a Clot and its open proposals, as text for the Clot and for `&rules`. */
+/** The rules in force for a Clot and its open proposals, as text for the Clot and for `/rules`. */
 export function showRules(d: Pick<ToolDeps, "rulebook" | "store">, clot: string): string {
   const files = [
     { name: "global", file: d.rulebook.file("global") },
@@ -219,7 +221,7 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       const done = d.writer.apply(ctx.clot, file, edit);
       if (!done.ok) return `Not applied: ${done.reason}.`;
       const caveat = done.unlogged ? `\n${UNLOGGED_NOTE}` : "";
-      await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`&rules undo\` takes it back.${caveat}`);
+      await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`/rules undo\` takes it back.${caveat}`);
       return `Applied, and in force now. The user has been shown it: ${done.summary}${caveat}`;
     }, ask);
   };
@@ -356,7 +358,7 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
         if (!d.workers) return "Refused: workers are not available.";
         const urgent = ctx.kind === "event" && ctx.event !== undefined && d.store.getEvent(ctx.event.id)?.urgent === true;
         // Decided here, from the turn that asked, never by the model: under a gate only the user's own turns and urgent events may start a worker.
-        return d.workers.start(ctx.clot, { ...a, urgent, gateOk: urgent || ctx.kind === "chat", outsider: ctx.outsider });
+        return d.workers.start(ctx.clot, { ...a, urgent, gateOk: urgent || ctx.kind === "chat", outsider: ctx.outsider, turnId: ctx.turnId });
       }),
     messageWorker: async ({ id, text }) => gate(ctx, "messageWorker", async () => (d.workers ? d.workers.message(ctx.clot, id, text, ctx.outsider) : "Refused: workers are not available.")),
     stopWorker: async ({ id }) => gate(ctx, "stopWorker", async () => (d.workers ? d.workers.stop(ctx.clot, id) : "Refused: workers are not available.")),
@@ -430,7 +432,7 @@ async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Param
     const made = await calendar.call!(account.account, { action: "create", title: a.title, ...when, allDay: a.allDay === true, ...(a.description ? { description: a.description } : {}), ...(a.location ? { location: a.location } : {}) });
     if (!made.ok) return `Not added: ${made.reason}.`;
     d.store.setCalendarChangeAfter(log("create", made.event.uid, null), made.event.uid, JSON.stringify(made.event));
-    await d.say(ctx.clot, `Calendar (${account.account}): added ${describeCalEvent(made.event, zone)}. \`&calendar undo\` removes it.`);
+    await d.say(ctx.clot, `Calendar (${account.account}): added ${describeCalEvent(made.event, zone)}. \`/calendar undo\` removes it.`);
     return `Added: ${describeCalEvent(made.event, zone)}`;
   }
 
@@ -452,12 +454,12 @@ async function calendarWrite(d: ToolDeps, ctx: TurnContext, a: NonNullable<Param
   d.store.setCalendarChangeAfter(change, a.uid, JSON.stringify(changed.event));
   // A repeating event is changed as a series: every occurrence takes the change.
   const series = before.event.repeats ? " (every occurrence of this repeating event)" : "";
-  await d.say(ctx.clot, `Calendar (${account.account}): changed ${describeCalEvent(before.event, zone)}\nto ${describeCalEvent(changed.event, zone)}${series}. \`&calendar undo\` puts it back.`);
+  await d.say(ctx.clot, `Calendar (${account.account}): changed ${describeCalEvent(before.event, zone)}\nto ${describeCalEvent(changed.event, zone)}${series}. \`/calendar undo\` puts it back.`);
   return `Changed: ${describeCalEvent(changed.event, zone)}${series}`;
 }
 
 /**
- * Removes an event at once: undoing it is free, since the daemon keeps a copy that `&calendar undo`
+ * Removes an event at once: undoing it is free, since the daemon keeps a copy that `/calendar undo`
  * creates again. An event with guests, or one of a series, is never removed.
  */
 async function calendarRemove(d: ToolDeps, ctx: TurnContext, a: { account?: string; uid: string }): Promise<string> {
@@ -478,7 +480,7 @@ async function calendarRemove(d: ToolDeps, ctx: TurnContext, a: { account?: stri
   }
   d.store.confirmCalendarChange(change);
   const what = describeCalEvent(found.event, calendar.timeZone);
-  await d.say(ctx.clot, `Calendar (${account.account}): removed ${what}. \`&calendar undo\` puts it back.`);
+  await d.say(ctx.clot, `Calendar (${account.account}): removed ${what}. \`/calendar undo\` puts it back.`);
   return `Removed: ${what}`;
 }
 

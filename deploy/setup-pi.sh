@@ -201,6 +201,7 @@ else
 fi
 
 systemctl is-enabled --quiet clots || systemctl enable clots
+systemctl is-enabled --quiet clots-web || systemctl enable clots-web
 systemctl is-enabled --quiet clots-backup.timer || systemctl enable clots-backup.timer
 systemctl is-active --quiet clots-backup.timer || systemctl start clots-backup.timer
 

@@ -107,7 +107,7 @@ export interface ComposioUndoDeps {
   store: Store;
 }
 
-/** Answers `&composio undo`: reverses a Clot's newest write that has an inverse, one at a time per Clot. */
+/** Answers `/composio undo`: reverses a Clot's newest write that has an inverse, one at a time per Clot. */
 export class ComposioUndo {
   private chains = new Map<string, Promise<unknown>>();
 

@@ -36,7 +36,7 @@ const STALE_CLAIM_MS = 5 * 60_000;
 
 /**
  * The spend log: every model call's estimated cost in USD, booked per Clot and per kind of call, with
- * the weekly warning and the text of `&spend`. On a subscription these are estimates of what the calls
+ * the weekly warning and the text of `/spend`. On a subscription these are estimates of what the calls
  * would cost on the API, not a bill, and the log is a floor: a turn that was stopped may go uncounted.
  */
 export class SpendLog {
@@ -68,7 +68,7 @@ export class SpendLog {
     const claim = `posting:${now}`;
     if (!this.d.store.claimState(key, claim) && !this.takeOver(key, claim, now)) return;
     try {
-      await this.d.post(clot, `${clot} has spent an estimated ${usd(spent)} this week, past the ${usd(limit).replace(/\.00$/, "")} warning. \`&spend\` shows where.`);
+      await this.d.post(clot, `${clot} has spent an estimated ${usd(spent)} this week, past the ${usd(limit).replace(/\.00$/, "")} warning. \`/spend\` shows where.`);
       // Only while the claim is still ours: one taken over meanwhile belongs to the taker.
       this.d.store.swapState(key, claim, "posted");
     } catch (error) {
@@ -85,7 +85,7 @@ export class SpendLog {
     return abandoned && this.d.store.swapState(key, held!, claim);
   }
 
-  /** The text of `&spend` for one Clot. */
+  /** The text of `/spend` for one Clot. */
   async report(clot: string): Promise<string> {
     const { store } = this.d;
     await Promise.race([this.d.meter.refresh(FIVE_MINUTES), new Promise<void>((resolve) => setTimeout(resolve, REFRESH_CEILING_MS).unref())]).catch(() => undefined);

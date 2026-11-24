@@ -60,7 +60,7 @@ export class GlobalMemory {
     });
   }
 
-  /** Answers `&memory`. */
+  /** Answers `/memory`. */
   list(): string {
     const approved = [...this.d.store.approvedMemories()];
     return [
@@ -72,7 +72,7 @@ export class GlobalMemory {
     ].join("\n");
   }
 
-  /** Answers `&memory undo`: reverts the latest change that spread. */
+  /** Answers `/memory undo`: reverts the latest change that spread. */
   undo(): Promise<string> {
     return this.serial(async () => {
       const { store } = this.d;
@@ -189,7 +189,7 @@ export class GlobalMemory {
       const text = store.approvedMemories().get(action.file);
       store.applyMemoryChange(action.file, null);
       this.noteOthers(spreadNote(action.file, text ?? null, null));
-      await this.d.say(home, `Global memory removed from every Clot: ${title(action.file, text)} (\`${action.file}\`). \`&memory undo\` brings it back.`);
+      await this.d.say(home, `Global memory removed from every Clot: ${title(action.file, text)} (\`${action.file}\`). \`/memory undo\` brings it back.`);
       return;
     }
     const open = asked.find((ask) => ask.payload.file === action.file);
@@ -204,7 +204,7 @@ export class GlobalMemory {
       return;
     }
     this.apply(action.file, action.text, action.approved);
-    await this.d.say(home, `${appliedLine(action.file, action.text, action.approved)} \`&memory undo\` takes it back.`);
+    await this.d.say(home, `${appliedLine(action.file, action.text, action.approved)} \`/memory undo\` takes it back.`);
   }
 
   private apply(file: string, text: string, old: string | undefined): void {
@@ -236,7 +236,7 @@ function spreadNote(file: string, oldText: string | null, newText: string | null
   return `The global memory ${name} (${file}) was changed. Read it again before relying on it.`;
 }
 
-/** What `&memory undo` reverted, in words. */
+/** What `/memory undo` reverted, in words. */
 function undoneWhat(change: MemoryChangeRow): string {
   const name = title(change.file, change.newText ?? change.oldText);
   if (change.oldText === null) return `the addition of global memory ${name} (\`${change.file}\`)`;

@@ -1,61 +1,42 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Asks, type AskKind } from "../src/asks.js";
-import { askEmail, emailKind, SEND_FILED, span, type EmailPayload, type SendRequest } from "../src/asks/email.js";
-import type { InboundMessage } from "../src/chat/adapter.js";
-import { FakeChat } from "../src/chat/fake.js";
+import { askEmail, changedLines, emailKind, SEND_FILED, type EmailPayload, type SendRequest } from "../src/asks/email.js";
 import type { EmailAccount } from "../src/config.js";
-import { ownMessageKey, type OutgoingMail } from "../src/sources/email.js";
+import type { OutgoingMail } from "../src/sources/email.js";
 import type { MailSent } from "../src/sources/smtp.js";
 import { Store, type AskState } from "../src/store.js";
+import { FakeConversation } from "./helpers/conversation.js";
 
-const USER = "user-1";
-const DAY = 86_400_000;
+const MINUTE = 60_000;
 const account: EmailAccount = { account: "tady", shared: true, address: "me@tady.ch", addresses: [], password: "p", imap: { host: "i", port: 993 }, smtp: { host: "s", port: 465 }, mailboxes: ["INBOX"], tellAddress: true };
 const mail = (text = "Thanks, we are on it."): OutgoingMail => ({ from: "me@tady.ch", to: ["jane@x.com"], subject: "Re: Order 7", text, inReplyTo: "<m2@x.com>", references: ["<m2@x.com>"], messageId: `<c-${text.length}@tady.ch>` });
 
 let store: Store;
-let chat: FakeChat;
-let said: string[];
+let conv: FakeConversation;
 let sent: OutgoingMail[];
-let drafts: OutgoingMail[];
 let kicked: string[];
 let sendAnswer: MailSent;
-let draftFails: boolean;
 let now: number;
-let n: number;
-
-function reply(channelId: string, text: string, authorId = USER): InboundMessage {
-  n += 1;
-  return { id: `r${n}`, channelId, authorId, text, at: new Date(0) };
-}
-
+let accounts: EmailAccount[];
 let kind: AskKind<EmailPayload>;
 let asks: Asks;
 let max: number;
 
-const build = (withEmail = true) => {
+const build = () => {
   kind = emailKind({
     store,
-    accounts: [account],
-    maxMs: 3 * DAY,
-    now: () => now,
+    accounts: () => accounts,
     send: async (_account, m) => {
       sent.push(m);
       return sendAnswer;
     },
-    saveDraft: async (_account, m) => {
-      if (draftFails) throw new Error("no Drafts folder");
-      drafts.push(m);
-      return { mailbox: "Drafts" };
-    },
-    say: async (_clot, text) => void said.push(text),
   });
-  asks = new Asks({ store, chat, userId: USER, now: () => now, kick: (clot) => void kicked.push(clot), say: async (_clot, text) => void said.push(text), after: () => () => undefined, kinds: withEmail ? [kind] : [] });
+  asks = new Asks({ store, conv, now: () => now, kick: (clot) => void kicked.push(clot), after: () => () => undefined, emit: () => undefined, timeoutMs: () => 10 * MINUTE, kinds: [kind] });
 };
 
 const open = (req: SendRequest) => askEmail(asks, kind, max, "graphite", req, false);
 const emails = () => store.openAsks("graphite").filter((ask) => ask.kind === "email");
-const channel = () => emails()[0].channelId;
+const allow = () => asks.answer(emails()[0]!.id, { action: "allow" });
 /** The Clot's notes since the last call. */
 const notes = () => {
   const texts = store.notes("graphite").map((note) => note.text);
@@ -63,47 +44,50 @@ const notes = () => {
   return texts;
 };
 /** An email ask as a stop left it. */
-const leftAs = async (state: AskState, text: string, step?: EmailPayload["step"]) => {
+const leftAs = (state: AskState, text: string, step?: EmailPayload["step"]) => {
   const payload: EmailPayload = { account: "tady", mail: mail(text), outsider: false, ...(step ? { step } : {}) };
-  const id = store.createAsk({ kind: "email", clot: "graphite", channelId: await chat.createChannel("cat-graphite", "graphite-mail"), channelName: "graphite-mail", payload, summary: `Email "${text}"`, openedAt: now, deadline: null, dedupe: text, outsider: false });
-  if (state !== "posting") store.moveAsk(id, "posting", state);
+  const id = store.createAsk({ kind: "email", clot: "graphite", payload, summary: `Email "${text}"`, openedAt: now, deadline: now + 10 * MINUTE, dedupe: text, outsider: false });
+  if (state !== "open") store.moveAsk(id, "open", state);
 };
 
-beforeEach(async () => {
+beforeEach(() => {
   store = new Store(":memory:");
-  chat = new FakeChat();
-  said = [];
+  conv = new FakeConversation();
   sent = [];
-  drafts = [];
   kicked = [];
   sendAnswer = { ok: true };
-  draftFails = false;
   now = 1_000_000;
-  n = 0;
   max = 3;
-  const category = await chat.ensureCategory("graphite");
-  store.upsertClot("graphite", category);
-  store.createSession({ id: "s1", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1610"), seed: null });
+  accounts = [account];
+  store.upsertClot("graphite");
+  store.createSession({ id: "s1", clot: "graphite", seed: null });
   build();
 });
 
-describe("span", () => {
-  it("names a length of time in days, hours or minutes", () => {
-    expect([3 * DAY, 1.5 * DAY, DAY, 2 * 3_600_000, 86_400, 60_000].map(span)).toEqual(["3 days", "1.5 days", "1 day", "2 hours", "1.4 minutes", "1 minute"]);
-  });
-});
-
 describe("the email ask", () => {
-  it("shows the email in a temporary channel and sends nothing yet", async () => {
+  it("shows the email as an editable card and sends nothing yet", async () => {
     expect(await open({ account: "tady", mail: mail() })).toBe(SEND_FILED);
     const [ask] = emails();
-    expect(chat.channels.find((c) => c.id === ask.channelId)?.name).toBe("graphite-mail");
-    const posted = chat.postsIn(ask.channelId)[0];
-    expect(posted).toContain("<@user-1> graphite asks to send this email from tady");
-    expect(posted).toContain("To: jane@x.com");
-    expect(posted).toContain("> Thanks, we are on it.");
-    expect(posted).toContain("`draft`");
+    expect(asks.snapshot(ask)!.view).toEqual({
+      heading: "Allow graphite to send an email?",
+      shortHeading: "Allow sending an email?",
+      rows: [
+        { label: "From", value: "me@tady.ch" },
+        { label: "To", value: "jane@x.com" },
+        { label: "Subject", value: "Re: Order 7" },
+      ],
+      body: "Thanks, we are on it.",
+      bodyEditable: true,
+      labels: { allow: "Send", block: "Don't send" },
+    });
+    expect(ask.deadline).toBe(now + 10 * MINUTE);
     expect(sent).toEqual([]);
+  });
+
+  it("names the email an ask answers", async () => {
+    store.insertEvent({ id: "email:tady:<m2@x.com>", source: "email", account: "tady", kind: "message", place: "tady", actor: "jane", title: "Order 7", body: "", url: "", ref: "", subject: "", automated: false, outsider: false, receivedAt: 0 });
+    await open({ account: "tady", event: "email:tady:<m2@x.com>", mail: mail() });
+    expect(asks.snapshot(emails()[0]!)!.view.rows.at(-1)).toEqual({ label: "Answering", value: '"Order 7"' });
   });
 
   it("refuses the same email twice and more than the limit", async () => {
@@ -114,77 +98,90 @@ describe("the email ask", () => {
     expect(await open({ account: "tady", mail: mail("Third.") })).toContain("Not filed: 2 emails");
   });
 
-  it("sends on a yes, once, and tells the user and the Clot", async () => {
+  it("sends on Allow, once, and tells the user and the Clot", async () => {
     await open({ account: "tady", mail: mail() });
-    const id = channel();
-    expect(await asks.onReply(reply(id, "Yes!"))).toBe(true);
-    await asks.onReply(reply(id, "yes"));
+    const id = emails()[0]!.id;
+    await Promise.all([asks.answer(id, { action: "allow" }), asks.answer(id, { action: "allow" })]);
     expect(sent).toHaveLength(1);
-    expect(said[0]).toContain("Sent, as you approved");
+    expect(conv.texts()[0]).toBe("Sent an email · you allowed it");
     expect(notes()[0]).toContain("the daemon sent it");
-    expect(chat.deleted).toContain(id);
+    expect(store.conversation.askOutcome(id)!.outcome).toBe("Sent an email · you allowed it");
+  });
+
+  it("sends the edited body, and tells the Clot which lines the user changed", async () => {
+    await open({ account: "tady", mail: mail("Hello Jane.\nWe will refund you.\nBest, Me") });
+    const id = emails()[0]!.id;
+    expect(await asks.answer(id, { action: "edit", body: "Hello Jane.\nWe will refund you today.\nBest, Me" })).toMatchObject({ status: "answered" });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).toBe("Hello Jane.\nWe will refund you today.\nBest, Me");
+    const [note] = notes();
+    expect(note).toContain("the daemon sent it");
+    expect(note).toContain("The user changed the text before sending it.");
+    expect(note).toContain("- We will refund you.");
+    expect(note).toContain("+ We will refund you today.");
+    expect(conv.texts()[0]).toBe("Sent an email · you allowed it (with your changes)");
+  });
+
+  it("sends an unchanged body as it was, with no note about changes", async () => {
+    await open({ account: "tady", mail: mail() });
+    await asks.answer(emails()[0]!.id, { action: "edit", body: mail().text });
+    expect(sent[0]!.text).toBe(mail().text);
+    expect(notes()[0]).not.toContain("changed the text");
+  });
+
+  it("works out the lines taken out and put in", () => {
+    expect(changedLines("a\nb\nc", "a\nB\nc\nd")).toEqual({ removed: ["b"], added: ["B", "d"] });
+    expect(changedLines("a\n\nb", "a\nb")).toEqual({ removed: [], added: [] });
   });
 
   it("tells the user and the Clot who did not get an email the server took only in part", async () => {
     sendAnswer = { ok: true, rejected: ["gone@x.com"], noCopy: "no Sent folder" };
     await open({ account: "tady", mail: mail() });
-    await asks.onReply(reply(channel(), "yes"));
-    expect(said[0]).toContain("the mail server refused gone@x.com, so it did not go to them; no copy could be put in Sent: no Sent folder");
+    await allow();
+    expect(conv.texts()[0]).toContain("the mail server refused gone@x.com, so it did not go to them; no copy could be put in Sent: no Sent folder");
     expect(notes()[0]).toContain("Tell the user who did not get it.");
   });
 
-  it("withdraws every open email ask once send review is switched off, and closes a half-done one as unknown", async () => {
+  it("closes a half-done send as unknown at startup", async () => {
     await open({ account: "tady", mail: mail() });
-    await leftAs("busy", "Other.", "sending");
-    build(false);
+    leftAs("busy", "Other.", "sending");
     await asks.sweep(true);
-    expect(emails()).toEqual([]);
     const texts = notes();
-    expect(texts.some((text) => text.includes("whether it finished is not known"))).toBe(true);
-    expect(texts.some((text) => text.includes("switched off"))).toBe(true);
-    expect(chat.channels.map((c) => c.name)).toEqual(["graphite-1610"]);
+    expect(texts.some((text) => text.includes("whether it finished is not known") || text.includes("whether it went out is not known"))).toBe(true);
+    expect(emails()).toHaveLength(1);
     expect(sent).toEqual([]);
   });
 
   it("says when an approved email was refused, and when it may or may not have gone", async () => {
     sendAnswer = { ok: false, refused: true, reason: "the mail server refused it (550)" };
     await open({ account: "tady", mail: mail() });
-    await asks.onReply(reply(channel(), "yes"));
+    await allow();
     expect(notes()[0]).toContain("it was not sent: the mail server refused it (550)");
     sendAnswer = { ok: false, refused: false, reason: "timeout" };
     await open({ account: "tady", mail: mail("Other.") });
-    await asks.onReply(reply(channel(), "yes"));
+    await allow();
     expect(notes()[0]).toContain("whether it went out is not known");
   });
 
-  it("drops it on a no", async () => {
+  it("says the account is gone when it is no longer configured", async () => {
     await open({ account: "tady", mail: mail() });
-    await asks.onReply(reply(channel(), "no"));
+    accounts = [];
+    await allow();
+    expect(sent).toEqual([]);
+    expect(notes()[0]).toContain("is not configured any more");
+  });
+
+  it("drops it on Block", async () => {
+    await open({ account: "tady", mail: mail() });
+    await asks.answer(emails()[0]!.id, { action: "block" });
     expect(sent).toEqual([]);
     expect(notes()[0]).toContain("declined your email");
     expect(emails()).toEqual([]);
   });
 
-  it("saves it as a followed draft on `draft`, and asks again when it cannot", async () => {
-    draftFails = true;
-    await open({ account: "tady", mail: mail() });
-    const id = channel();
-    await asks.onReply(reply(id, "draft"));
-    expect(emails()[0]).toMatchObject({ channelId: id, state: "open" });
-    expect(chat.postsIn(id).at(-1)).toContain("could not be saved just now");
-    draftFails = false;
-    await asks.onReply(reply(id, "Draft."));
-    expect(drafts).toHaveLength(1);
-    expect(sent).toEqual([]);
-    expect(store.getState(ownMessageKey(drafts[0].messageId))).toBe("1");
-    expect(JSON.parse(store.getState("pending-drafts:graphite")!)).toMatchObject([{ account: "tady", subject: "Re: Order 7" }]);
-    expect(notes()[0]).toContain("saved as a draft in Drafts");
-  });
-
-  it("hands any other reply to the Clot as feedback, with the email, in the same step as the close", async () => {
+  it("hands text typed in the chat to the Clot as feedback, with the email, in the same step as the close", async () => {
     await open({ account: "tady", event: "email:tady:<m2@x.com>", mail: mail() });
-    const id = channel();
-    await asks.onReply(reply(id, "Mention the refund is on its way."));
+    expect(await asks.onUserMessage("graphite", "Mention the refund is on its way.")).toBe(true);
     expect(sent).toEqual([]);
     const row = store.nextPending("graphite")!;
     expect(row).toMatchObject({ kind: "message", outsider: false });
@@ -192,32 +189,26 @@ describe("the email ask", () => {
     expect(row.text).toContain("It answered the email email:tady:<m2@x.com>.");
     expect(row.text).toContain("Mention the refund is on its way.");
     expect(kicked).toEqual(["graphite"]);
-    expect(said[0]).toContain("Feedback on the email");
-    expect(chat.deleted).toContain(id);
+    expect(conv.texts()[0]).toContain("Feedback on the email");
     expect(emails()).toEqual([]);
   });
 
   it("taints the feedback turn when the email was asked for in an outsider's turn", async () => {
     await askEmail(asks, kind, max, "graphite", { account: "tady", mail: mail() }, true);
-    await asks.onReply(reply(channel(), "Shorter."));
+    await asks.onUserMessage("graphite", "Shorter.");
     expect(store.nextPending("graphite")).toMatchObject({ outsider: true });
   });
 
-  it("ignores others in the channel, and leaves other channels alone", async () => {
+  it("is blocked at its deadline: not sent, the Clot told, the card says Blocked", async () => {
     await open({ account: "tady", mail: mail() });
-    expect(await asks.onReply(reply(channel(), "yes", "someone-else"))).toBe(true);
-    expect(await asks.onReply(reply("elsewhere", "yes"))).toBe(false);
+    const id = emails()[0]!.id;
+    now += 10 * MINUTE;
+    await asks.sweep(false);
+    expect(emails()).toEqual([]);
     expect(sent).toEqual([]);
-    expect(emails()).toHaveLength(1);
-  });
-
-  it("takes no answer until the email is shown in full", async () => {
-    await leftAs("posting", "A.");
-    const id = emails()[0].channelId;
-    await asks.onReply(reply(id, "yes"));
-    expect(sent).toEqual([]);
-    expect(chat.postsIn(id).at(-1)).toContain("still being shown");
-    expect(emails()[0].state).toBe("posting");
+    expect(conv.texts()).toEqual(["Blocked: no answer within 10 minutes."]);
+    expect(notes()[0]).toContain("so it was not sent");
+    expect(store.conversation.askOutcome(id)!.outcome).toBe("Blocked: no answer within 10 minutes.");
   });
 
   it("takes the same text answering another email as an ask of its own", async () => {
@@ -226,46 +217,22 @@ describe("the email ask", () => {
     expect(await open({ account: "tady", event: "email:tady:<b@x.com>", mail: mail() })).toContain("already with the user");
   });
 
-  it("does not send on a yes that came after the deadline", async () => {
-    await open({ account: "tady", mail: mail() });
-    now += 3 * DAY;
-    await asks.onReply(reply(channel(), "yes"));
-    expect(sent).toEqual([]);
-    expect(notes()[0]).toContain("Withdrawn");
-    expect(emails()).toEqual([]);
-  });
-
   it("closes, at startup only, the asks a stop caught half-way, and tries nothing again", async () => {
-    await leftAs("posting", "A.");
-    await leftAs("busy", "Bb.", "sending");
-    await leftAs("busy", "Ccc.", "drafting");
-    await asks.sweep(false);
-    expect(emails()).toHaveLength(3);
-    await asks.sweep(true);
-    expect(emails()).toEqual([]);
-    const texts = notes();
-    expect(texts[0]).toContain("the daemon stopped while showing it");
-    expect(texts[1]).toContain("stopped while sending it: whether it went out is not known");
-    expect(texts[2]).toContain("may or may not be in Drafts");
-    expect(sent).toEqual([]);
-    expect(drafts).toEqual([]);
-  });
-
-  it("withdraws an email left unanswered too long, or whose channel is gone", async () => {
-    await open({ account: "tady", mail: mail() });
-    now += 2 * DAY;
-    await open({ account: "tady", mail: mail("Later.") });
-    await asks.sweep(false);
-    expect(emails()).toHaveLength(2);
-    now += DAY;
+    leftAs("busy", "Bb.", "sending");
     await asks.sweep(false);
     expect(emails()).toHaveLength(1);
-    expect(said[0]).toContain("Withdrawn: Email");
-    expect(notes()[0]).toContain("it waited 3 days for your answer");
-    await chat.deleteChannel(channel());
-    await asks.sweep(false);
+    await asks.sweep(true);
     expect(emails()).toEqual([]);
-    expect(notes()[0]).toContain("its channel was removed");
+    expect(notes()[0]).toContain("stopped while sending it: whether it went out is not known");
     expect(sent).toEqual([]);
+  });
+
+  it("reads the accounts as they are now, so the first inbox added needs no restart", async () => {
+    accounts = [];
+    build();
+    accounts = [account];
+    await open({ account: "tady", mail: mail() });
+    await allow();
+    expect(sent).toHaveLength(1);
   });
 });

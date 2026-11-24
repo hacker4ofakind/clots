@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Clot, type ClotDeps } from "../src/clot.js";
 import type { DaemonTools, TurnContext } from "../src/tools.js";
 import { Store } from "../src/store.js";
-import { FakeChat } from "../src/chat/fake.js";
+import { FakeConversation } from "./helpers/conversation.js";
 import type { AgentRunner, TurnHandle, TurnRequest, TurnResult } from "../src/agent/runner.js";
 import type { Router, RouterInput } from "../src/router.js";
 import type { Effort, RouterDecision, TurnActivity } from "../src/types.js";
-import type { InboundMessage } from "../src/chat/adapter.js";
+import type { UserMessage } from "../src/clot.js";
 import type { ClotEvent } from "../src/events/types.js";
 
 interface Step {
@@ -18,11 +18,15 @@ interface Step {
   activity?: TurnActivity;
   /** Something the turn does while it runs, such as calling one of its tools. */
   act?: (req: TurnRequest) => Promise<void> | void;
+  /** Text the turn streams before it ends: each block's pieces, under the block's key; the final text of the same key follows. */
+  stream?: { key: string; parts: string[]; final: string }[];
+  /** Tool calls the turn makes. */
+  tools?: { name: string; input: unknown }[];
 }
 
 class FakeRunner implements AgentRunner {
   calls: TurnRequest[] = [];
-  pushes: { text: string; effort?: Effort }[] = [];
+  pushes: { text: string; effort?: Effort; images?: unknown[] }[] = [];
   script: Step[] = [];
   release?: () => void;
   acceptPushes = true;
@@ -31,7 +35,12 @@ class FakeRunner implements AgentRunner {
     this.calls.push(req);
     const step = this.script.shift() ?? {};
     const done = (async (): Promise<TurnResult> => {
-      for (const line of step.say ?? ["ok"]) req.onText(line);
+      for (const block of step.stream ?? []) {
+        for (const part of block.parts) req.onTextDelta?.(block.key, part);
+        req.onText(block.final, block.key);
+      }
+      for (const tool of step.tools ?? []) req.onToolUse?.(tool);
+      for (const line of step.stream === undefined ? (step.say ?? ["ok"]) : (step.say ?? [])) req.onText(line);
       if (step.act) await step.act(req);
       if (step.hold) await new Promise<void>((resolve) => (this.release = resolve));
       return {
@@ -43,8 +52,8 @@ class FakeRunner implements AgentRunner {
       };
     })();
     return {
-      push: (text, effort) => {
-        if (this.acceptPushes) this.pushes.push({ text, effort });
+      push: (text, effort, images) => {
+        if (this.acceptPushes) this.pushes.push({ text, effort, ...(images ? { images } : {}) });
         return this.acceptPushes;
       },
       stop: () => undefined,
@@ -62,9 +71,8 @@ class FakeRouter implements Router {
   }
 }
 
-const USER = "user-1";
 let store: Store;
-let chat: FakeChat;
+let conv: FakeConversation;
 let router: FakeRouter;
 let runner: FakeRunner;
 let clot: Clot;
@@ -76,20 +84,19 @@ let turnEnds: string[];
 /** Dependencies a test adds to the Clot it builds. */
 let extra: Partial<ClotDeps>;
 
-function msg(text: string, overrides: Partial<InboundMessage> = {}): InboundMessage {
+function msg(text: string, overrides: Partial<UserMessage> = {}): UserMessage {
   seq += 1;
-  return { id: `m${seq}`, channelId: store.activeSession("graphite")!.channelId, authorId: USER, text, at: now, ...overrides };
+  return { id: `m${seq}`, text, at: now, ...overrides };
 }
 
 function build(rolloverPercent = 65): Clot {
   return new Clot({
     name: "graphite",
     store,
-    chat,
+    conv,
     router,
     runner,
     timeZone: "UTC",
-    userId: USER,
     rolloverPercent,
     now: () => now,
     newId: () => `sess-${++ids}`,
@@ -122,7 +129,7 @@ function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
 
 beforeEach(async () => {
   store = new Store(":memory:");
-  chat = new FakeChat();
+  conv = new FakeConversation();
   router = new FakeRouter();
   runner = new FakeRunner();
   now = new Date("2026-10-10T12:00:00Z");
@@ -136,45 +143,43 @@ beforeEach(async () => {
 });
 
 describe("Clot", () => {
-  it("creates a category, a first channel and a session on init", () => {
-    expect(chat.channels.map((c) => c.name)).toEqual(["graphite-1010"]);
+  it("creates its session on init, without announcing anything", () => {
     expect(store.activeSession("graphite")).toMatchObject({ id: "sess-1", started: false });
+    expect(store.getClot("graphite")).toMatchObject({ name: "graphite" });
+    expect(conv.posts).toEqual([]);
   });
 
   it("starts a new session on the first message and posts the reply", async () => {
     router.next = [{ effort: "low" }];
     runner.script = [{ say: ["On it."] }];
-    const channel = store.activeSession("graphite")!.channelId;
 
     await clot.onMessage(msg("check the footer link"));
 
     expect(runner.calls[0]).toMatchObject({ newSessionId: "sess-1", effort: "low", role: "main", prompt: "check the footer link" });
     expect(runner.calls[0].resume).toBeUndefined();
-    expect(chat.postsIn(channel)).toContain("On it.");
+    expect(conv.postsFor("graphite")).toContain("On it.");
   });
 
-  it("shows typing from the moment a message arrives until the turn ends", async () => {
-    const channel = store.activeSession("graphite")!.channelId;
+  it("shows the Clot working from the moment a turn starts until it ends", async () => {
     runner.script = [{ hold: true }];
 
     const turn = clot.onMessage(msg("build the page"));
     await vi.waitFor(() => expect(runner.release).toBeDefined());
-    expect(chat.typing.has(channel)).toBe(true);
+    expect(conv.stateOf("graphite").state).toBe("working");
     runner.release!();
     await turn;
 
-    expect(chat.typing.has(channel)).toBe(false);
+    expect(conv.stateOf("graphite").state).toBe("idle");
   });
 
   it("posts what the turn changed and ran, after the reply, and keeps it out of the router's context", async () => {
-    const channel = store.activeSession("graphite")!.channelId;
     const activity = { files: [{ path: "src/a.ts", added: 2, removed: 1 }], commands: ["npm test"] };
     runner.script = [{ say: ["Done."], activity }, {}];
 
     await clot.onMessage(msg("fix it"));
     await clot.onMessage(msg("thanks"));
 
-    expect(chat.activities).toEqual([{ channelId: channel, activity }]);
+    expect(conv.activities).toEqual([{ clot: "graphite", activity }]);
     expect(router.inputs[1].tail.map((t) => t.text)).toEqual(["fix it", "Done."]);
     expect(runner.calls[1].prompt).toBe("thanks");
   });
@@ -183,7 +188,48 @@ describe("Clot", () => {
     runner.script = [{ activity: { files: [], commands: [] } }, {}];
     await clot.onMessage(msg("hello"));
     await clot.onMessage(msg("again"));
-    expect(chat.activities).toEqual([]);
+    expect(conv.activities).toEqual([]);
+  });
+
+  it("streams a reply: deltas go out under one ID, and the final text is stored under it", async () => {
+    runner.script = [{ stream: [{ key: "msg_1:0", parts: ["On ", "it."], final: "On it." }] }];
+    await clot.onMessage(msg("check the footer link"));
+    expect(conv.deltas.map((d) => d.text)).toEqual(["On ", "it."]);
+    expect(new Set(conv.deltas.map((d) => d.id)).size).toBe(1);
+    const post = conv.posts.find((p) => p.text === "On it.")!;
+    expect(post.id).toBe(conv.deltas[0]!.id);
+    expect(store.tail("graphite", 4).at(-1)).toEqual({ role: "clot", text: "On it." });
+  });
+
+  it("posts a reply that was not streamed under an ID of its own", async () => {
+    runner.script = [{ say: ["Plain."] }];
+    await clot.onMessage(msg("hi"));
+    expect(conv.deltas).toEqual([]);
+    expect(conv.posts.find((p) => p.text === "Plain.")!.id).toBeDefined();
+  });
+
+  it("gives each main-session tool call an activity line, and shows a worker turn none", async () => {
+    runner.script = [{ tools: [{ name: "Grep", input: { pattern: "delete" } }, { name: "mcp__clots__email_send", input: {} }] }];
+    await clot.onMessage(msg("look"));
+    expect(conv.lines.map((l) => l.line.text)).toEqual(['Searched the code for "delete"', "Asking to send an email"]);
+  });
+
+  it("hands the images that came with a message to the turn", async () => {
+    store.conversation.add({ id: "img-1", clot: "graphite", sessionId: "sess-1", kind: "user", text: "see this", createdAt: 1, images: [{ mediaType: "image/png", data: Buffer.from([1, 2, 3]) }] });
+    await clot.onMessage({ id: "img-1", text: "see this", at: now, images: 1 });
+    expect(runner.calls[0]).toMatchObject({ prompt: "see this", images: [{ mediaType: "image/png", data: Buffer.from([1, 2, 3]).toString("base64") }] });
+  });
+
+  it("tells the model an image with no text is an image", async () => {
+    store.conversation.add({ id: "img-2", clot: "graphite", sessionId: "sess-1", kind: "user", text: "", createdAt: 1, images: [{ mediaType: "image/png", data: Buffer.from([9]) }] });
+    await clot.onMessage({ id: "img-2", text: "", at: now, images: 1 });
+    expect(runner.calls[0]!.prompt).toBe("[The user sent an image without any text.]");
+  });
+
+  it("sends the old & prefix to the model as plain text: only / starts a command", async () => {
+    await clot.onMessage(msg("&close"));
+    expect(runner.calls[0]!.prompt).toBe("&close");
+    expect(store.activeSession("graphite")!.id).toBe("sess-1");
   });
 
   it("resumes the same session on the next message", async () => {
@@ -194,10 +240,10 @@ describe("Clot", () => {
   });
 
   it("tells the user when a turn fails", async () => {
-    const channel = store.activeSession("graphite")!.channelId;
     runner.script = [{ ok: false, say: [], contextPercent: 0 }];
     await clot.onMessage(msg("do it"));
-    expect(chat.postsIn(channel).at(-1)).toBe("That turn ended with an error. Send your message again to retry.");
+    expect(conv.postsFor("graphite").at(-1)).toBe("That turn ended with an error. Send your message again to retry.");
+    expect(conv.stateOf("graphite")).toEqual({ state: "failed", reason: "The last turn ended with an error" });
     expect(store.activeSession("graphite")!.started).toBe(false);
   });
 
@@ -224,12 +270,12 @@ describe("Clot", () => {
     expect(store.nextPending("graphite")).toBeUndefined();
   });
 
-  it("keeps later messages behind a deferred &close instead of feeding them to the old session", async () => {
+  it("keeps later messages behind a deferred /close instead of feeding them to the old session", async () => {
     runner.script = [{ hold: true }, {}];
 
     const first = clot.onMessage(msg("build the page"));
     await vi.waitFor(() => expect(runner.release).toBeDefined());
-    await clot.onMessage(msg("&close nosummary"));
+    await clot.onMessage(msg("/close nosummary"));
     await clot.onMessage(msg("now write the tests"));
     expect(runner.pushes).toEqual([]);
     runner.release!();
@@ -254,10 +300,32 @@ describe("Clot", () => {
     expect(store.nextPending("graphite")).toBeUndefined();
   });
 
-  it("keeps the new session when closing the old channel fails", async () => {
+  it("rolls over at the threshold: recap, a note that marks it, a folded recap in the same chat, seeded next prompt", async () => {
+    runner.script = [{ contextPercent: 70 }, { say: ["RECAP: built the footer."] }, {}];
+
+    await clot.onMessage(msg("do the thing"));
+
+    expect(runner.calls[1]).toMatchObject({ resume: "sess-1", role: "main" });
+    expect(runner.calls[1].prompt).toContain("Write a recap");
+    const fresh = store.activeSession("graphite")!;
+    expect(fresh).toMatchObject({ id: "sess-2", started: false, seed: "RECAP: built the footer." });
+    const notes = conv.posts.filter((p) => p.kind === "note");
+    expect(notes.map((p) => p.text)).toEqual(["Context limit reached. Writing a handoff for the next session...", expect.stringContaining("RECAP: built the footer.")]);
+    expect(notes[1]).toMatchObject({ recap: true });
+    expect(notes[1]!.text).toContain("New session. This is the recap of the previous one.");
+
+    await clot.onMessage(msg("carry on"));
+    expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2" });
+    expect(runner.calls[2].prompt).toContain("RECAP: built the footer.");
+    expect(store.activeSession("graphite")!.seed).toBeNull();
+  });
+
+  it("saves the new session before the recap is announced, so a failed post cannot lose it", async () => {
     runner.script = [{ contextPercent: 70 }, { say: ["RECAP"] }, {}];
-    chat.makeReadOnly = async () => {
-      throw new Error("Missing Permissions");
+    const post = conv.post.bind(conv);
+    conv.post = async (clot, text, o) => {
+      if (o?.recap) throw new Error("down");
+      return post(clot, text, o);
     };
 
     await clot.onMessage(msg("do the thing"));
@@ -267,72 +335,30 @@ describe("Clot", () => {
     expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2" });
   });
 
-  it("rolls over at the threshold: recap, new channel, old channel read-only, seeded next prompt", async () => {
-    const oldChannel = store.activeSession("graphite")!.channelId;
-    runner.script = [{ contextPercent: 70 }, { say: ["RECAP: built the footer."] }, {}];
-
-    await clot.onMessage(msg("do the thing"));
-
-    expect(runner.calls[1]).toMatchObject({ resume: "sess-1", role: "main" });
-    expect(runner.calls[1].prompt).toContain("Write a recap");
-    const fresh = store.activeSession("graphite")!;
-    expect(fresh).toMatchObject({ id: "sess-2", started: false, seed: "RECAP: built the footer." });
-    expect(chat.channels[0].name).toBe("graphite-1010-2");
-    expect(chat.postsIn(fresh.channelId)[0]).toContain("<@user-1>");
-    expect(chat.postsIn(fresh.channelId)[0]).toContain("RECAP: built the footer.");
-    expect(chat.postsIn(oldChannel).at(-1)).toContain(`<#${fresh.channelId}>`);
-    expect(chat.readOnly.has(oldChannel)).toBe(true);
-
-    await clot.onMessage(msg("carry on"));
-    expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2" });
-    expect(runner.calls[2].prompt).toContain("RECAP: built the footer.");
-    expect(store.activeSession("graphite")!.seed).toBeNull();
-  });
-
-  it("announces the rollover in the old channel before the recap is written", async () => {
-    const oldChannel = store.activeSession("graphite")!.channelId;
+  it("announces the rollover before the recap is written", async () => {
     runner.script = [{ contextPercent: 70 }, { hold: true, say: ["RECAP"] }];
 
     const turn = clot.onMessage(msg("do the thing"));
     await vi.waitFor(() => expect(runner.release).toBeDefined());
-    expect(chat.postsIn(oldChannel).at(-1)).toBe("This thread hit the context limit and will be closed. Waiting on handoff...");
-    expect(chat.channels).toHaveLength(1);
+    expect(conv.postsFor("graphite").at(-1)).toBe("Context limit reached. Writing a handoff for the next session...");
+    expect(store.activeSession("graphite")!.id).toBe("sess-1");
     runner.release!();
     await turn;
 
-    expect(chat.postsIn(oldChannel).at(-1)).toContain("This session is closed.");
+    expect(store.activeSession("graphite")!.id).toBe("sess-2");
   });
 
   it("says so when the handoff could not be written", async () => {
-    const oldChannel = store.activeSession("graphite")!.channelId;
     runner.script = [{ contextPercent: 70 }, { ok: false, say: [] }];
     await clot.onMessage(msg("do the thing"));
-    expect(chat.postsIn(oldChannel).at(-1)).toBe("The handoff could not be written. This thread stays open; I'll try again after the next message.");
-    expect(store.activeSession("graphite")!.channelId).toBe(oldChannel);
+    expect(conv.postsFor("graphite").at(-1)).toBe("The handoff could not be written. This session stays open; I'll try again after the next message.");
+    expect(store.activeSession("graphite")!.id).toBe("sess-1");
   });
 
   it("does not post the recap turn's text into the old channel", async () => {
-    const oldChannel = store.activeSession("graphite")!.channelId;
     runner.script = [{ contextPercent: 70 }, { say: ["RECAP: secret sauce."] }];
     await clot.onMessage(msg("do the thing"));
-    expect(chat.postsIn(oldChannel)).not.toContain("RECAP: secret sauce.");
-  });
-
-  it("points messages in a closed channel to the live one", async () => {
-    const oldChannel = store.activeSession("graphite")!.channelId;
-    runner.script = [{ contextPercent: 70 }, { say: ["RECAP"] }];
-    await clot.onMessage(msg("do the thing"));
-    const live = store.activeSession("graphite")!.channelId;
-
-    await clot.onMessage(msg("hello?", { channelId: oldChannel }));
-
-    expect(chat.postsIn(oldChannel).at(-1)).toBe(`This session is closed. Continue in <#${live}>.`);
-    expect(runner.calls).toHaveLength(2);
-  });
-
-  it("ignores messages from anyone but the user", async () => {
-    await clot.onMessage(msg("hi", { authorId: "stranger" }));
-    expect(runner.calls).toHaveLength(0);
+    expect(conv.postsFor("graphite")).not.toContain("RECAP: secret sauce.");
   });
 
   it("ignores a message it has already seen", async () => {
@@ -343,17 +369,16 @@ describe("Clot", () => {
   });
 
   it("pauses at the usage limit, says so once, queues, and resumes at the reset", async () => {
-    const channel = store.activeSession("graphite")!.channelId;
     const resetsAt = Math.floor(now.getTime() / 1000) + 3600;
     runner.script = [{ ok: false, limit: { resetsAt } }, {}];
 
     await clot.onMessage(msg("big task"));
-    expect(chat.postsIn(channel).filter((p) => p.startsWith("Paused"))).toEqual(["Paused: usage limit reached. I'll resume at 13:00."]);
+    expect(conv.postsFor("graphite").filter((p) => p.startsWith("Paused"))).toEqual(["Paused: usage limit reached. I'll resume at 13:00."]);
     expect(timers[0].ms).toBe(3600_000);
 
     await clot.onMessage(msg("are you there?"));
     expect(runner.calls).toHaveLength(1);
-    expect(chat.postsIn(channel).filter((p) => p.startsWith("Paused"))).toHaveLength(1);
+    expect(conv.postsFor("graphite").filter((p) => p.startsWith("Paused"))).toHaveLength(1);
 
     now = new Date(resetsAt * 1000);
     timers[0].fn();
@@ -399,10 +424,10 @@ describe("Clot", () => {
   it("still schedules the resume when the pause notice cannot be posted", async () => {
     const resetsAt = Math.floor(now.getTime() / 1000) + 60;
     runner.script = [{ ok: false, limit: { resetsAt } }];
-    const post = chat.post.bind(chat);
-    chat.post = async (channelId, text) => {
-      if (text.startsWith("Paused")) throw new Error("Discord is down");
-      return post(channelId, text);
+    const post = conv.post.bind(conv);
+    conv.post = async (clot, text, o) => {
+      if (text.startsWith("Paused")) throw new Error("down");
+      return post(clot, text, o);
     };
 
     await clot.onMessage(msg("big task"));
@@ -414,13 +439,13 @@ describe("Clot", () => {
   it("does not lose the wake-up when the reset timer fires while the pause notice is being posted", async () => {
     const resetsAt = Math.floor(now.getTime() / 1000) + 1;
     runner.script = [{ ok: false, limit: { resetsAt } }, {}];
-    const post = chat.post.bind(chat);
-    chat.post = async (channelId, text) => {
+    const post = conv.post.bind(conv);
+    conv.post = async (clot, text, o) => {
       if (text.startsWith("Paused")) {
         now = new Date(resetsAt * 1000);
         timers[0].fn();
       }
-      return post(channelId, text);
+      return post(clot, text, o);
     };
 
     await clot.onMessage(msg("big task"));
@@ -431,14 +456,14 @@ describe("Clot", () => {
   });
 
   it("pauses when a rollover's recap hits the usage limit, and does not invent a continuation", async () => {
-    const channel = store.activeSession("graphite")!.channelId;
     const resetsAt = Math.floor(now.getTime() / 1000) + 3600;
     runner.script = [{ contextPercent: 70 }, { ok: false, say: [], limit: { resetsAt } }, { contextPercent: 70 }, { say: ["RECAP"] }];
 
     await clot.onMessage(msg("do the thing"));
     expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt);
-    expect(store.activeSession("graphite")!.channelId).toBe(channel);
-    expect(chat.postsIn(channel).at(-1)).toBe("Paused: usage limit reached. I'll resume at 13:00.");
+    expect(store.activeSession("graphite")!.id).toBe("sess-1");
+    expect(conv.postsFor("graphite").at(-1)).toBe("Paused: usage limit reached. I'll resume at 13:00.");
+    expect(conv.stateOf("graphite")).toEqual({ state: "paused", reason: "usage limit" });
 
     now = new Date(resetsAt * 1000);
     timers[0].fn();
@@ -462,87 +487,79 @@ describe("Clot", () => {
   });
 
   describe("commands", () => {
-    it("&effort with a message sets that message's effort and is stripped from the prompt", async () => {
+    it("/effort with a message sets that message's effort and is stripped from the prompt", async () => {
       router.next = [{ effort: "low" }];
-      await clot.onMessage(msg("&effort medium refactor the auth module"));
+      await clot.onMessage(msg("/effort medium refactor the auth module"));
       expect(runner.calls[0]).toMatchObject({ effort: "medium", prompt: "refactor the auth module" });
       expect(router.inputs[0].text).toBe("refactor the auth module");
     });
 
-    it("&effort alone applies to the next message only", async () => {
-      const channel = store.activeSession("graphite")!.channelId;
+    it("/effort alone applies to the next message only", async () => {
       router.next = [{ effort: "low" }, { effort: "low" }];
 
-      await clot.onMessage(msg("&effort medium"));
+      await clot.onMessage(msg("/effort medium"));
       expect(runner.calls).toHaveLength(0);
-      expect(chat.postsIn(channel).at(-1)).toBe("Effort for your next message: medium.");
+      expect(conv.postsFor("graphite").at(-1)).toBe("Effort for your next message: medium.");
 
       await clot.onMessage(msg("plan the migration"));
       await clot.onMessage(msg("and the rollback"));
       expect(runner.calls.map((c) => c.effort)).toEqual(["medium", "low"]);
     });
 
-    it("answers &effort high with the usage text and starts no turn", async () => {
-      const channel = store.activeSession("graphite")!.channelId;
-      await clot.onMessage(msg("&effort high fix it"));
+    it("answers /effort high with the usage text and starts no turn", async () => {
+      await clot.onMessage(msg("/effort high fix it"));
       expect(runner.calls).toHaveLength(0);
-      expect(chat.postsIn(channel).at(-1)).toContain("`&effort low|medium [message]`");
+      expect(conv.postsFor("graphite").at(-1)).toContain("`/effort low|medium [message]`");
     });
 
     it("answers a wrong or unknown command without involving the model", async () => {
-      const channel = store.activeSession("graphite")!.channelId;
-      await clot.onMessage(msg("&effort max do it"));
-      await clot.onMessage(msg("&clsoe"));
+      await clot.onMessage(msg("/effort max do it"));
+      await clot.onMessage(msg("/clsoe"));
       expect(runner.calls).toHaveLength(0);
       expect(router.inputs).toHaveLength(0);
-      expect(chat.postsIn(channel).slice(-2).every((p) => p.includes("&close nosummary"))).toBe(true);
+      expect(conv.postsFor("graphite").slice(-2).every((p) => p.includes("/close nosummary"))).toBe(true);
     });
 
-    it("&close hands off like a rollover and says the user asked for it", async () => {
-      const oldChannel = store.activeSession("graphite")!.channelId;
+    it("/close hands off like a rollover and says the user asked for it", async () => {
       runner.script = [{}, { say: ["RECAP: built the footer."] }, {}];
       await clot.onMessage(msg("do the thing"));
 
-      await clot.onMessage(msg("&close"));
+      await clot.onMessage(msg("/close"));
 
       expect(runner.calls[1]).toMatchObject({ resume: "sess-1", role: "main" });
       expect(runner.calls[1].prompt).toContain("The user has asked to close this session");
-      expect(chat.postsIn(oldChannel)).toContain("Closing this session at your request. Waiting on handoff...");
+      expect(conv.postsFor("graphite")).toContain("Closing this session at your request. Writing a handoff...");
       const fresh = store.activeSession("graphite")!;
       expect(fresh).toMatchObject({ id: "sess-2", seed: "RECAP: built the footer.", seedReason: "user" });
-      expect(chat.postsIn(fresh.channelId)[0]).toContain("started at your request");
-      expect(chat.postsIn(fresh.channelId)[0]).toContain("RECAP: built the footer.");
-      expect(chat.postsIn(oldChannel).at(-1)).toBe(`This session was closed at your request. Continued in <#${fresh.channelId}>.`);
-      expect(chat.readOnly.has(oldChannel)).toBe(true);
+      expect(conv.postsFor("graphite").at(-1)).toContain("started at your request");
+      expect(conv.postsFor("graphite").at(-1)).toContain("RECAP: built the footer.");
 
       await clot.onMessage(msg("carry on"));
       expect(runner.calls[2].prompt).toContain("the user asked for a fresh one");
     });
 
-    it("&close nosummary starts from scratch: no recap turn, no seed, empty router context", async () => {
-      const oldChannel = store.activeSession("graphite")!.channelId;
+    it("/close nosummary starts from scratch: no recap turn, no seed, empty router context", async () => {
       await clot.onMessage(msg("do the thing"));
 
-      await clot.onMessage(msg("&close nosummary"));
+      await clot.onMessage(msg("/close nosummary"));
 
       expect(runner.calls).toHaveLength(1);
       const fresh = store.activeSession("graphite")!;
       expect(fresh).toMatchObject({ id: "sess-2", seed: null, started: false });
-      expect(chat.postsIn(fresh.channelId)[0]).toContain("from scratch at your request");
-      expect(chat.readOnly.has(oldChannel)).toBe(true);
+      expect(conv.postsFor("graphite").at(-1)).toContain("from scratch at your request");
 
       await clot.onMessage(msg("hello"));
       expect(runner.calls[1]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", role: "main" });
       expect(router.inputs.at(-1)!.tail).toEqual([]);
     });
 
-    it("&effort alone is used up by the next message even when that message joins a running turn", async () => {
+    it("/effort alone is used up by the next message even when that message joins a running turn", async () => {
       runner.script = [{ hold: true }, {}];
       router.next = [{ effort: "medium" }, { effort: "low" }, { effort: "low" }];
 
       const first = clot.onMessage(msg("build the page"));
       await vi.waitFor(() => expect(runner.release).toBeDefined());
-      await clot.onMessage(msg("&effort medium"));
+      await clot.onMessage(msg("/effort medium"));
       await clot.onMessage(msg("also check the footer"));
       expect(runner.pushes).toEqual([{ text: "[sent while you were working]\nalso check the footer", effort: "medium" }]);
       runner.release!();
@@ -552,14 +569,14 @@ describe("Clot", () => {
       expect(runner.calls[1].effort).toBe("low");
     });
 
-    it("&effort alone is kept when the running turn refuses the message", async () => {
+    it("/effort alone is kept when the running turn refuses the message", async () => {
       runner.script = [{ hold: true }, {}];
       runner.acceptPushes = false;
       router.next = [{ effort: "medium" }, { effort: "low" }, { effort: "low" }];
 
       const first = clot.onMessage(msg("build the page"));
       await vi.waitFor(() => expect(runner.release).toBeDefined());
-      await clot.onMessage(msg("&effort medium"));
+      await clot.onMessage(msg("/effort medium"));
       await clot.onMessage(msg("also check the footer"));
       runner.release!();
       await first;
@@ -567,41 +584,40 @@ describe("Clot", () => {
       expect(runner.calls[1]).toMatchObject({ prompt: "also check the footer", effort: "medium" });
     });
 
-    it("an explicit &effort on the next message replaces an earlier &effort, which is then spent", async () => {
-      await clot.onMessage(msg("&effort medium"));
-      await clot.onMessage(msg("&effort low check the link"));
+    it("an explicit /effort on the next message replaces an earlier /effort, which is then spent", async () => {
+      await clot.onMessage(msg("/effort medium"));
+      await clot.onMessage(msg("/effort low check the link"));
       await clot.onMessage(msg("and the footer"));
       expect(runner.calls.map((c) => c.effort)).toEqual(["low", "medium"]);
     });
 
-    it("&close nosummary discards a recap the new session has not used yet", async () => {
+    it("/close nosummary discards a recap the new session has not used yet", async () => {
       runner.script = [{ contextPercent: 70 }, { say: ["RECAP"] }, {}];
       await clot.onMessage(msg("do the thing"));
-      const channel = store.activeSession("graphite")!.channelId;
 
-      await clot.onMessage(msg("&close nosummary"));
+      await clot.onMessage(msg("/close nosummary"));
 
-      expect(store.activeSession("graphite")).toMatchObject({ id: "sess-2", channelId: channel, seed: null });
-      expect(chat.postsIn(channel).at(-1)).toBe("Recap discarded. This session now starts from scratch.");
+      expect(store.activeSession("graphite")).toMatchObject({ id: "sess-2", seed: null });
+      expect(conv.postsFor("graphite").at(-1)).toBe("Recap discarded. This session now starts from scratch.");
       expect(runner.calls).toHaveLength(2);
 
       await clot.onMessage(msg("hello"));
       expect(runner.calls[2]).toMatchObject({ newSessionId: "sess-2", prompt: "hello", role: "main" });
     });
 
-    it("&close keeps a recap the new session has not used yet", async () => {
+    it("/close keeps a recap the new session has not used yet", async () => {
       runner.script = [{ contextPercent: 70 }, { say: ["RECAP"] }];
       await clot.onMessage(msg("do the thing"));
-      await clot.onMessage(msg("&close"));
+      await clot.onMessage(msg("/close"));
       expect(store.activeSession("graphite")).toMatchObject({ id: "sess-2", seed: "RECAP" });
     });
 
-    it("pauses and retries &close after the reset when the recap turn hits the usage limit", async () => {
+    it("pauses and retries /close after the reset when the recap turn hits the usage limit", async () => {
       const resetsAt = Math.floor(now.getTime() / 1000) + 3600;
       runner.script = [{}, { ok: false, say: [], limit: { resetsAt } }, { say: ["RECAP"] }];
       await clot.onMessage(msg("do the thing"));
 
-      await clot.onMessage(msg("&close"));
+      await clot.onMessage(msg("/close"));
       expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt);
       expect(store.activeSession("graphite")!.id).toBe("sess-1");
 
@@ -612,49 +628,45 @@ describe("Clot", () => {
       expect(store.activeSession("graphite")).toMatchObject({ seed: "RECAP", seedReason: "user" });
     });
 
-    it("&close on a session that has not been used does nothing", async () => {
-      const channel = store.activeSession("graphite")!.channelId;
-      await clot.onMessage(msg("&close"));
+    it("/close on a session that has not been used does nothing", async () => {
+      await clot.onMessage(msg("/close"));
       expect(runner.calls).toHaveLength(0);
-      expect(store.activeSession("graphite")!.channelId).toBe(channel);
-      expect(chat.postsIn(channel).at(-1)).toBe("This session is already fresh; there is nothing to close.");
+      expect(store.activeSession("graphite")!.id).toBe("sess-1");
+      expect(conv.postsFor("graphite").at(-1)).toBe("This session is already fresh; there is nothing to close.");
     });
 
-    it("&close sent during a turn waits for the turn, and is never passed to the model", async () => {
-      const channel = store.activeSession("graphite")!.channelId;
+    it("/close sent during a turn waits for the turn, and is never passed to the model", async () => {
       runner.script = [{ hold: true }, { say: ["RECAP"] }];
 
       const first = clot.onMessage(msg("build the page"));
       await vi.waitFor(() => expect(runner.release).toBeDefined());
-      await clot.onMessage(msg("&close"));
+      await clot.onMessage(msg("/close"));
       expect(runner.pushes).toEqual([]);
-      expect(chat.postsIn(channel).at(-1)).toBe("I'll close this session when the current turn finishes.");
+      expect(conv.postsFor("graphite").at(-1)).toBe("I'll close this session when the current turn finishes.");
       runner.release!();
       await first;
 
       expect(store.activeSession("graphite")!.id).toBe("sess-2");
     });
 
-    it("tells the user how to retry when the handoff for &close cannot be written", async () => {
-      const channel = store.activeSession("graphite")!.channelId;
+    it("tells the user how to retry when the handoff for /close cannot be written", async () => {
       runner.script = [{}, { ok: false, say: [] }];
       await clot.onMessage(msg("do the thing"));
-      await clot.onMessage(msg("&close"));
-      expect(store.activeSession("graphite")!.channelId).toBe(channel);
-      expect(chat.postsIn(channel).at(-1)).toContain("&close nosummary");
+      await clot.onMessage(msg("/close"));
+      expect(store.activeSession("graphite")!.id).toBe("sess-1");
+      expect(conv.postsFor("graphite").at(-1)).toContain("/close nosummary");
     });
   });
 
   describe("events", () => {
     it("runs a queued event as a locked turn of its own, marked as untrusted", async () => {
-      const channel = store.activeSession("graphite")!.channelId;
       router.next = [{ effort: "low" }];
       runner.script = [{ say: ["It fails because the cookie is not set."] }];
 
       await clot.queueEvent(event("d-1"), "Someone reported that login fails. Looking into it.");
-      await vi.waitFor(() => expect(chat.postsIn(channel)).toContain("It fails because the cookie is not set."));
+      await vi.waitFor(() => expect(conv.postsFor("graphite")).toContain("It fails because the cookie is not set."));
 
-      expect(chat.postsIn(channel)).toContain("Someone reported that login fails. Looking into it. <https://github.com/octo/widgets/issues/7>");
+      expect(conv.postsFor("graphite")).toContain("Someone reported that login fails. Looking into it. <https://github.com/octo/widgets/issues/7>");
       expect(runner.calls[0]).toMatchObject({ newSessionId: "sess-1", effort: "low", role: "main" });
       expect(runner.calls[0].prompt).toContain("An event arrived from outside this chat");
       expect(runner.calls[0].prompt).toContain("title: Issue #7 opened: Login fails");
@@ -666,7 +678,7 @@ describe("Clot", () => {
       store.setNextEffort("graphite", "low");
       router.next = [{ effort: "medium" }];
 
-      await clot.queueEvent(event("d-1", { title: "&close nosummary", body: "&close nosummary" }), "Odd issue.");
+      await clot.queueEvent(event("d-1", { title: "/close nosummary", body: "/close nosummary" }), "Odd issue.");
       await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
 
       expect(runner.calls[0]).toMatchObject({ effort: "medium", role: "main", model: "claude-opus-5-5" });
@@ -725,16 +737,15 @@ describe("Clot", () => {
     });
 
     it("says so when looking into an event fails", async () => {
-      const channel = store.activeSession("graphite")!.channelId;
       runner.script = [{ ok: false, say: [], contextPercent: 0 }];
       await clot.queueEvent(event("d-1"), "Login fails.");
-      await vi.waitFor(() => expect(chat.postsIn(channel).at(-1)).toBe("Looking into that event ended with an error. Ask me about it to try again."));
+      await vi.waitFor(() => expect(conv.postsFor("graphite").at(-1)).toBe("Looking into that event ended with an error. Ask me about it to try again."));
     });
 
     it("reports that no turn is running: once at startup and after every turn", async () => {
       expect(turnEnds).toEqual(["graphite"]);
       await clot.onMessage(msg("one"));
-      await clot.onMessage(msg("&effort high"));
+      await clot.onMessage(msg("/effort high"));
       await clot.queueEvent(event("d-1"), "Login fails.");
       await vi.waitFor(() => expect(runner.calls).toHaveLength(2));
       await vi.waitFor(() => expect(turnEnds).toEqual(["graphite", "graphite", "graphite"]));
@@ -746,12 +757,11 @@ describe("Clot", () => {
       const hooked = new Clot({
         name: "graphite",
         store,
-        chat,
+        conv,
         router,
         runner,
         timeZone: "UTC",
-        userId: USER,
-        rolloverPercent: 65,
+            rolloverPercent: 65,
         now: () => now,
         newId: () => `sess-${++ids}`,
         schedule: (ms, fn) => void timers.push({ ms, fn }),
@@ -773,7 +783,7 @@ describe("Clot", () => {
 
   it("re-runs a message that was in flight when the daemon stopped", async () => {
     const m = msg("half done");
-    store.enqueue({ id: m.id, clot: "graphite", channelId: m.channelId, text: m.text, receivedAt: 1 });
+    store.enqueue({ id: m.id, clot: "graphite", text: m.text, receivedAt: 1 });
     store.setInboxStatus(m.id, "running");
 
     await build().init();
@@ -810,7 +820,7 @@ describe("Clot, stage 2b", () => {
     await rebuild();
     await clot.onMessage(msg("build the page"));
     expect(runner.calls[0]).toMatchObject({ role: "main", model: "claude-opus-5-5", tools: fakeTools });
-    expect(contexts[0]).toEqual({ clot: "graphite", kind: "chat", outsider: false, userText: "build the page" });
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "chat", turnId: expect.any(String), outsider: false, userText: "build the page" });
   });
 
   it("gives a chat turn the user's own words, and adds a message they feed into it while it runs", async () => {
@@ -915,7 +925,7 @@ describe("Clot, stage 2b", () => {
     expect(runner.calls[1].prompt).toContain("- late");
   });
 
-  it("answers &rules and &rules undo at once, without the model, also while a turn runs", async () => {
+  it("answers /rules and /rules undo at once, without the model, also while a turn runs", async () => {
     const undone: string[] = [];
     await rebuild({
       rules: {
@@ -926,21 +936,20 @@ describe("Clot, stage 2b", () => {
         },
       },
     });
-    const channel = store.activeSession("graphite")!.channelId;
 
-    await clot.onMessage(msg("&rules"));
-    expect(chat.postsIn(channel).at(-1)).toBe("Rules in force for graphite");
-    await clot.onMessage(msg("&rules undo"));
-    expect(chat.postsIn(channel).at(-1)).toBe("Undid: X");
-    await clot.onMessage(msg("&rules redo"));
-    expect(chat.postsIn(channel).at(-1)).toContain("`&rules undo`");
+    await clot.onMessage(msg("/rules"));
+    expect(conv.postsFor("graphite").at(-1)).toBe("Rules in force for graphite");
+    await clot.onMessage(msg("/rules undo"));
+    expect(conv.postsFor("graphite").at(-1)).toBe("Undid: X");
+    await clot.onMessage(msg("/rules redo"));
+    expect(conv.postsFor("graphite").at(-1)).toContain("`/rules undo`");
     expect(runner.calls).toHaveLength(0);
     expect(router.inputs).toHaveLength(0);
 
     runner.script = [{ hold: true }];
     const first = clot.onMessage(msg("build the page"));
     await vi.waitFor(() => expect(runner.release).toBeDefined());
-    await clot.onMessage(msg("&rules undo"));
+    await clot.onMessage(msg("/rules undo"));
     expect(undone).toEqual(["graphite", "graphite"]);
     expect(runner.pushes).toEqual([]);
     runner.release!();
@@ -956,7 +965,7 @@ describe("Clot, stage 2b", () => {
 
     store.addNote("graphite", "These rule changes you proposed were withdrawn: X");
     await clot.onMessage(msg("carry on"));
-    await clot.onMessage(msg("&close"));
+    await clot.onMessage(msg("/close"));
     expect(closed.map((c) => c.session)).toEqual(["sess-2", "sess-3"]);
   });
 
@@ -964,7 +973,7 @@ describe("Clot, stage 2b", () => {
     await rebuild();
     await clot.onMessage(msg("do the thing"));
     store.addNote("graphite", "The user declined X.");
-    await clot.onMessage(msg("&close nosummary"));
+    await clot.onMessage(msg("/close nosummary"));
     expect(closed).toHaveLength(1);
     expect(store.notes("graphite")).toEqual([]);
   });
@@ -973,12 +982,11 @@ describe("Clot, stage 2b", () => {
     await rebuild();
     runner.script = [{}, { say: ["RECAP: built the footer."] }, {}];
     await clot.onMessage(msg("do the thing"));
-    await clot.onMessage(msg("&close"));
+    await clot.onMessage(msg("/close"));
     store.addNote("graphite", "These rule changes you proposed were withdrawn: X");
-    const channel = store.activeSession("graphite")!.channelId;
 
-    await clot.onMessage(msg("&close nosummary"));
-    expect(chat.postsIn(channel).at(-1)).toBe("Recap discarded. This session now starts from scratch.");
+    await clot.onMessage(msg("/close nosummary"));
+    expect(conv.postsFor("graphite").at(-1)).toBe("Recap discarded. This session now starts from scratch.");
     expect(store.notes("graphite")).toEqual([]);
     await clot.onMessage(msg("something unrelated"));
     expect(runner.calls[2].prompt).toBe("something unrelated");
@@ -1014,7 +1022,7 @@ describe("Clot, global memory", () => {
     expect(runner.calls).toHaveLength(1);
   });
 
-  it("answers &memory and &memory undo at once, without the model, also while a turn runs", async () => {
+  it("answers /memory and /memory undo at once, without the model, also while a turn runs", async () => {
     let undone = 0;
     extra = {
       memory: {
@@ -1024,28 +1032,26 @@ describe("Clot, global memory", () => {
     };
     clot = build();
     await clot.init();
-    const channel = store.activeSession("graphite")!.channelId;
 
-    await clot.onMessage(msg("&memory"));
-    expect(chat.postsIn(channel).at(-1)).toBe("Global memories in force:");
-    await clot.onMessage(msg("&memory undo"));
-    expect(chat.postsIn(channel).at(-1)).toBe("Undid 1.");
+    await clot.onMessage(msg("/memory"));
+    expect(conv.postsFor("graphite").at(-1)).toBe("Global memories in force:");
+    await clot.onMessage(msg("/memory undo"));
+    expect(conv.postsFor("graphite").at(-1)).toBe("Undid 1.");
     expect(runner.calls).toHaveLength(0);
 
     runner.script = [{ hold: true }];
     const first = clot.onMessage(msg("build the page"));
     await vi.waitFor(() => expect(runner.release).toBeDefined());
-    await clot.onMessage(msg("&memory undo"));
-    expect(chat.postsIn(channel).at(-1)).toBe("Undid 2.");
+    await clot.onMessage(msg("/memory undo"));
+    expect(conv.postsFor("graphite").at(-1)).toBe("Undid 2.");
     expect(runner.pushes).toEqual([]);
     runner.release!();
     await first;
   });
 
   it("says so when there is no global memory", async () => {
-    const channel = store.activeSession("graphite")!.channelId;
-    await clot.onMessage(msg("&memory"));
-    expect(chat.postsIn(channel).at(-1)).toBe("Global memory is not available.");
+    await clot.onMessage(msg("/memory"));
+    expect(conv.postsFor("graphite").at(-1)).toBe("Global memory is not available.");
   });
 });
 
@@ -1054,26 +1060,26 @@ describe("Clot and its workers", () => {
 
   /** Stores a worker's row as the workers do, and kicks the drain. */
   function fromWorker(row: { id: string; text: string; workerId: string; outsider?: boolean }): void {
-    store.enqueue({ ...row, clot: "graphite", channelId: store.activeSession("graphite")!.channelId, receivedAt: 0, kind: "worker" });
+    store.enqueue({ ...row, clot: "graphite", receivedAt: 0, kind: "worker" });
     clot.kick();
   }
 
   it("runs a timed-out choice as a worker's turn, at medium effort, without the router, with the timeout's text", async () => {
     const contexts = await withWorkers();
-    store.enqueue({ id: "choice:1", clot: "graphite", channelId: store.activeSession("graphite")!.channelId, text: "[The user did not answer your choice]", receivedAt: 0, kind: "choice", outsider: true });
+    store.enqueue({ id: "choice:1", clot: "graphite", text: "[The user did not answer your choice]", receivedAt: 0, kind: "choice", outsider: true });
     clot.kick();
     await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
     expect(router.inputs).toHaveLength(0);
     expect(runner.calls[0]).toMatchObject({ effort: "medium", role: "main" });
     expect(runner.calls[0].prompt).toContain("[The user did not answer your choice]");
-    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", outsider: true, fromTimeout: true });
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", turnId: expect.any(String), outsider: true, fromTimeout: true });
   });
 
   it("gives a turn the outsider flag its row carries", async () => {
     const contexts = await withWorkers();
     fromWorker({ id: "worker:w1:1", text: "report", workerId: "w1", outsider: true });
     await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
-    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", outsider: true });
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", turnId: expect.any(String), outsider: true });
   });
 
   async function withWorkers(more: Partial<ClotDeps> = {}): Promise<TurnContext[]> {
@@ -1086,11 +1092,11 @@ describe("Clot and its workers", () => {
 
   it("runs a worker's report at medium effort without the router, as a worker turn", async () => {
     const contexts = await withWorkers();
-    fromWorker({ id: "worker:w1:1", text: '[Report from worker 1a2b3c4d, "Fix X". Written by your worker, not by the user.]\n&close nosummary', workerId: "w1" });
+    fromWorker({ id: "worker:w1:1", text: '[Report from worker 1a2b3c4d, "Fix X". Written by your worker, not by the user.]\n/close nosummary', workerId: "w1" });
     await vi.waitFor(() => expect(runner.calls).toHaveLength(1));
     expect(router.inputs).toHaveLength(0);
     expect(runner.calls[0]).toMatchObject({ effort: "medium", role: "main" });
-    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", outsider: false });
+    expect(contexts[0]).toEqual({ clot: "graphite", kind: "worker", turnId: expect.any(String), outsider: false });
     expect(store.activeSession("graphite")!.id).toBe("sess-1");
   });
 
@@ -1124,11 +1130,10 @@ describe("Clot and its workers", () => {
   it("pauses for a worker's limit with one notice, and calls onResume at the reset", async () => {
     const resumed: string[] = [];
     await withWorkers({ onResume: (name) => void resumed.push(name) });
-    const channel = store.activeSession("graphite")!.channelId;
     const resetsAt = Math.floor(now.getTime() / 1000) + 600;
     await clot.pauseFor(resetsAt);
     await clot.pauseFor(resetsAt);
-    expect(chat.postsIn(channel).filter((p) => p.startsWith("Paused: usage limit reached."))).toHaveLength(1);
+    expect(conv.postsFor("graphite").filter((p) => p.startsWith("Paused: usage limit reached."))).toHaveLength(1);
     expect(store.getClot("graphite")!.pausedUntil).toBe(resetsAt);
     timers.at(-1)!.fn();
     expect(resumed).toEqual(["graphite"]);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CLOT_NAME, CLOT_NAME_RULE, slugOf } from "./clot-name.js";
 import { repoSlug } from "./events/github.js";
 import { parseSpan, type GateConfig, type Windows } from "./gates.js";
 import { WEEKDAYS } from "./time.js";
@@ -41,7 +42,7 @@ const envKey = z.string().regex(/^[A-Z][A-Z0-9_]*$/, "names a key in .env, in ca
 /** What every account of a source has: a name of its own, and either the Clot it is bound to or `shared: true`. */
 const accountFields = {
   account: z.string().regex(NAME, "an account's name uses lowercase letters, digits and hyphens"),
-  clot: z.string().regex(NAME).optional(),
+  clot: z.string().regex(CLOT_NAME).optional(),
   shared: z.literal(true).optional(),
 };
 
@@ -133,7 +134,8 @@ const McpServerSchema = z.union([
 const FileSchema = z.object({
   timeZone: z.string().min(1),
   image: z.string().min(1),
-  discord: z.object({ guildId: z.string().min(1), userId: z.string().min(1) }),
+  // Who may use the web UI: the Tailscale login that `tailscale serve` puts in a request. The web app refuses everyone else.
+  ui: z.strictObject({ owner: z.string().min(1) }).optional(),
   intake: z.object({ port: z.number().int().min(1).max(65535) }).default({ port: 8787 }),
   rulebookDir: z.string().min(1).default("rulebook"),
   hold: z.object({ quietSeconds: z.number().min(0), capSeconds: z.number().min(0) }).default({ quietSeconds: 60, capSeconds: 120 }),
@@ -142,16 +144,19 @@ const FileSchema = z.object({
       z.object({
         name: z
           .string()
-          .regex(NAME)
-          .refine((name) => !RESERVED_NAMES.includes(name), "the names home and global are the daemon's own"),
+          .regex(CLOT_NAME, CLOT_NAME_RULE)
+          .refine((name) => !RESERVED_NAMES.includes(slugOf(name)), "the names home and global are the daemon's own"),
         // Events are routed by repository, so the URL must be one a repository can be read from.
         repoUrl: z.string().refine((url) => repoSlug(url) !== undefined, "repoUrl must look like https://github.com/owner/name.git"),
         testCommand: z.string().min(1).optional(),
         // One line for the routing call: what this project is, so an event that names no repository can be placed.
         about: z.string().min(1).max(300).optional(),
+        // How the Clot looks in the web app: a Phosphor icon in one of eight colours, or an image the user uploaded.
+        icon: z.union([z.strictObject({ phosphor: z.string().regex(/^[A-Z][A-Za-z0-9]{0,40}$/), color: z.string().min(1).max(30) }), z.strictObject({ upload: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/) })]).optional(),
       }),
     )
-    .min(1),
+    .min(1)
+    .refine((clots) => new Set(clots.map((c) => slugOf(c.name))).size === clots.length, "two Clots have the same name, apart from capitals"),
   // A Clot with no repository of its own, for events no project Clot is bound to.
   home: z.boolean().default(false),
   // The share of the context window at which a session rolls over to a fresh one.
@@ -160,12 +165,10 @@ const FileSchema = z.object({
   maxProposals: z.number().int().min(1).default(3),
   // How many worker turns run at once across the daemon.
   maxWorkers: z.number().int().min(1).max(20).default(3),
-  // How long a choice waits for the user before the Clot goes with its pick.
-  choiceTimeoutMinutes: z.number().int().min(1).max(1440).default(10),
+  // How long any ask waits for the user: a choice then goes with the Clot's pick, every other ask is blocked.
+  askTimeoutMinutes: z.number().int().min(1).max(1440).default(10),
   // The address the tunnel gives the intake port, for webhooks and OAuth logins.
   publicUrl: z.url().optional(),
-  // Whether a Clot may ask to send an email, which the daemon sends on the user's yes in a review channel; and how many days a request waits for that answer.
-  sendReview: z.strictObject({ enabled: z.boolean().default(true), days: z.number().positive().default(3) }).prefault({}),
   gates: GatesSchema,
   sweep: z.strictObject({ enabled: z.boolean().default(true), everyMinutes: z.number().int().min(15).default(180) }).prefault({}),
   // An explicit {} means no warning.
@@ -241,16 +244,15 @@ export type McpServer = { kind: "stdio"; command: string; args: string[]; env: R
 export interface Config {
   timeZone: string;
   image: string;
-  guildId: string;
-  userId: string;
+  /** Who may use the web UI, or undefined when `ui.owner` is not set. */
+  ui: { owner?: string };
   /** The local port webhooks arrive on, behind the tunnel. */
   intakePort: number;
   rulebookDir: string;
   /** How long automated events are held to be gathered: after the last one, and at most after the first. */
   hold: { quietMs: number; capMs: number };
   /** testCommand, when set, is the one command a locked turn may run besides the read-only list. */
-  clots: { name: string; repoUrl: string; testCommand?: string; about?: string }[];
-  discordToken: string;
+  clots: { name: string; repoUrl: string; testCommand?: string; about?: string; icon?: { phosphor: string; color: string } | { upload: string } }[];
   claudeToken: string;
   githubToken: string;
   webhookSecret: string;
@@ -261,12 +263,10 @@ export interface Config {
   maxProposals: number;
   /** How many worker turns run at once across the daemon. */
   maxWorkers: number;
-  /** How long a choice waits for the user before the Clot goes with its pick. */
-  choiceTimeoutMinutes: number;
+  /** How long any ask waits for the user: a choice then goes with the Clot's pick, every other ask is blocked. */
+  askTimeoutMinutes: number;
   /** The tunnel's address, without a trailing slash; "" when not set. */
   publicUrl: string;
-  /** Emails a Clot asks to send, sent on the user's yes in a review channel. `maxMs`: how long a request waits for the answer. */
-  sendReview: { enabled: boolean; maxMs: number };
   /** The windows in which the Clots step back, and the five-hour utilization at which the lead-in holds. */
   gates: GateConfig;
   /** The periodic read of the claude.ai connectors. */
@@ -302,7 +302,7 @@ export const callsPerMonth = (minutes: number): number => 43_200 / minutes;
 export const calendarPollingCalls = (accounts: ComposioAccount[]): number => accounts.filter(isCalendar).reduce((sum, a) => sum + callsPerMonth(a.pollMinutes), 0);
 
 /** The .env keys the daemon uses for itself: no account's `apiKey`, `fields` or `oauthApp` may name one. */
-const DAEMON_ENV_KEYS = ["COMPOSIO_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "DISCORD_BOT_TOKEN", "CLOT_GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET"];
+const DAEMON_ENV_KEYS = ["COMPOSIO_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CLOT_GITHUB_TOKEN", "GITHUB_WEBHOOK_SECRET", "CLOTS_UI_SECRET", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY"];
 
 /**
  * An entry for a toolkit without built-in support may name only `.env` keys that nothing else uses: not the
@@ -389,12 +389,41 @@ export function loadConfigLeaving(json: unknown, env: Record<string, string | un
   }
 }
 
+/**
+ * Keys an earlier version wrote that no longer mean anything: `discord` (the chat moved to the web UI) and
+ * `sendReview` (every ask now has the one deadline). They are ignored, so a file from before still loads.
+ */
+export const LEGACY_KEYS = ["discord", "sendReview"] as const;
+
+/** The legacy keys a configuration file still has, so the daemon can say so once. */
+export function legacyKeysIn(json: unknown): string[] {
+  if (typeof json !== "object" || json === null) return [];
+  return LEGACY_KEYS.filter((key) => key in json);
+}
+
+/** The keys that were renamed and are still read under their old name, as [old, new] pairs, so the daemon can say so once. */
+export function renamedKeysIn(json: unknown): [string, string][] {
+  if (typeof json !== "object" || json === null) return [];
+  return "choiceTimeoutMinutes" in json && !("askTimeoutMinutes" in json) ? [["choiceTimeoutMinutes", "askTimeoutMinutes"]] : [];
+}
+
+/** `choiceTimeoutMinutes` is the old name of `askTimeoutMinutes`; the new one wins when both are there. */
+function migrateLegacy(json: unknown): unknown {
+  if (typeof json !== "object" || json === null) return json;
+  const file = { ...(json as Record<string, unknown>) };
+  if ("choiceTimeoutMinutes" in file) {
+    if (!("askTimeoutMinutes" in file)) file.askTimeoutMinutes = file.choiceTimeoutMinutes;
+    delete file.choiceTimeoutMinutes;
+  }
+  return file;
+}
+
 export function loadConfig(json: unknown, env: Record<string, string | undefined>): Config {
   const raw = (json as { sources?: Record<string, unknown> } | null)?.sources;
   for (const name of MOVED_SOURCES) {
     if (raw !== undefined && raw !== null && typeof raw === "object" && name in raw) throw new Error(`sources.${name} moved to sources.composio in stage 2e; see clots.config.example.json`);
   }
-  const file = FileSchema.parse(json);
+  const file = FileSchema.parse(migrateLegacy(json));
 
   const clotNames = new Set([...file.clots.map((c) => c.name), ...(file.home ? [HOME_CLOT] : [])]);
   const base = (source: string, a: { account: string; clot?: string; shared?: true }): AccountBase => {
@@ -475,23 +504,20 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
   return {
     timeZone: file.timeZone,
     image: file.image,
-    guildId: file.discord.guildId,
-    userId: file.discord.userId,
+    ui: file.ui ?? {},
     intakePort: file.intake.port,
     rulebookDir: file.rulebookDir,
     hold: { quietMs: file.hold.quietSeconds * 1000, capMs: file.hold.capSeconds * 1000 },
     clots: file.clots,
-    discordToken: secret(env, "DISCORD_BOT_TOKEN"),
     claudeToken: secret(env, "CLAUDE_CODE_OAUTH_TOKEN"),
     githubToken: secret(env, "CLOT_GITHUB_TOKEN"),
     webhookSecret: secret(env, "GITHUB_WEBHOOK_SECRET"),
     rolloverPercent: file.rolloverPercent,
     home: file.home,
     maxProposals: file.maxProposals,
-    choiceTimeoutMinutes: file.choiceTimeoutMinutes,
+    askTimeoutMinutes: file.askTimeoutMinutes,
     maxWorkers: file.maxWorkers,
     publicUrl,
-    sendReview: { enabled: file.sendReview.enabled, maxMs: file.sendReview.days * 86_400_000 },
     gates: file.gates,
     sweep: file.sweep,
     spend: file.spend,

@@ -1,0 +1,256 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Tokens come from the Clots design system (tokens.json). The colour names are shadcn's own, plus
+ * the extras brand, highlight, calling, foreground-soft, muted-strong, tile and scrim. shadcn's
+ * `accent` is the quiet hover surface, so it takes the value of `muted`; the teal accent is `highlight`.
+ */
+@theme inline {
+  --font-sans: var(--font-sans-face), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-mono-face), ui-monospace, monospace;
+  --font-heading: var(--font-sans);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-foreground-soft: var(--foreground-soft);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-primary-ink: var(--primary-ink);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand: var(--brand);
+  --color-tile: var(--tile);
+  --color-scrim: var(--scrim);
+  --color-highlight: var(--highlight);
+  --color-highlight-soft: var(--highlight-soft);
+  --color-highlight-ink: var(--highlight-ink);
+  --color-highlight-foreground: var(--highlight-foreground);
+  --color-calling: var(--calling);
+  --color-calling-soft: var(--calling-soft);
+  --color-calling-ink: var(--calling-ink);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Radii: sm 6, control 8, menu 10, card 12, panel 16, composer 26. */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 26px;
+  --radius-4xl: 9999px;
+  --radius-control: 8px;
+  --radius-menu: 10px;
+  --radius-card: 12px;
+  --radius-panel: 16px;
+  --radius-composer: 26px;
+
+  --shadow-pop: var(--shadow-pop-value);
+  --shadow-dialog: var(--shadow-dialog-value);
+
+  /* Type styles: text-title, text-chat and so on. */
+  --text-title-mobile: 30px;
+  --text-title-mobile--line-height: 36px;
+  --text-title-mobile--font-weight: 750;
+  --text-title-mobile--letter-spacing: -0.015em;
+  --text-title: 26px;
+  --text-title--line-height: 32px;
+  --text-title--font-weight: 700;
+  --text-title--letter-spacing: -0.01em;
+  --text-dialog-title: 18px;
+  --text-dialog-title--line-height: 24px;
+  --text-dialog-title--font-weight: 700;
+  --text-section: 17px;
+  --text-section--line-height: 24px;
+  --text-section--font-weight: 700;
+  --text-chat: 15px;
+  --text-chat--line-height: 24px;
+  --text-body: 14px;
+  --text-body--line-height: 21px;
+  --text-label: 13px;
+  --text-label--line-height: 18px;
+  --text-label--font-weight: 600;
+  --text-caption: 12.5px;
+  --text-caption--line-height: 18px;
+  --text-caption--font-weight: 500;
+  --text-code: 13.5px;
+  --text-code--line-height: 20px;
+}
+
+:root {
+  --background: oklch(0.972 0.005 18.67);
+  --card: oklch(1 0 0);
+  --popover: oklch(1 0 0);
+  --foreground: oklch(0.21 0.008 18.67);
+  --foreground-soft: oklch(0.38 0.01 18.67);
+  --muted-foreground: oklch(0.5 0.01 18.67);
+  --muted: oklch(0.962 0.006 18.67);
+  --muted-strong: oklch(0.935 0.008 18.67);
+  --border: oklch(0.91 0.008 18.67);
+  --input: oklch(0.84 0.01 18.67);
+  --tile: oklch(0.93 0.005 18.67);
+  --brand: oklch(0.6352 0.2244 18.67);
+  --primary: oklch(0.58 0.21 18.67);
+  --primary-hover: oklch(0.53 0.2 18.67);
+  --primary-foreground: oklch(1 0 0);
+  --primary-soft: oklch(0.965 0.022 18.67);
+  --primary-ink: oklch(0.5 0.19 18.67);
+  --ring: var(--brand);
+  --highlight: oklch(0.7095 0.1336 175.02);
+  --highlight-soft: oklch(0.96 0.035 175.02);
+  --highlight-ink: oklch(0.5 0.103 175.02);
+  --highlight-foreground: oklch(0.21 0.02 175.02);
+  --calling: oklch(0.86 0.14 88);
+  --calling-soft: oklch(0.97 0.05 92);
+  --calling-ink: oklch(0.5 0.1 75);
+  --scrim: oklch(0.2 0.01 18.67 / 0.32);
+  --shadow-pop-value: 0 12px 32px oklch(0.2 0.02 18.67 / 0.14);
+  --shadow-dialog-value: 0 20px 50px oklch(0.2 0.02 18.67 / 0.22);
+
+  /* shadcn's names, derived from the tokens above. */
+  --card-foreground: var(--foreground);
+  --popover-foreground: var(--foreground);
+  --secondary: var(--muted);
+  --secondary-foreground: var(--foreground);
+  --accent: var(--muted);
+  --accent-foreground: var(--foreground);
+  --destructive: var(--primary-ink);
+  --chart-1: var(--brand);
+  --chart-2: var(--highlight);
+  --chart-3: var(--calling);
+  --chart-4: var(--foreground-soft);
+  --chart-5: var(--muted-foreground);
+  --sidebar: var(--background);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--card);
+  --sidebar-accent-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+  --radius: 10px;
+}
+
+.dark {
+  --background: oklch(0.17 0.006 18.67);
+  --card: oklch(0.215 0.007 18.67);
+  --popover: oklch(0.25 0.008 18.67);
+  --foreground: oklch(0.95 0.004 18.67);
+  --foreground-soft: oklch(0.82 0.006 18.67);
+  --muted-foreground: oklch(0.68 0.008 18.67);
+  --muted: oklch(0.26 0.008 18.67);
+  --muted-strong: oklch(0.3 0.009 18.67);
+  --border: oklch(0.29 0.008 18.67);
+  --input: oklch(0.37 0.01 18.67);
+  --tile: oklch(0.32 0.01 18.67);
+  --primary-hover: oklch(0.63 0.21 18.67);
+  --primary-soft: oklch(0.29 0.07 18.67);
+  --primary-ink: oklch(0.78 0.14 18.67);
+  --highlight-soft: oklch(0.29 0.05 175.02);
+  --highlight-ink: oklch(0.82 0.12 175.02);
+  --calling: oklch(0.8 0.14 88);
+  --calling-soft: oklch(0.31 0.06 88);
+  --calling-ink: oklch(0.88 0.12 90);
+  --scrim: oklch(0 0 0 / 0.55);
+  --shadow-pop-value: 0 12px 32px oklch(0 0 0 / 0.45);
+  --shadow-dialog-value: 0 20px 50px oklch(0 0 0 / 0.55);
+}
+
+/* The eight colours a Clot's icon can have: the brand's lightness and chroma, turned around the wheel. */
+:root {
+  --icon-red: oklch(0.6352 0.2244 18.67);
+  --icon-orange: oklch(0.7 0.17 50);
+  --icon-amber: oklch(0.74 0.15 85);
+  --icon-green: oklch(0.65 0.16 150);
+  --icon-teal: oklch(0.7095 0.1336 175.02);
+  --icon-blue: oklch(0.62 0.17 250);
+  --icon-violet: oklch(0.6 0.2 295);
+  --icon-pink: oklch(0.68 0.19 350);
+}
+/* Ink is the text colour, so it turns with the theme. */
+:root {
+  --icon-ink: var(--foreground);
+}
+.dark {
+  --icon-orange: oklch(0.76 0.15 50);
+  --icon-amber: oklch(0.8 0.14 85);
+  --icon-green: oklch(0.72 0.15 150);
+  --icon-blue: oklch(0.7 0.15 250);
+  --icon-violet: oklch(0.7 0.17 295);
+  --icon-pink: oklch(0.75 0.16 350);
+}
+
+/* The content width setting (Wide fills the page; Medium and Narrow cap it). Set on the root by the app's preferences. */
+.content-width {
+  width: 100%;
+  margin-inline: auto;
+}
+:root[data-width="medium"] .content-width {
+  max-width: 960px;
+}
+:root[data-width="narrow"] .content-width {
+  max-width: 760px;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    @apply font-sans;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-background text-foreground text-body;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

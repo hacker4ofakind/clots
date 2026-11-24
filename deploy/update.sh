@@ -54,6 +54,14 @@ main() {
     echo "npm ci: lockfile unchanged, skipped"
   fi
 
+  # The web app is built on the server, and only when what it is made of changed (or was never built).
+  if grep -qE '^(web/|packages/|package-lock.json)' <<< "$changed" || [ ! -d web/.next ]; then
+    echo "web: building"
+    npm run web:build
+  else
+    echo "web: unchanged, skipped"
+  fi
+
   if grep -q '^docker/' <<< "$changed" || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "image: rebuilding $IMAGE"
     docker build -t "$IMAGE" docker
@@ -82,6 +90,36 @@ main() {
 
   if [ "$ready" -ne 1 ] || ! systemctl is-active --quiet clots; then
     echo "The service did not become ready after the restart. Deploy failed; the next run redoes every step." >&2
+    return 1
+  fi
+
+  # The web app gets its own environment file: the shared secret (the daemon makes it at its first start, so it is read
+  # only now) and where the daemon's API listens. Never the daemon's whole .env.
+  local secret
+  secret=$(grep -E '^CLOTS_UI_SECRET=' .env | head -1 | cut -d= -f2- || true)
+  if [ -z "$secret" ]; then
+    echo "CLOTS_UI_SECRET is not in .env yet; the daemon makes it at its first start." >&2
+    return 1
+  fi
+  umask 077
+  printf 'CLOTS_UI_SECRET=%s\nCLOTS_DAEMON_URL=http://127.0.0.1:8788\n' "$secret" > data/web.env
+  echo "web: restarting"
+  sudo systemctl restart clots-web
+
+  # The web UI is published to the tailnet only, on 8443. Funnel keeps 443 for webhooks.
+  if ! tailscale serve status 2>/dev/null | grep -q '8443'; then
+    tailscale serve --bg --https=8443 http://127.0.0.1:3000 || echo "tailscale serve did not start; run: tailscale serve --bg --https=8443 http://127.0.0.1:3000" >&2
+  fi
+
+  local web_ready=0 web_waited=0
+  while [ "$web_waited" -lt 60 ]; do
+    if curl -s -o /dev/null http://127.0.0.1:3000/offline; then web_ready=1; break; fi
+    sleep 2
+    web_waited=$((web_waited + 2))
+  done
+  systemctl status clots-web --no-pager || true
+  if [ "$web_ready" -ne 1 ] || ! systemctl is-active --quiet clots-web; then
+    echo "The web app did not come up. Deploy failed; the next run redoes every step." >&2
     return 1
   fi
 
