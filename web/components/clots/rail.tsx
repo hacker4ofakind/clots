@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Reorder } from "motion/react";
@@ -9,7 +9,7 @@ import type { ClotSummary } from "@clots/ui-api-schemas";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api-client";
-import { clotLabel } from "@/lib/clots";
+import { clotLabel, labelOfName } from "@/lib/clots";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
 import { ClotIcon } from "./clot-icon";
@@ -34,10 +34,16 @@ function RailLink({ href, label, active, children, className }: { href: string; 
 
 /** A Clot in the rail: a link with its icon, a right-click menu that moves it, and a grip to drag it. */
 function ClotItem({ clot, active, onMove, canUp, canDown }: { clot: ClotSummary; active: boolean; onMove: (direction: -1 | 1) => void; canUp: boolean; canDown: boolean }) {
+  // The context menu opens with the Menu key or Shift+F10; Alt with an arrow key moves the Clot without opening it.
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+    e.preventDefault();
+    onMove(e.key === "ArrowUp" ? -1 : 1);
+  };
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
-        <div>
+        <div onKeyDown={onKeyDown} data-rail-clot={clot.name}>
           <RailLink href={`/c/${encodeURIComponent(clot.name)}`} label={clotLabel(clot)} active={active}>
             <ClotIcon icon={clot.icon} home={clot.home} active={active} />
           </RailLink>
@@ -59,12 +65,18 @@ function ClotItem({ clot, active, onMove, canUp, canDown }: { clot: ClotSummary;
 export function Rail() {
   const { clots, asks, refresh } = useAppState();
   const pathname = usePathname();
+  const names = clots.map((c) => c.name).join("|");
   const [order, setOrder] = useState(() => clots.map((c) => c.name));
+  const [seen, setSeen] = useState(names);
+  const [said, setSaid] = useState("");
   const activeName = /^\/c\/([^/]+)/.exec(pathname)?.[1];
   const active = activeName === undefined ? undefined : decodeURIComponent(activeName);
 
   // The daemon's order is the truth; a drag changes it here first and tells the daemon when it lets go.
-  useEffect(() => setOrder(clots.map((c) => c.name)), [clots]);
+  if (seen !== names) {
+    setSeen(names);
+    setOrder(clots.map((c) => c.name));
+  }
 
   const byName = new Map(clots.map((c) => [c.name, c]));
   const ordered = order.flatMap((name) => byName.get(name) ?? []);
@@ -84,6 +96,9 @@ export function Rail() {
     [next[at], next[to]] = [next[to]!, next[at]!];
     setOrder(next);
     void save(next);
+    setSaid(`${labelOfName(name)} moved to position ${to + 1} of ${next.length}`);
+    // The moved link is a new place in the list; keep the keyboard where it was.
+    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-rail-clot="${CSS.escape(name)}"] a`)?.focus());
   };
 
   const waiting = asks.length > 0;
@@ -102,6 +117,9 @@ export function Rail() {
           <PlusIcon size={24} weight={pathname.startsWith("/new") ? "bold" : "regular"} />
         </RailLink>
       </div>
+      <p role="status" className="sr-only">
+        {said}
+      </p>
       <div className="mt-auto flex flex-col items-center gap-1">
         <RailLink href="/waiting" label="Waiting for you" active={pathname.startsWith("/waiting")}>
           <BellIcon size={24} weight={pathname.startsWith("/waiting") ? "bold" : "regular"} />

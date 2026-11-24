@@ -1,30 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BellIcon } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
+import { useViewport } from "@/lib/viewport";
 import { useAppState } from "./app-state";
 import { Mark } from "./logo";
 
 /**
  * The phone's floating tab bar, a glass pill with two tabs: Clots and Waiting. It sits inside the safe areas, and is gone in a chat
- * and while the keyboard is open (the visual viewport is then much shorter than the window).
+ * and while the keyboard is open.
  */
 export function TabBar() {
   const pathname = usePathname();
   const { asks } = useAppState();
-  const [keyboard, setKeyboard] = useState(false);
-
-  useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const check = () => setKeyboard(window.innerHeight - vv.height > 150);
-    vv.addEventListener("resize", check);
-    check();
-    return () => vv.removeEventListener("resize", check);
-  }, []);
+  const { keyboard } = useViewport();
 
   if (pathname.startsWith("/c/") || keyboard) return null;
   const clotsActive = pathname.startsWith("/clots");

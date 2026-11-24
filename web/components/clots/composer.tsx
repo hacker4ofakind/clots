@@ -1,12 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type KeyboardEvent } from "react";
 import { ArrowUpIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
 import type { CommandInfo } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
 import { api } from "@/lib/api-client";
+import { readDraft, writeDraft } from "@/lib/draft";
+import { prepareImage } from "@/lib/images";
+import { useViewport } from "@/lib/viewport";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
 import { fuzzy, SlashMenu, type Match } from "./slash-menu";
@@ -17,57 +21,32 @@ export interface Draft {
   images: string[];
 }
 
-/** Longest side, in pixels, an image keeps before it is sent: a phone's screenshot is far larger than a Clot needs. */
-export const MAX_SIDE = 2048;
-
-/** Shrinks an image to at most MAX_SIDE on its longest side, as a JPEG when it had to be changed. Small images pass as they are. */
-export async function prepareImage(file: File): Promise<string> {
-  const original = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-  const bitmap = await createImageBitmap(file).catch(() => undefined);
-  if (!bitmap) return original;
-  const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
-  if (scale === 1 && file.size < 3 * 1024 * 1024) return original;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL("image/jpeg", 0.85);
-}
-
 /** The message box: attach (desktop), an auto-growing text, send. Typing / opens the slash menu. `clot` keys the draft, `label` is what the box says. */
 export function Composer({ clot, label, onSend, disabled }: { clot: string; label: string; onSend: (draft: Draft) => void; disabled?: boolean }) {
   const { connection } = useAppState();
-  const [text, setText] = useState("");
+  const { keyboard } = useViewport();
+  const [typed, setTyped] = useState<{ clot: string; text: string }>();
   const [images, setImages] = useState<string[]>([]);
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   const [selected, setSelected] = useState(0);
   const [menuClosed, setMenuClosed] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const file = useRef<HTMLInputElement>(null);
-  const key = `draft:${clot}`;
 
-  // A draft survives leaving the chat, per Clot.
-  useEffect(() => {
-    try {
-      setText(localStorage.getItem(key) ?? "");
-    } catch {
-      setText("");
-    }
-    setImages([]);
-  }, [key]);
-  useEffect(() => {
-    try {
-      if (text === "") localStorage.removeItem(key);
-      else localStorage.setItem(key, text);
-    } catch {
-      // Private mode: the draft lives only while the page does.
-    }
-  }, [key, text]);
+  // A draft survives leaving the chat, per Clot. The stored text is read after hydration (the server has none) and is replaced by what is
+  // typed; each keystroke writes it back, so no effect has to, and a remount cannot wipe it.
+  const stored = useSyncExternalStore(
+    () => () => undefined,
+    () => readDraft(clot),
+    () => "",
+  );
+  const text = typed?.clot === clot ? typed.text : stored;
+  const edit = (value: string) => {
+    setTyped({ clot, text: value });
+    writeDraft(clot, value);
+    setSelected(0);
+    if (value === "" || value === "/") setMenuClosed(false);
+  };
   useEffect(() => {
     void api<CommandInfo[]>("/commands").then(setCommands).catch(() => undefined);
   }, []);
@@ -91,8 +70,6 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
         : [],
     [slash, commands, query],
   );
-  useEffect(() => setSelected(0), [query]);
-  useEffect(() => setMenuClosed(false), [text === "" || text === "/"]);
 
   const off = disabled || connection === "down";
   const canSend = (text.trim() !== "" || images.length > 0) && !off;
@@ -101,11 +78,11 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
   const send = () => {
     if (!canSend) return;
     onSend({ text, images });
-    setText("");
+    edit("");
     setImages([]);
   };
   const choose = (name: string) => {
-    setText(`/${name} `);
+    edit(`/${name} `);
     area.current?.focus();
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -124,6 +101,7 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
     const pictures = files.filter((f) => f.type.startsWith("image/"));
     if (pictures.length === 0) return;
     const prepared = await Promise.all(pictures.map((f) => prepareImage(f).catch(() => undefined)));
+    if (prepared.some((x) => x === undefined)) toast("That picture could not be read, so it was left out");
     setImages((list) => [...list, ...prepared.filter((x): x is string => x !== undefined)].slice(0, 6));
   };
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -134,7 +112,7 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
   };
 
   return (
-    <div className="px-3 pb-[max(env(safe-area-inset-bottom),34px)] pt-2 md:px-10 md:pb-4 md:pt-0">
+    <div className={cn("px-3 pt-2 md:px-10 md:pb-4 md:pt-0", keyboard ? "pb-2" : "pb-[max(env(safe-area-inset-bottom),34px)]")}>
       <div className="relative">
         {matches.length > 0 ? <SlashMenu matches={matches} selected={selected} onChoose={choose} /> : null}
         <div className="flex flex-col gap-2 rounded-composer border border-input bg-card p-2 shadow-xs focus-within:ring-2 focus-within:ring-ring">
@@ -160,7 +138,7 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
               ref={area}
               rows={1}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => edit(e.target.value)}
               onKeyDown={onKeyDown}
               onPaste={onPaste}
               aria-label={`Message ${label}`}

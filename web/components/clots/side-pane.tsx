@@ -54,8 +54,14 @@ export function PaneLayout({ children }: { children: ReactNode }) {
   const [dragging, setDragging] = useState(false);
   const latest = useRef(fraction);
 
-  useEffect(() => {
+  // A saved width that changed (another tab, another Clot's pane) replaces the one shown.
+  const savedKey = `${pane?.clot}:${saved}`;
+  const [seen, setSeen] = useState(savedKey);
+  if (seen !== savedKey) {
+    setSeen(savedKey);
     setFraction(saved);
+  }
+  useEffect(() => {
     latest.current = saved;
   }, [saved, pane?.clot]);
 
@@ -91,19 +97,24 @@ export function PaneLayout({ children }: { children: ReactNode }) {
     setDragging(false);
     commit(latest.current);
   };
+  // Keys repeat faster than the daemon answers: the width follows them at once, and is saved when they pause.
+  const pause = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(pause.current), []);
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const change = (delta: number) => {
       e.preventDefault();
       const next = Math.min(1, latest.current + delta);
       latest.current = next;
       setFraction(next);
-      commit(next);
+      clearTimeout(pause.current);
+      pause.current = setTimeout(() => commit(latest.current), 300);
     };
     if (e.key === "ArrowLeft") change(STEP);
     else if (e.key === "ArrowRight") change(-STEP);
     else if (e.key === "Home") change(1);
     else if (e.key === "End" || e.key === "Escape") {
       e.preventDefault();
+      clearTimeout(pause.current);
       close();
     }
   };

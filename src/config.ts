@@ -85,7 +85,8 @@ const GENERIC_TOOLKIT = z
     oauthApp: z.strictObject({ clientId: envKey, clientSecret: envKey }).optional(),
     // True when the connection is the user's own account at the service, not the Clots'.
     selfIsUser: z.boolean().default(false),
-    triggers: z.array(z.strictObject({ slug: z.string().regex(/^[A-Z][A-Z0-9_]*$/, "a trigger is Composio's uppercase slug"), config: z.record(z.string(), z.unknown()).default({}) })).default([]),
+    // `pollMinutes`: how often Composio checks, for a trigger Composio polls for (a webhook trigger ignores it).
+    triggers: z.array(z.strictObject({ slug: z.string().regex(/^[A-Z][A-Z0-9_]*$/, "a trigger is Composio's uppercase slug"), config: z.record(z.string(), z.unknown()).default({}), pollMinutes: z.number().int().min(1).max(1440).optional() })).default([]),
   })
   .refine((a) => !(a.oauthApp !== undefined && (a.apiKey !== undefined || a.fields !== undefined)), { message: "oauthApp cannot go with apiKey or fields", path: ["oauthApp"] })
   .refine((a) => !(a.apiKey !== undefined && a.fields !== undefined), { message: "give apiKey or fields, not both", path: ["fields"] })
@@ -223,7 +224,7 @@ export interface ComposioAccount extends AccountBase {
   /** Connection fields whose values are not secrets, merged into a key connection's fields after the `.env` ones. */
   connect?: Record<string, string>;
   /** A toolkit with no built-in mapper: the triggers to make, with their config. */
-  triggers: { slug: string; config: Record<string, unknown> }[];
+  triggers: { slug: string; config: Record<string, unknown>; pollMinutes?: number }[];
   /** Calendar: how long before an event its reminders come, in minutes; and how often the calendar is read. */
   leadMinutes?: number[];
   pollMinutes?: number;
@@ -446,7 +447,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
     const parsed = schema.safeParse(entry);
     if (!parsed.success) throw new Error(composioIssues(index, parsed.error));
     const a = parsed.data as Record<string, any>;
-    const triggers: { slug: string; config: Record<string, unknown> }[] = a.triggers ?? [];
+    const triggers: { slug: string; config: Record<string, unknown>; pollMinutes?: number }[] = a.triggers ?? [];
     const slugs = new Set<string>();
     for (const t of triggers) {
       if (slugs.has(t.slug)) throw new Error(`${a.toolkit} account ${a.account}: the trigger ${t.slug} is listed twice`);

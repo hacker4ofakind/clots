@@ -24,7 +24,7 @@ import { registerPushRoutes } from "../../src/ui-api/routes/push.js";
 import { registerClotAdminRoutes } from "../../src/ui-api/routes/clots-admin.js";
 import { onboardingMessage } from "../../src/onboarding/create.js";
 import { registerSettingsRoutes } from "../../src/ui-api/routes/settings.js";
-import { registerIntegrationRoutes } from "../../src/ui-api/routes/integrations.js";
+import { registerFakeIntegrations } from "./fake-integrations.mts";
 import { ConfigStore } from "../../src/config-store.js";
 import { LiveEnv } from "../../src/live-env.js";
 import { Push } from "../../src/push.js";
@@ -72,6 +72,14 @@ for (const name of NAMES) {
 }
 
 const api = new UiApi({ secret: () => SECRET, bus });
+// The test's control can make the lists the app loads on first paint slow, to look at the skeletons.
+let slowMs = 0;
+const addRoute = api.route.bind(api);
+api.route = (method, route, handler, o) =>
+  addRoute(method, route, async (req) => {
+    if (slowMs > 0 && method === "GET" && (route === "/clots" || route === "/clots/:clot/messages")) await new Promise((r) => setTimeout(r, slowMs));
+    return handler(req);
+  }, o);
 registerClotRoutes(api, { store, conv, asks, config: () => config, clots: () => clots, names: () => NAMES, now: () => Date.now() });
 registerWorkerRoutes(api, { store });
 // A configuration of its own in a temporary folder, so the settings pages work and never touch a real one.
@@ -80,7 +88,8 @@ fs.writeFileSync(path.join(dir, ".env"), ["CLAUDE_CODE_OAUTH_TOKEN=c", "CLOT_GIT
 fs.writeFileSync(path.join(dir, "clots.config.json"), JSON.stringify({ timeZone: "UTC", image: "clots-clot:dev", ui: { owner: process.env.CLOTS_UI_DEV_OWNER ?? "owner@example.com" }, publicUrl: `https://${HOST}`, home: true, clots: config.clots }, null, 2));
 const configStore = new ConfigStore({ file: path.join(dir, "clots.config.json"), envFile: path.join(dir, ".env"), env: new LiveEnv(path.join(dir, ".env"), {}) });
 registerSettingsRoutes(api, { config: configStore, announce: () => undefined, reorder: () => undefined, removeClot: async () => undefined });
-registerIntegrationRoutes(api, { config: configStore });
+// The integrations are fake too (a fake Composio and configurer), so the dialog can be driven end to end.
+const integrations = registerFakeIntegrations(api, bus);
 // A new Clot's checklist: the steps start undone, and the test's controls tick them.
 const onboardingDone = new Set<string>();
 registerClotAdminRoutes(api, {
@@ -113,7 +122,10 @@ const control = http.createServer(async (req, res) => {
     const { text, data: card } = onboardingMessage({ name: data.clot ?? "Truecast", repo: "octo/Truecast", webhookUrl: "https://box.example.ts.net/webhooks/github" });
     await conv.post(data.clot ?? "Truecast", text, { kind: "onboarding", data: card });
   } else if (url === "/onboard-done") onboardingDone.add(data.step);
+  else if (url === "/integrations/activate") out = integrations.activate(data.jobId);
+  else if (url === "/integrations/reset") integrations.reset();
   else if (url === "/timeout") timeoutMinutes = data.minutes;
+  else if (url === "/slow") slowMs = data.ms ?? 0;
   else if (url === "/sent") out = sent;
   else if (url === "/stop") await api.close();
   else if (url === "/start") server = await api.listen(PORT);

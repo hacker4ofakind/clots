@@ -271,6 +271,14 @@ describe("the runner's worker turns", () => {
     expect(options).toMatchObject({ permissionMode: "default", model: "claude-opus-5-5", cwd: "/workspace/repo", disallowedTools: ["AskUserQuestion", "NotebookEdit"] });
     expect(options.canUseTool).toBeDefined();
   });
+
+  it("streams partial messages for a main session turn that has somewhere to send them, and never for a worker", () => {
+    const main = { role: "main" as const, prompt: "x", effort: "low" as const, model: "claude-opus-5-5", onText: () => undefined };
+    expect(turnOptions({ ...main, onTextDelta: () => undefined }, { clot: "graphite", env: {} }).includePartialMessages).toBe(true);
+    expect(turnOptions(main, { clot: "graphite", env: {} }).includePartialMessages).toBeUndefined();
+    const worker = { role: "worker" as const, prompt: "x", effort: "low" as const, model: "claude-opus-5-5", cwd: "/workspace/worktrees/w1", systemPrompt: "W", guard, workerTools: { askMain: async () => "" }, onText: () => undefined, onStep: () => undefined, onTextDelta: () => undefined };
+    expect(turnOptions(worker, { clot: "graphite", env: {} }).includePartialMessages).toBeUndefined();
+  });
 });
 
 describe("worker steps in the container", () => {

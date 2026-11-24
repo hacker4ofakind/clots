@@ -2,11 +2,11 @@ import { cn } from "@/lib/utils";
 
 /**
  * The Clots mark: an orange slice, tilted 6 degrees anticlockwise, its lower half in segments. It takes the brand colour,
- * and is what the favicon, the home-screen icon and the phone's tab bar show.
+ * and is what the favicon, the home-screen icon and the phone's tab bar show. An empty `title` makes it decoration.
  */
 export function Mark({ className, title = "Clots" }: { className?: string; title?: string }) {
   return (
-    <svg viewBox="0 0 48 48" role="img" aria-label={title} className={cn("size-6 text-brand", className)}>
+    <svg viewBox="0 0 48 48" {...(title ? { role: "img", "aria-label": title } : { "aria-hidden": true })} className={cn("size-6 text-brand", className)}>
       <g transform="rotate(-6 24 24)">
         <circle cx="24" cy="24" r="21" fill="none" stroke="currentColor" strokeWidth="3.5" />
         <path d="M5 24h38" stroke="currentColor" strokeWidth="2.5" />

@@ -90,6 +90,11 @@ export class Workers {
 
   constructor(private d: WorkersDeps) {}
 
+  /** The zone the gate's wording uses, changed in the configuration. */
+  setTimeZone(timeZone: string): void {
+    this.d.timeZone = timeZone;
+  }
+
   /** Changes how many worker turns run at once, from the next one that starts. */
   setLimit(limit: number): void {
     this.d.limit = limit;

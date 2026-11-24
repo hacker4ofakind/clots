@@ -62,7 +62,8 @@ export class EventRouter {
  */
 export function bindingResolver(o: {
   repos: Map<string, string>;
-  accounts: (AccountBase & { source: string })[];
+  /** A function, for accounts that come and go while the daemon runs. */
+  accounts: (AccountBase & { source: string })[] | (() => (AccountBase & { source: string })[]);
   recipes?: (name: string) => Binding | undefined;
 }): (event: ClotEvent) => Binding | undefined {
   return (event) => {
@@ -70,7 +71,7 @@ export function bindingResolver(o: {
       const clot = o.repos.get(event.place);
       return clot === undefined ? undefined : { clot };
     }
-    const account = o.accounts.find((candidate) => candidate.source === event.source && candidate.account === event.account);
+    const account = (typeof o.accounts === "function" ? o.accounts() : o.accounts).find((candidate) => candidate.source === event.source && candidate.account === event.account);
     if (account) return account.clot === undefined ? "shared" : { clot: account.clot };
     return o.recipes?.(event.source) ?? "shared";
   };

@@ -113,7 +113,7 @@ export function toolServer(tools: DaemonTools) {
             ),
             tool(
               "config_set",
-              "Sets one key of clots.config.json to a whole new value (for a list or object, the whole of it). Every change is put to the user, who sees the old and the new value, and a yes saves it. home, publicUrl, ui and image can never be changed here, and an MCP server that runs a command cannot be set. It takes effect at once, except the few settings that are read only at startup (the user is told which); for those daemon_restart asks for a restart. Never put a secret in it: name the .env key that holds it.",
+              "Sets one key of clots.config.json to a whole new value (for a list or object, the whole of it). Every change is put to the user, who sees the old and the new value, and a yes saves it. home, publicUrl, ui and image can never be changed here, and an MCP server that runs a command cannot be set. Once the user allows it, it is saved and in force at once, with no restart; the few settings the daemon reads only when it starts (such as the intake port) wait for the user to restart it. Never put a secret in it: name the .env key that holds it.",
               { key: z.string().min(1).describe("A key of the file, or one inside it as `a.b`, such as `sources.composio`."), value: z.unknown().describe("The key's whole new value, as JSON.") },
               (a) => reply(() => tools.configSet!({ key: a.key, value: a.value })),
               always,

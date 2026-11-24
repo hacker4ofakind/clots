@@ -1,16 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import { CaretDownIcon, CaretLeftIcon, CaretRightIcon, InfoIcon } from "@phosphor-icons/react";
+import { ArrowDownIcon, CaretDownIcon, CaretLeftIcon, CaretRightIcon, InfoIcon } from "@phosphor-icons/react";
 import type { AskCard as AskCardData, ClotInfo, MessagePage, MessageView, WorkerView, WorkersResponse } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api-client";
 import { labelOfName } from "@/lib/clots";
+import { useEdgeSwipeBack } from "@/lib/edge-swipe";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
 import { AskCard, AskOutcome } from "./ask-card";
@@ -91,19 +92,26 @@ function Note({ message }: { message: MessageView }) {
   );
 }
 
+/** An attached picture. Its box has a fixed shape from the start, so the chat does not jump when the picture arrives. */
+function Attachment({ src }: { src: string }) {
+  return (
+    <span className="relative block aspect-4/3 w-60 max-w-full overflow-hidden rounded-control bg-background">
+      <Image src={src} alt="Attached" fill sizes="240px" unoptimized className="object-contain" />
+    </span>
+  );
+}
+
 function UserBubble({ item, onRetry }: { item: Item; onRetry: () => void }) {
   const { message } = item;
+  const sources = item.images ?? Array.from({ length: message.images }, (_, i) => `/api/d/clots/${encodeURIComponent(message.clot)}/messages/${message.id}/images/${i}`);
   return (
     <div className="flex w-full flex-col items-end gap-1" data-message-kind="user">
       <div className={cn("max-w-[75%] rounded-card bg-muted px-3.5 py-2.5 text-chat", item.status === "sending" && "opacity-70")}>
-        {message.images > 0 || (item.images?.length ?? 0) > 0 ? (
+        {sources.length > 0 ? (
           <div className="mb-2 flex flex-wrap gap-2">
-            {item.images
-              ? item.images.map((src, i) => (
-                  // eslint-disable-next-line @next/next/no-img-element -- a local data URL the user just attached
-                  <img key={i} src={src} alt="Attached" className="max-h-60 max-w-full rounded-control" width={240} height={180} />
-                ))
-              : Array.from({ length: message.images }, (_, i) => <Image key={i} src={`/api/d/clots/${encodeURIComponent(message.clot)}/messages/${message.id}/images/${i}`} alt="Attached" width={240} height={180} unoptimized className="h-auto max-h-60 w-auto max-w-full rounded-control" />)}
+            {sources.map((src, i) => (
+              <Attachment key={i} src={src} />
+            ))}
           </div>
         ) : null}
         {message.text ? <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{message.text}</p> : null}
@@ -131,11 +139,17 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
   const [items, setItems] = useState<Item[]>(() => toItems(initial));
   const [hasMore, setHasMore] = useState(initial.hasMore);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [newCount, setNewCount] = useState(0);
+  const [newBelow, setNewBelow] = useState(false);
   const [outcomes, setOutcomes] = useState<Record<number, string>>({});
   const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  /** Whether the view is at the end of the chat, and so follows what arrives. */
   const stick = useRef(true);
-  const lastHeight = useRef(0);
+  /** Set while older messages are being added above: where the view was, so it can be put back. */
+  const anchor = useRef<{ height: number; top: number }>(undefined);
+  const known = useRef(initial.messages.length);
+  const router = useRouter();
+  useEdgeSwipeBack(() => router.push("/clots"));
   const pending = useRef(new Map<string, Draft>());
 
   // The chat that is open is the one whose replies are read at once.
@@ -152,11 +166,13 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
   const refetch = useCallback(async () => {
     try {
       const page = await api<MessagePage>(`/clots/${encodeURIComponent(clot)}/messages`);
+      // What the page fetched is merged into what the chat has, never swapped for it: a message the stream brought while the
+      // request was on its way is newer than the page and must stay. The server's copy wins for a message both have.
+      const fresh = toItems(page);
       setItems((current) => {
-        const fresh = toItems(page);
-        const keep = current.filter((i) => i.status !== undefined && !fresh.some((f) => f.message.id === i.message.id));
-        const older = current.filter((i) => i.status === undefined && !fresh.some((f) => f.message.id === i.message.id) && i.message.createdAt < (fresh[0]?.message.createdAt ?? Infinity));
-        return [...older, ...fresh, ...keep];
+        const byId = new Map(current.map((i) => [i.message.id, i]));
+        for (const f of fresh) byId.set(f.message.id, { ...f, images: byId.get(f.message.id)?.images });
+        return [...byId.values()].sort((a, b) => a.message.createdAt - b.message.createdAt);
       });
       setHasMore((h) => h || page.hasMore);
     } catch {
@@ -184,16 +200,12 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
         if (event.type === "ask.closed" && d.clot === clot) setOutcomes((o) => ({ ...o, [d.id]: d.outcome }));
         if (event.type === "workers.updated" && d.clot === clot) void refetchWorkers(d.turnId);
         if (d?.clot !== clot) return;
-        const arrived = () => {
-          if (!stick.current) setNewCount((n) => n + 1);
-        };
         if (event.type === "message.created" || event.type === "message.done") {
           const message = d.message as MessageView;
           setItems((list) => {
             const at = list.findIndex((i) => i.message.id === message.id);
             const item: Item = { message };
             if (at >= 0) return list.map((i, j) => (j === at ? { ...i, message, status: undefined, streaming: false } : i));
-            if (message.kind !== "user") arrived();
             return [...list, item];
           });
           if (message.kind === "workers" && message.ref) void refetchWorkers(message.ref);
@@ -201,7 +213,6 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
           setItems((list) => {
             const at = list.findIndex((i) => i.message.id === d.id);
             if (at >= 0) return list.map((i, j) => (j === at ? { ...i, message: { ...i.message, text: i.message.text + d.delta }, streaming: true } : i));
-            arrived();
             return [...list, { streaming: true, message: { id: d.id, clot, sessionId: null, kind: "clot", text: d.delta, ref: null, data: null, createdAt: Date.now(), images: 0 } }];
           });
         } else if (event.type === "activity") {
@@ -211,19 +222,41 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
     [subscribe, clot, refetchWorkers],
   );
 
-  // Follow the end of the chat only while the user is at it; otherwise count what came.
+  const toEnd = useCallback(() => {
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // After every change of the messages: put the view back where it was when older ones came in above it, follow the end when
+  // the user is at it, and otherwise say there is something new below.
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
-    if (stick.current) el.scrollTop = el.scrollHeight;
-    else if (lastHeight.current > 0 && el.scrollTop === 0) el.scrollTop = el.scrollHeight - lastHeight.current;
-    lastHeight.current = el.scrollHeight;
-  }, [items]);
+    const added = items.length - known.current;
+    known.current = items.length;
+    if (anchor.current) {
+      el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.height);
+      anchor.current = undefined;
+    } else if (stick.current) {
+      toEnd();
+    } else if (added > 0 && items.slice(-added).some((i) => i.message.kind !== "user" && i.message.kind !== "activity")) {
+      setNewBelow(true);
+    }
+  }, [items, toEnd]);
+
+  // What changes the height without changing the messages (a picture arriving, the composer growing, the keyboard opening)
+  // keeps the end in view too, when that is where the user is.
   useEffect(() => {
     const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
-    lastHeight.current = el?.scrollHeight ?? 0;
-  }, []);
+    const inner = content.current;
+    if (!el || !inner || typeof ResizeObserver === "undefined") return;
+    const watch = new ResizeObserver(() => {
+      if (stick.current && !anchor.current) toEnd();
+    });
+    watch.observe(el);
+    watch.observe(inner);
+    return () => watch.disconnect();
+  }, [toEnd]);
   useEffect(() => {
     if (focusAsk === undefined) return;
     const target = document.querySelector(`[data-ask-id="${focusAsk}"]`) as HTMLElement | null;
@@ -236,18 +269,15 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
 
   const loadOlder = useCallback(async () => {
     const first = items[0]?.message.id;
-    if (!hasMore || loadingOlder || !first) return;
-    setLoadingOlder(true);
     const el = scroller.current;
-    const before = el?.scrollHeight ?? 0;
+    if (!hasMore || loadingOlder || !first || !el) return;
+    setLoadingOlder(true);
     try {
       const page = await api<MessagePage>(`/clots/${encodeURIComponent(clot)}/messages?before=${encodeURIComponent(first)}`);
+      // The layout effect puts the view back below what came in above it.
+      anchor.current = { height: el.scrollHeight, top: el.scrollTop };
       setItems((list) => [...toItems(page), ...list]);
       setHasMore(page.hasMore);
-      // Older messages come in above what is read: the view stays where it was.
-      requestAnimationFrame(() => {
-        if (el) el.scrollTop = el.scrollHeight - before;
-      });
     } catch {
       // Scrolling up again tries again.
     }
@@ -258,7 +288,7 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
     const el = scroller.current;
     if (!el) return;
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM;
-    if (stick.current) setNewCount(0);
+    if (stick.current) setNewBelow(false);
     if (el.scrollTop < 200) void loadOlder();
   };
 
@@ -324,9 +354,8 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
         </div>
       </header>
       <div className="relative min-h-0 flex-1">
-        <div ref={scroller} onScroll={onScroll} tabIndex={0} aria-label="Messages" role="region" className="h-full overflow-y-auto overscroll-contain outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-chat-scroller>
-          <div className="content-width flex min-h-full flex-col gap-4 px-4 pb-4 pt-2 md:px-10">
-            {loadingOlder ? <Skeleton className="h-10 w-2/3 self-center" /> : null}
+        <div ref={scroller} onScroll={onScroll} tabIndex={0} aria-label="Messages" role="region" className="h-full overflow-y-auto overscroll-contain outline-none [overflow-anchor:none] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" data-chat-scroller>
+          <div ref={content} className="content-width flex min-h-full flex-col gap-4 px-4 pb-4 pt-2 md:px-10">
             {rendered.map(({ item, stamp }) => {
               const { message } = item;
               switch (message.kind) {
@@ -369,17 +398,18 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
             {state?.state === "failed" ? <p className="text-caption text-primary-ink">{state.reason ?? "The last turn failed."}</p> : null}
           </div>
         </div>
-        {newCount > 0 ? (
+        {loadingOlder ? <Skeleton className="absolute inset-x-4 top-2 mx-auto h-10 max-w-sm" role="status" aria-label="Loading earlier messages" /> : null}
+        {newBelow ? (
           <Button
             size="sm"
             onClick={() => {
               stick.current = true;
-              const el = scroller.current;
-              if (el) el.scrollTop = el.scrollHeight;
-              setNewCount(0);
+              toEnd();
+              setNewBelow(false);
             }}
             className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-pop"
           >
+            <ArrowDownIcon weight="bold" aria-hidden />
             New messages
           </Button>
         ) : null}
@@ -389,18 +419,6 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
           <Composer clot={clot} label={label} onSend={send} disabled={connection === "down"} />
         </div>
       </div>
-    </div>
-  );
-}
-
-/** What a chat shows while its first page loads: shaped like the chat. */
-export function ChatSkeleton() {
-  return (
-    <div className="flex h-full flex-col justify-end gap-4 p-10" aria-busy="true" aria-label="Loading the chat">
-      <Skeleton className="h-12 w-1/3 self-end rounded-card" />
-      <Skeleton className="h-20 w-2/3" />
-      <Skeleton className="h-12 w-1/4 self-end rounded-card" />
-      <Skeleton className="h-16 w-1/2" />
     </div>
   );
 }

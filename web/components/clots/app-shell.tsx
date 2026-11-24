@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { WarningCircleIcon } from "@phosphor-icons/react";
+import { useViewport } from "@/lib/viewport";
 import { useAppState } from "./app-state";
 import { PushClient } from "./notifications-row";
 import { Rail } from "./rail";
@@ -23,11 +24,12 @@ export function ConnectionBanner() {
 /**
  * The desktop frame: the icon rail on the background, one page container that runs the full height of the window,
  * and the side pane when one is open. On a phone the rail is gone and the page fills the screen; each page adds
- * its own tab bar.
+ * its own tab bar. While the phone's keyboard is open the shell is exactly the area above it, so the composer stays in view.
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const { keyboard, height, top } = useViewport();
   return (
-    <div className="flex h-dvh bg-background">
+    <div className={keyboard ? "fixed inset-x-0 top-0 flex overflow-hidden bg-background" : "flex h-dvh bg-background"} style={keyboard ? { height, transform: top ? `translateY(${top}px)` : undefined } : undefined} data-keyboard={keyboard ? "open" : undefined}>
       <Rail />
       <PushClient />
       <PaneLayout>

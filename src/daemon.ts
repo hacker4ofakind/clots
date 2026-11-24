@@ -1,20 +1,21 @@
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { stopContainer, addWorktree, containerName, defaultBranch, ensureContainer, hasOwnLogin, installPlugin, killStrayClaude, prsForBranch, refreshMainCheckout, removeWorktree, sessionEnv, sessionExistsAsync, worktreeExists } from "./agent/container.js";
+import { recloneWorkspace, stopContainer, addWorktree, containerName, defaultBranch, ensureContainer, hasOwnLogin, installPlugin, killStrayClaude, prsForBranch, refreshMainCheckout, removeWorktree, sessionEnv, sessionExistsAsync, worktreeExists } from "./agent/container.js";
 import { DockerMemoryFolders } from "./agent/memory-folder.js";
 import { CLOT_SYSTEM_PROMPT, composioNote, HOME_SYSTEM_PROMPT } from "./agent/prompts.js";
 import { SdkRunner } from "./agent/runner.js";
 import { Clot } from "./clot.js";
-import { applyChange, check, getAt, missingEnvKeys, needsAsk, parseKey } from "./config-edit.js";
+import { applyChangeLive, check, getAt, missingEnvKeys, parseKey } from "./config-edit.js";
 import { configKind, restartKind } from "./asks/config.js";
-import { calendarPollingCalls, HOME_CLOT, isCalendar, legacyKeysIn, renamedKeysIn, type AccountBase, type NotionAccount } from "./config.js";
+import { calendarPollingCalls, type Config, HOME_CLOT, isCalendar, type EmailAccount, legacyKeysIn, renamedKeysIn, type AccountBase, type NotionAccount } from "./config.js";
 import { ConfigStore } from "./config-store.js";
 import { registerSettingsRoutes } from "./ui-api/routes/settings.js";
 import { registerIntegrationRoutes } from "./ui-api/routes/integrations.js";
 import { registerClotAdminRoutes } from "./ui-api/routes/clots-admin.js";
 import { ClotCreator, onboardingMessage } from "./onboarding/create.js";
 import { IconStore } from "./onboarding/icons.js";
+import { checklist, markPush, markWebhook } from "./onboarding/checklist.js";
 import { ConversationService } from "./conversation/conversation.js";
 import { LiveEnv } from "./live-env.js";
 import { EventBus } from "./ui-api/events.js";
@@ -42,6 +43,9 @@ import { StoredOAuth } from "./mcp/oauth.js";
 import { CalendarFeed } from "./sources/calendar.js";
 import { calendarOverComposio } from "./sources/calendar-composio.js";
 import { composioKind } from "./asks/composio.js";
+import { sourcesApplier } from "./integrations/apply.js";
+import { Configurer, sdkConfigurerModel } from "./integrations/configurer.js";
+import { IntegrationJobs } from "./integrations/jobs.js";
 import { ComposioActions } from "./composio/actions.js";
 import { ComposioAuthoring } from "./composio/authoring.js";
 import { sdkComposioApi } from "./composio/api.js";
@@ -55,6 +59,8 @@ import { defFor } from "./composio/toolkits/index.js";
 import { ComposioUndo } from "./composio/undo.js";
 import { genericMapper } from "./sources/generic.js";
 import { draftFates, imapflowClient, MailboxListener, saveDraft, saveSent } from "./sources/imap.js";
+import { EmailSync } from "./email-sync.js";
+import { diffClots, diffServers, registerLiveConfig } from "./live-config.js";
 import { Asks } from "./asks.js";
 import { askEmail, emailKind, type SendRequest } from "./asks/email.js";
 import { askChoice, choiceKind } from "./asks/choice.js";
@@ -102,6 +108,10 @@ const configStore = new ConfigStore({
   envFile: ENV_FILE,
   env: liveEnv,
   log: (text) => console.log(text),
+  // The moment a configuration is in force, before its apply handlers run: whatever reads `config` at call time sees it.
+  onAdopt: (next) => {
+    config = next;
+  },
   onChanged: (e) => {
     config = configStore.current;
     announceConfig({ applied: e.keys.filter((k) => !e.needsRestart.includes(k)), needsRestart: e.needsRestart, fromFile: e.fromFile, error: e.error });
@@ -136,16 +146,18 @@ const deliver = (event: ClotEvent, dropped?: string): void => {
  */
 /** Set once the workers exist. A pull request closed before then is caught by their check with GitHub at startup. */
 let onPullRequest: (a: PullRequestChange) => Promise<void> = async () => undefined;
-const pingedRepos = new Set<string>();
+/** The Clots share one GitHub account; its login is what marks an event as caused by a Clot. Read when the first container starts; set before the intake takes deliveries so a push handled earlier finds it. */
+let clotLogin = "";
 const handlers = new Map<string, Handler>([
-  ["/webhooks/github", githubHandler({ secret: config.webhookSecret, insertEvent: (event) => store.insertEvent(event), now: () => Date.now(), onPullRequest: (a) => onPullRequest(a), onPing: (repo) => void pingedRepos.add(repo) })],
+  ["/webhooks/github", githubHandler({ secret: config.webhookSecret, insertEvent: (event) => store.insertEvent(event), now: () => Date.now(), onPullRequest: (a) => onPullRequest(a), onPing: (repo) => markWebhook(store, repo), onPush: (repo, sender) => void markPush(store, repo, sender, clotLogin) })],
 ]);
 /**
  * Composio's path answers from the start: 503 until the daemon has set it up, which tells Composio to deliver
  * again, instead of 404, which says there is nothing here.
  */
 let composioIntake: Handler = async () => ({ status: 503, text: "starting" });
-if (config.sources.composio.length > 0) handlers.set("/webhooks/composio", (req) => composioIntake(req));
+// Whenever there is a Composio key, not only when an account exists: a tool connected from the web app is live with no restart.
+if (config.composioApiKey !== undefined) handlers.set("/webhooks/composio", (req) => composioIntake(req));
 /** The webhook recipes' paths, /webhooks/r/<name>, set once the rulebook is read. */
 let recipeHandlers: (name: string) => Handler | undefined = () => undefined;
 const intake = startIntake({
@@ -208,6 +220,8 @@ bus.subscribe((event) => {
 const bookCall = (who: "triage" | "routing") => (usd: number, clot: string | null) => void spend.book({ clot: clot ?? "daemon", who, total: usd }).catch((error) => console.error("booking a call's cost failed:", error));
 const router = new SdkRouter({ onCost: bookCall("triage") });
 const clots = new Map<string, Clot>();
+/** Parts built late in this file that a change to the configuration reaches: set when each exists. */
+const late: { sweeper?: Sweeper; pipeline?: Pipeline; email?: (accounts: EmailAccount[]) => Promise<void>; mcp?: (next: Config["mcpServers"], prev: Config["mcpServers"]) => void } = {};
 const runners = new Map<string, SdkRunner>();
 const repoOf = new Map(definitions.map((c) => [c.name, c.repoUrl === undefined ? null : (repoSlug(c.repoUrl) ?? null)]));
 
@@ -246,6 +260,9 @@ const keeper = new CacheKeeper({
 meter.onChange(() => ticker.recheck());
 
 const spend = new SpendLog({ store, now: () => Date.now(), timeZone: config.timeZone, weeklyWarnUsd: config.spend.weeklyWarnUsd, post: (clot, text) => postLive(clot, text), gate, meter });
+
+/** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check; it follows the mail accounts as they change. */
+const drafts = new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
 
 /** Posts a note in a Clot's chat. What the daemon says there never enters the Clot's session. */
 const say = async (clot: string, text: string): Promise<void> => {
@@ -320,7 +337,7 @@ const mergeAsk = mergeKind({ token: config.githubToken });
 const choiceAsk = choiceKind();
 // Changing the configuration and restarting: asked of the user, and carried out by the home Clot's tools only.
 const CONFIG_FILE = "clots.config.json";
-const configAsk = configKind({ apply: (key, value) => applyChange(CONFIG_FILE, key, value) });
+const configAsk = configKind({ apply: (key, value) => applyChangeLive(configStore, liveEnv.all(), key, value) });
 /** Whether any Clot has a turn running, or any worker is running. */
 const turnsRunning = (): boolean => [...clots.values()].some((c) => c.isBusy()) || [...clots.keys()].some((name) => store.workersOf(name).some((w) => w.status === "running"));
 const restartAsk = restartKind({
@@ -355,7 +372,8 @@ const tellHome = (text: string): Promise<void> => say(config.home ? HOME_CLOT : 
 /** An account's own Clot's channel, or the home Clot's for a shared account. */
 const tellComposio = (account: { clot?: string }) => (text: string): Promise<void> => (account.clot === undefined ? tellHome(text) : say(account.clot, text));
 const composioMeter = new Meter({ store, now: () => Date.now(), tellHome });
-const composioApi = config.sources.composio.length === 0 ? undefined : sdkComposioApi(config.composioApiKey!);
+// Made whenever the Composio key exists, so the web app can list toolkits and connect the first one without a restart.
+const composioApi = config.composioApiKey === undefined ? undefined : sdkComposioApi(config.composioApiKey);
 const composio =
   composioApi === undefined
     ? undefined
@@ -377,6 +395,14 @@ let composioActions: ComposioActions | undefined;
 const composioAsk = composio === undefined ? undefined : composioKind({ composio, actions: { executeWrite: (o) => composioActions!.executeWrite(o) } });
 /** The calendars, each over its own connection. */
 const calendars = new Map(config.sources.composio.filter(isCalendar).map((account) => [account.account, calendarOverComposio(composio!, account, config.timeZone)]));
+const feeds = new Map<string, CalendarFeed>();
+/** A change of the user's zone: each calendar is made again for it, and the undo reads the new zone. The feeds and the tool look the calendars up at each call. */
+const calendarZone = (zone: string): void => {
+  for (const account of config.sources.composio.filter(isCalendar)) calendars.set(account.account, calendarOverComposio(composio!, account, zone));
+  calendarUndo?.setTimeZone(zone);
+  for (const feed of feeds.values()) feed.setTimeZone(zone);
+  if (toolDeps.calendar !== undefined) toolDeps.calendar.timeZone = zone;
+};
 const calendarUndo = calendars.size === 0 ? undefined : new CalendarUndo({ store, call: (account, req) => calendars.get(account)!.call(req), timeZone: config.timeZone });
 const composioUndo = composio === undefined ? undefined : new ComposioUndo({ composio, store });
 
@@ -439,7 +465,7 @@ function daemonConfigTools(): NonNullable<ToolDeps["daemonConfig"]> {
       const file = readFile();
       const checked = check(file, key, value);
       if (typeof checked === "string") return checked;
-      const missing = missingEnvKeys(checked.candidate);
+      const missing = missingEnvKeys(checked.candidate, liveEnv.all());
       const filed = await asks.open(configAsk, clot, { key, value, current: getAt(file, path) }, { summary: `change ${key}`, dedupe: key, max: 3 });
       return missing.length === 0 ? filed : `${filed}\nOnce it is saved the user must add ${missing.map((k) => `\`${k}\``).join(", ")} to the \`.env\` file in ${process.cwd()}.`;
     },
@@ -501,9 +527,12 @@ registerSettingsRoutes(ui, {
     names.splice(0, names.length, ...order);
   },
   removeClot: (name) => removeClotLive(name),
+  building: (name) => creator.isBuilding(name),
 });
 /** Takes a Clot out of the running daemon: its container stops, what waits for it is dropped. Its volumes and its chat stay. */
 async function removeClotLive(name: string): Promise<void> {
+  // The configuration handler and the delete route both call this: the second finds nothing left to do.
+  if (!names.includes(name) && !clots.has(name)) return;
   const at = names.indexOf(name);
   if (at >= 0) names.splice(at, 1);
   const definition = definitions.findIndex((c) => c.name === name);
@@ -515,11 +544,46 @@ async function removeClotLive(name: string): Promise<void> {
   await stopContainer(containerName(name));
   bus.emit("clot.state", { clot: name, state: "idle", removed: true });
 }
-registerIntegrationRoutes(ui, { config: configStore });
+// Connecting services: the dialog's jobs. Without a Composio key there are none, and the routes that need Composio say so.
+const restartNeeded = new Set<string>();
+const integrationJobs =
+  composioApi === undefined || composio === undefined
+    ? undefined
+    : new IntegrationJobs({
+        config: configStore,
+        api: composioApi,
+        configurer: new Configurer({
+          model: sdkConfigurerModel(),
+          toolkitInfo: (slug) => composio.toolkitInfo(slug),
+          toolkitText: (a) => composioAuthoring!.toolkit(a),
+          triggerTypes: (toolkit) => composioApi.toolkitTriggers(toolkit),
+          onCost: (usd) => bookCall("triage")(usd, null),
+        }),
+        emit: (type, data) => void bus.emit(type, data),
+        now: () => Date.now(),
+        newId: randomUUID,
+        // A reconnect finished in the dialog: the entry did not change, so the account is told to adopt what is now connected. A new key
+        // is only in the config store's account list after it is read again, which a save with nothing in it does.
+        reconnected: async (id) => {
+          await configStore.save({});
+          composio.setAccounts(configStore.current.sources.composio, configStore.skipped.map((s) => s.entry));
+          const account = composio.account(id);
+          if (account !== undefined) await composio.adopt(account);
+        },
+        forget: async (id) => {
+          const account = composio.account(id);
+          return account === undefined ? "No such tool." : composio.forget(account);
+        },
+        log: (text) => console.log(text),
+      });
+// Sign-ins are watched, and an abandoned one is removed after an hour.
+if (integrationJobs !== undefined) setInterval(() => void integrationJobs.tick().catch((error) => console.error("[integrations] the check failed:", error)), 3_000);
+registerIntegrationRoutes(ui, { config: configStore, jobs: integrationJobs, statusOf: (id) => composio?.statusOf(id) ?? "unknown", restartNeeded: (id) => restartNeeded.has(id) });
 // New Clots: made from the UI, started here once. A Clot whose create is in progress is not started again by anything else.
 const icons = new IconStore("data/icons");
 const creator: ClotCreator = new ClotCreator({
   config: configStore,
+  ...(integrationJobs === undefined ? {} : { tools: integrationJobs }),
   token: () => config.githubToken,
   start: async (def, step) => {
     if (!definitions.some((c) => c.name === def.name)) {
@@ -542,6 +606,23 @@ const creator: ClotCreator = new ClotCreator({
     step("starting");
   },
   emit: (e) => void bus.emit("clot.build", e),
+  // Edit with another repository: a fresh workspace volume, the container moved onto it, the Clot started again on it.
+  busy: (name) => {
+    if (clots.get(name)?.isBusy()) return `${name} is working right now. Try again when its turn has ended.`;
+    if (store.listedWorkers(name).length > 0) return `${name} has workers on branches in its current workspace. Try again when they are done.`;
+    return undefined;
+  },
+  reclone: async (def, step) => {
+    const definition = definitions.find((c) => c.name === def.name);
+    if (definition === undefined) throw new Error(`${def.name} is not running`);
+    step("cloning");
+    await recloneWorkspace({ clot: def.name, image: config.image, repoUrl: def.repoUrl, githubToken: config.githubToken });
+    step("starting");
+    for (const [slug, clot] of repoToClot) if (clot === def.name) repoToClot.delete(slug);
+    definition.repoUrl = def.repoUrl;
+    repoOf.set(def.name, repoSlug(def.repoUrl) ?? null);
+    await startClot(definition);
+  },
   onReady: async (name, repo) => {
     const { text, data } = onboardingMessage({ name, repo, webhookUrl: `${config.publicUrl}/webhooks/github` });
     await conv.post(name, text, { kind: "onboarding", data });
@@ -554,16 +635,21 @@ registerClotAdminRoutes(ui, {
   webhookSecret: () => config.webhookSecret,
   onboarding: (name) => {
     const repo = repoOf.get(name);
-    const tools = config.sources.composio.filter((a) => a.clot === name);
-    return [
-      { id: "webhook", done: repo != null && pingedRepos.has(repo), detail: repo != null && pingedRepos.has(repo) ? "GitHub's ping arrived." : `Waiting for GitHub's ping from ${repo ?? "the repository"}.` },
-      { id: "tools", done: tools.every((a) => store.composio.account(composio?.userOf(a) ?? "")?.status === "active"), detail: tools.length === 0 ? "No tool is connected yet." : `${tools.length} connected.` },
-      { id: "push-branch", done: store.workersOf(name).some((w) => w.branch !== null && w.started), detail: "Done once the Clot has pushed a branch with its own token." },
-    ];
+    const tools = config.sources.composio.filter((a) => a.clot === name).map((a) => ({ id: `${a.toolkit}:${a.account}`, active: store.composio.account(composio?.userOf(a) ?? "")?.status === "active" }));
+    return checklist({ marks: store, repo: repo ?? null, tools, hasPullRequest: store.workersOf(name).some((w) => w.prNumber !== null) });
   },
 });
 // A Clot added to the file by hand starts; one taken out stops. One made from the UI is started by its create, and one deleted from it was stopped by its delete.
-configStore.onChange(["clots"], async (next) => {
+configStore.onChange(["clots"], async (next, prev) => {
+  const change = diffClots(prev.clots, next.clots);
+  for (const name of change.testCommandChanged) {
+    const c = next.clots.find((x) => x.name === name)!;
+    const definition = definitions.find((x) => x.name === name);
+    if (definition !== undefined) definition.testCommand = c.testCommand;
+    runners.get(name)?.setTestCommand(c.testCommand);
+  }
+  // A repository changed by hand leaves the workspace on the old one: the Edit page in Manage Clots re-clones, and marks the Clot as being built while it does.
+  for (const name of change.repoChanged.filter((n) => !creator.building.has(n))) console.warn(`[${name}] its repoUrl was changed in the file: the workspace still holds the old repository. Use Edit in Settings > Manage Clots to move it to the new one.`);
   for (const c of next.clots) {
     if (names.includes(c.name) || creator.building.has(c.name)) continue;
     definitions.push(c);
@@ -573,11 +659,27 @@ configStore.onChange(["clots"], async (next) => {
   }
   for (const name of [...names]) if (name !== HOME_CLOT && !next.clots.some((c) => c.name === name) && !creator.building.has(name)) await removeClotLive(name);
 });
-// What a change reaches at once. Everything else a change touches takes effect at the next restart, which the answer says.
-configStore.onChange(["askTimeoutMinutes", "maxProposals"], () => undefined);
-configStore.onChange(["maxWorkers"], (next) => workers.setLimit(next.maxWorkers));
-configStore.onChange(["rolloverPercent", "timeZone"], (next) => {
-  for (const clot of clots.values()) clot.configure({ rolloverPercent: next.rolloverPercent, timeZone: next.timeZone });
+// What a change reaches at once; the rest of the keys are read at startup and the store reports them as waiting for a restart. Registered here,
+// before the parts built later exist: a part that does not exist yet is built from the configuration as it is then, so nothing is missed.
+registerLiveConfig(configStore, {
+  maxWorkers: (limit) => workers.setLimit(limit),
+  rolloverPercent: (rolloverPercent) => {
+    for (const clot of clots.values()) clot.configure({ rolloverPercent });
+  },
+  timeZone: (zone) => {
+    for (const clot of clots.values()) clot.configure({ timeZone: zone });
+    ticker.configure({ timeZone: zone });
+    spend.configure({ timeZone: zone });
+    workers.setTimeZone(zone);
+    drafts.configure({ timeZone: zone });
+    calendarZone(zone);
+  },
+  gates: (gates) => ticker.configure({ gates }),
+  sweep: (sweep) => late.sweeper?.configure(sweep),
+  spend: (s) => spend.configure({ weeklyWarnUsd: s.weeklyWarnUsd }),
+  hold: (hold) => late.pipeline?.setHold(hold),
+  email: async (accounts) => void (await late.email?.(accounts)),
+  mcpServers: async (next, prev) => late.mcp?.(next, prev),
 });
 registerPushRoutes(ui, { push, subscriptions: store.push, publicKey: () => liveEnv.get("VAPID_PUBLIC_KEY") ?? "", now: () => Date.now() });
 registerPrefsRoutes(ui, { store, emit: (prefs) => void bus.emit("config.changed", { ui: prefs }) });
@@ -593,12 +695,8 @@ try {
   process.exit(1);
 }
 
-/** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Made before the Clots start, so that their first turns already check. */
-/** Follows the drafts the Clots save, and before each turn tells the Clot which the user sent or deleted. Set up with the email sources. */
-const drafts = config.sources.email.length === 0 ? undefined : new DraftTracker({ store, accounts: config.sources.email, lookup: draftFates, timeZone: config.timeZone, now: () => Date.now(), log: (text, error) => console.warn(text, error) });
 
 /** The Clots share one GitHub account; its login is what marks an event as caused by a Clot. */
-let clotLogin = "";
 const repoToClot = new Map<string, string>();
 /** The daemon's plugin (skills for the Clots), shipped in the repository next to src/. */
 const PLUGIN_SOURCE = fileURLToPath(new URL("../plugin", import.meta.url));
@@ -646,7 +744,7 @@ async function startClot(c: (typeof definitions)[number]): Promise<void> {
       if (name === HOME_CLOT) await memory.afterHomeTurn(turn);
     },
     beforeTurn: async (name) => {
-      await drafts?.check(name);
+      await drafts.check(name);
       await memory.beforeTurn(name);
       // The main session cannot pull, so the daemon keeps its clone on the latest default branch. Old code is better than none.
       if (repoOf.get(name)) await refreshMainCheckout(containerName(name), config.githubToken).catch((error) => console.warn(`[${name}] refreshing the clone failed; reading the code as it was:`, error));
@@ -694,22 +792,41 @@ else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);
 const enrichers: Record<string, Enricher> = { github: inlineCommentReader(config.githubToken) };
 const insertEvent = (event: ClotEvent) => store.insertEvent(event);
 
-// Email: one connection per watched mailbox, held open and reopened when it drops.
-for (const account of config.sources.email) {
-  for (const mailbox of account.mailboxes) {
-    const listener = new MailboxListener({ account, mailbox, client: () => imapflowClient(account), store, deliver, now: () => Date.now(), ownAddresses: config.sources.email.flatMap((a) => [a.address, ...a.addresses]) });
-    supervisor.start({ name: `email ${account.account} (${mailbox})`, everyMs: 0, tell: tellAccount(account), run: (ready) => listener.run(ready) });
+// Email: one connection per watched mailbox, held open and reopened when it drops. They follow sources.email as it changes: a new account
+// connects, a changed one reconnects, a removed one disconnects; the Clots' email tools appear with the first account and go with the last.
+/** Every address of every configured account: mail from any other is an outsider's. One array, updated in place, that the listeners and the calendar feeds read. */
+const ownAddresses: string[] = [];
+const emailSync = new EmailSync({
+  start: (account, mailbox) => {
+    const listener = new MailboxListener({ account, mailbox, client: () => imapflowClient(account), store, deliver, now: () => Date.now(), ownAddresses });
+    const stop = supervisor.start({ name: `email ${account.account} (${mailbox})`, everyMs: 0, tell: tellAccount(account), run: (ready) => listener.run(ready) });
+    return {
+      stop: async () => {
+        stop();
+        await listener.stop();
+      },
+    };
+  },
+  log: (text) => console.log(text),
+});
+async function applyEmail(accounts: EmailAccount[]): Promise<void> {
+  ownAddresses.splice(0, ownAddresses.length, ...accounts.flatMap((a) => [a.address, ...a.addresses]));
+  drafts.configure({ accounts });
+  if (accounts.length > 0) {
+    toolDeps.email = { accounts, save: saveDraft };
+    toolDeps.senders.email_reply = emailReplySender({ accounts, store, send: sendMail });
+  } else {
+    delete toolDeps.email;
+    delete toolDeps.senders.email_reply;
   }
+  await emailSync.apply(accounts);
 }
-if (config.sources.email.length > 0) {
-  toolDeps.email = { accounts: config.sources.email, save: saveDraft };
-  toolDeps.senders.email_reply = emailReplySender({ accounts: config.sources.email, store, send: sendMail });
-}
+late.email = applyEmail;
+await applyEmail(config.sources.email);
 
 // Composio: Stripe, Linear, Notion, the calendar and any other toolkit (PostHog's mapping is a recipe the daemon ships). One path takes every delivery;
 // each source keeps its enricher and its way of sending, now over Composio's tools. Notion's events still come on
 // its own path, since Composio's Notion triggers need an OAuth app (spec section 9).
-const feeds = new Map<string, CalendarFeed>();
 let recipeEnrich: Enricher | undefined;
 if (composio !== undefined) {
   composioIntake = composioHandler({
@@ -726,8 +843,7 @@ if (composio !== undefined) {
   // A Composio recipe's reads give an event its actor and title before it is routed; a changed `identity` is learned again.
   const recipeReads = new RecipeReads({ composio, used: (managed) => composioMeter.used(managed), cached: (a, t, h, n) => store.composio.cachedRead(a, t, h, n), keep: (a, t, h, d, n) => store.composio.keepRead(a, t, h, d, n), now: () => Date.now() });
   recipeEnrich = recipeEnricher({ reads: recipeReads, composio, recipe: (toolkit) => rulebook.composioRecipe(toolkit), delivery: (eventId) => store.composio.deliveryByEvent(eventId) });
-  const genericToolkits = [...new Set(config.sources.composio.map((a) => a.toolkit).filter((t) => !isBuiltinToolkit(t)))];
-  const recipesChanged = () => genericToolkits.forEach((toolkit) => composio.recipeChanged(toolkit));
+  const recipesChanged = () => [...new Set(configStore.current.sources.composio.map((a) => a.toolkit).filter((t) => !isBuiltinToolkit(t)))].forEach((toolkit) => composio.recipeChanged(toolkit));
   rulebook.onLoad(recipesChanged);
   recipesChanged();
   const has = (toolkit: string) => config.sources.composio.some((a) => a.toolkit === toolkit);
@@ -746,8 +862,7 @@ if (composio !== undefined) {
 
   // Calendar: each feed polled for reminders, and read for calendar_list. Nothing is polled until the account has signed in.
   for (const account of config.sources.composio.filter(isCalendar)) {
-    const ownAddresses = config.sources.email.flatMap((a) => [a.address, ...a.addresses]);
-    const feed = new CalendarFeed({ account, timeZone: config.timeZone, store, deliver: (event) => deliver(event), now: () => Date.now(), ownAddresses, source: calendars.get(account.account)! });
+    const feed = new CalendarFeed({ account, timeZone: config.timeZone, store, deliver: (event) => deliver(event), now: () => Date.now(), ownAddresses, source: { list: (from, to) => calendars.get(account.account)!.list(from, to) } });
     feeds.set(account.account, feed);
     const connected = () => store.composio.account(composio.userOf(account))?.status === "active";
     supervisor.start({ name: `calendar ${account.account}`, everyMs: account.pollMinutes * 60_000, tell: tellComposio(account), run: async () => (connected() ? feed.poll() : undefined) });
@@ -774,51 +889,87 @@ if (composio !== undefined) {
   // Last: the webhook, each account and the daily check start as jobs of their own, so nothing here holds up the daemon.
   composio.start();
 }
+// A change to sources.composio from the web app or by hand applies live for a generic toolkit; the built-in ones and the mail accounts
+// keep their startup wiring, and say so (the save's answer names sources as needing a restart).
+configStore.onChange(
+  ["sources"],
+  sourcesApplier({
+    composio,
+    skipped: () => configStore.skipped.map((s) => s.entry),
+    restartNeeded,
+    emailLive: true,
+    log: (text) => console.log(text),
+    onToolkits: (accounts, change) => {
+      rulebook.setReserved(accounts.map((a) => a.toolkit));
+      rulebook.setCalendarCalls(calendarPollingCalls(accounts));
+      for (const toolkit of new Set([...change.added, ...change.changed].map((id) => id.split(":")[0]!).filter((t) => !isBuiltinToolkit(t)))) composio?.recipeChanged(toolkit);
+      // A Clot's system prompt is fixed when it starts, so a new account reaches it as a note at its next turn.
+      for (const id of change.added) {
+        const account = accounts.find((a) => `${a.toolkit}:${a.account}` === id);
+        if (account === undefined) continue;
+        const text = `A new Composio account was connected: ${id} (${account.audience}). composio_find and composio_run reach it; a read always works, a write follows the audience's rules.`;
+        for (const clot of account.clot === undefined ? (config.home ? [HOME_CLOT] : names) : [account.clot]) store.addNote(clot, text);
+      }
+    },
+  }),
+);
 
-// The daemon's MCP servers. A server that needs a login gets a link in chat, at most once an hour.
-const mcpNames = Object.keys(config.mcpServers);
+// The daemon's MCP servers. A server that needs a login gets a link in chat, at most once an hour. They follow `mcpServers` as it changes.
 /** Who hears about a server: each Clot with a recipe on it in its own file; otherwise the home Clot, or every Clot when there is none. */
 const tellServer = async (server: string, text: string) => {
   const owners = [...new Set(rulebook.watches().filter((entry) => watchTarget(entry.recipe) === server && entry.recipe.account === undefined && entry.file !== "global").map((entry) => entry.file))];
   for (const name of owners.length > 0 ? owners : config.home ? [HOME_CLOT] : names) await say(name, text);
 };
 const lastLink = new Map<string, number>();
-const oauthFor = new Map(
-  mcpNames
-    .filter((name) => {
-      const s = config.mcpServers[name];
-      return s.kind === "http" && s.oauth;
-    })
-    .map((name) => [
-      name,
-      new StoredOAuth({
-        server: name,
-        store,
-        redirectUrl: `${config.publicUrl}/oauth/callback`,
-        now: () => Date.now(),
-        onLink: (url) => {
-          if (Date.now() - (lastLink.get(name) ?? 0) < 3_600_000) return;
-          lastLink.set(name, Date.now());
-          void tellServer(name, `Log in to the MCP server ${name} so the daemon can use it. The link works once, for ten minutes: ${url}`);
-        },
-      }),
-    ]),
-);
-const hub = new McpHub({ names: mcpNames, opener: sdkOpener({ servers: config.mcpServers, auth: (name) => oauthFor.get(name) }), tell: tellServer });
-if (mcpNames.length > 0) {
-  handlers.set("/oauth/callback", oauthCallbackHandler({ store, now: () => Date.now(), finish: (server, code) => hub.finishLogin(server, code) }));
-  toolDeps.mcp = { describe: () => hub.describe(), listTools: (server) => hub.listTools(server), callTool: (server, tool, args) => hub.callTool(server, tool, args) };
-  // A server the daemon has not seen before is pointed out to the Clots, which may propose a recipe for it.
+const oauthLogins = new Map<string, StoredOAuth>();
+/** The login of a server that uses OAuth, made when it is first needed. */
+const oauthFor = (name: string): StoredOAuth | undefined => {
+  const server = config.mcpServers[name];
+  if (server === undefined || server.kind !== "http" || !server.oauth) return undefined;
+  let login = oauthLogins.get(name);
+  if (login === undefined) {
+    login = new StoredOAuth({
+      server: name,
+      store,
+      redirectUrl: `${config.publicUrl}/oauth/callback`,
+      now: () => Date.now(),
+      onLink: (url) => {
+        if (Date.now() - (lastLink.get(name) ?? 0) < 3_600_000) return;
+        lastLink.set(name, Date.now());
+        void tellServer(name, `Log in to the MCP server ${name} so the daemon can use it. The link works once, for ten minutes: ${url}`);
+      },
+    });
+    oauthLogins.set(name, login);
+  }
+  return login;
+};
+const mcp = new McpHub({ names: Object.keys(config.mcpServers), opener: sdkOpener({ servers: () => config.mcpServers, auth: oauthFor }), tell: tellServer });
+handlers.set("/oauth/callback", oauthCallbackHandler({ store, now: () => Date.now(), finish: (server, code) => mcp.finishLogin(server, code) }));
+/** The Clots' MCP tools exist while there is a server. */
+function syncMcpTools(): void {
+  if (Object.keys(config.mcpServers).length === 0) delete toolDeps.mcp;
+  else toolDeps.mcp = { describe: () => mcp.describe(), listTools: (server) => mcp.listTools(server), callTool: (server, tool, args) => mcp.callTool(server, tool, args) };
+}
+/** A server the daemon has not seen before is pointed out to the Clots, which may propose a recipe for it. */
+function noteNewServers(): void {
+  const servers = Object.keys(config.mcpServers);
   const known = new Set(JSON.parse(store.getState("mcp-known-servers") ?? "[]") as string[]);
-  for (const name of mcpNames.filter((server) => !known.has(server))) {
+  for (const name of servers.filter((server) => !known.has(server))) {
     for (const clot of config.home ? [HOME_CLOT] : names) store.addNote(clot, `A new MCP server is set up for the daemon: ${name}. Look at its tools with mcp_list; if one of its read-only tools would show something worth hearing about, propose a watch recipe with rulebook_watch.`);
   }
-  store.setState("mcp-known-servers", JSON.stringify(mcpNames));
-  void hub.start();
+  store.setState("mcp-known-servers", JSON.stringify(servers));
 }
+syncMcpTools();
+noteNewServers();
+late.mcp = (next, prev) => {
+  mcp.setServers(Object.keys(next), diffServers(prev, next).changed);
+  syncMcpTools();
+  noteNewServers();
+};
+if (Object.keys(config.mcpServers).length > 0) void mcp.start();
 
 // Watch recipes, from the rulebook: started, and restarted or stopped when the files change.
-const mcpHub: Hub = { listTools: (server) => hub.listTools(server), callTool: (server, tool, args) => hub.callTool(server, tool, args) };
+const watchHub: Hub = { listTools: (server) => mcp.listTools(server), callTool: (server, tool, args) => mcp.callTool(server, tool, args) };
 const composioWatchHub = composio === undefined ? undefined : composioHub(composio);
 const running = new Map<string, { definition: string; stop: () => void }>();
 const missingWatchAccount = new Set<string>();
@@ -846,7 +997,7 @@ const syncWatches = () => {
     const tell = file === "global" ? (text: string) => (recipe.account === undefined ? tellServer(target, text) : tellComposio(composio?.account(target) ?? {})(text)) : (text: string) => say(file, text);
     // A watch on a Composio account waits for the account to be signed in, as the calendar's poll does.
     const active = recipe.account === undefined ? undefined : () => store.composio.account(recipe.account!)?.status === "active";
-    const watcher = new Watcher({ recipe, hubFor: (r) => (r.account === undefined ? mcpHub : composioWatchHub!), store, deliver: (event) => deliver(event), now: () => Date.now(), tell, ...(active ? { active } : {}) });
+    const watcher = new Watcher({ recipe, hubFor: (r) => (r.account === undefined ? watchHub : composioWatchHub!), store, deliver: (event) => deliver(event), now: () => Date.now(), tell, ...(active ? { active } : {}) });
     // A watch on a Composio account counts every call against the allowance, so a failure is not retried faster than it runs.
     const stop = supervisor.start({ name: `watch recipe ${name}`, everyMs: recipe.every * 60_000, tell, run: () => watcher.run(), ...(recipe.account === undefined ? {} : { minRetryMs: recipe.every * 60_000 }) });
     running.set(name, { definition: JSON.stringify(recipe), stop });
@@ -855,14 +1006,10 @@ const syncWatches = () => {
 rulebook.onLoad(syncWatches);
 syncWatches();
 
-// Webhook recipes: their secrets are the RECIPE_ keys of .env, read again whenever the rulebook changes.
-let recipeSecrets = readEnvFile(".env");
-rulebook.onLoad(() => {
-  recipeSecrets = readEnvFile(".env");
-});
+// Webhook recipes: their secrets are the RECIPE_ keys of .env, read at the moment a delivery arrives (a key added in Settings, or by hand, counts at once).
 recipeHandlers = recipeHandler({
   recipe: (name) => rulebook.webhook(name),
-  secret: (key) => (key.startsWith("RECIPE_") ? (recipeSecrets[key] ?? process.env[key]) : undefined),
+  secret: (key) => (key.startsWith("RECIPE_") ? liveEnv.get(key) : undefined),
   insertEvent,
   now: () => Date.now(),
   missingSecret: (recipe) => {
@@ -877,9 +1024,10 @@ recipeHandlers = recipeHandler({
 const eventRouter = new EventRouter({
   bindingOf: bindingResolver({
     repos: repoToClot,
-    accounts: [
-      ...config.sources.email.map((account) => ({ ...account, source: "email" })),
-      ...config.sources.composio.map((account): AccountBase & { source: string } => ({ account: account.account, clot: account.clot, shared: account.shared, source: defFor(account.toolkit).source })),
+    // Read at each event: a tool connected from the web app routes at once.
+    accounts: () => [
+      ...configStore.current.sources.email.map((account) => ({ ...account, source: "email" })),
+      ...configStore.current.sources.composio.map((account): AccountBase & { source: string } => ({ account: account.account, clot: account.clot, shared: account.shared, source: defFor(account.toolkit).source })),
     ],
     recipes: (name) => rulebook.recipeBinding(name),
   }),
@@ -907,6 +1055,7 @@ const pipeline = new Pipeline({
   },
 });
 
+late.pipeline = pipeline;
 // From here on an event is handled as it arrives. Then the ones that were waiting: stored or held
 // before a restart, or delivered while this daemon was starting.
 onEvent = (event) => void pipeline.handle(event);
@@ -935,5 +1084,9 @@ const sweeper = new Sweeper({
   log: (text) => console.log(text),
 });
 sweepTick = () => sweeper.tick();
+late.sweeper = sweeper;
 await pipeline.resume();
+// A hand edit is picked up from here on. A file changed while the daemon was starting is read once now, so that change is not missed.
+await configStore.reload();
+configStore.watch();
 console.log("[events] ready");

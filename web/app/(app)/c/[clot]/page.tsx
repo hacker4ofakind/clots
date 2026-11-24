@@ -12,12 +12,14 @@ export async function generateMetadata({ params }: { params: Promise<{ clot: str
 
 export default async function ChatPage({ params }: { params: Promise<{ clot: string }> }) {
   const clot = decodeURIComponent((await params).clot);
+  let loaded: { info: ClotInfo; initial: MessagePage } | undefined;
   try {
     const [info, initial] = await Promise.all([daemonJson<ClotInfo>(`/clots/${encodeURIComponent(clot)}`), daemonJson<MessagePage>(`/clots/${encodeURIComponent(clot)}/messages`)]);
-    return <ChatView key={clot} clot={clot} info={info} initial={initial} />;
+    loaded = { info, initial };
   } catch (error) {
     if (error instanceof DaemonError && error.status === 404) notFound();
-    // The daemon is away: the banner says so, and the chat opens empty and fills when it is back.
-    return <ChatView key={clot} clot={clot} info={{ name: clot, repository: null, connections: [] }} initial={{ messages: [], hasMore: false }} />;
   }
+  // The daemon is away: the banner says so, and the chat opens empty and fills when it is back.
+  const { info, initial } = loaded ?? { info: { name: clot, repository: null, connections: [] }, initial: { messages: [], hasMore: false } };
+  return <ChatView key={clot} clot={clot} info={info} initial={initial} />;
 }

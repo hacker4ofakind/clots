@@ -44,6 +44,11 @@ export class Pipeline {
     this.held = new Hold({ ...d.hold, now: d.now, schedule: d.schedule, onRelease: (clot, events) => void this.release(clot, events) });
   }
 
+  /** How long automated events are held, changed in the configuration. */
+  setHold(hold: { quietMs: number; capMs: number }): void {
+    this.held.configure(hold);
+  }
+
   /** Never throws: an event that cannot be processed is logged and left as received, to be picked up at the next start. */
   async handle(event: ClotEvent): Promise<void> {
     if (this.inFlight.has(event.id)) return;

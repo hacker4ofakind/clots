@@ -42,6 +42,12 @@ const STALE_CLAIM_MS = 5 * 60_000;
 export class SpendLog {
   constructor(private d: SpendDeps) {}
 
+  /** The zone the week starts in, and the weekly warning's figure (undefined: no warning), changed in the configuration. */
+  configure(o: { timeZone?: string; weeklyWarnUsd?: number | undefined }): void {
+    if (o.timeZone !== undefined) this.d.timeZone = o.timeZone;
+    if ("weeklyWarnUsd" in o) this.d.weeklyWarnUsd = o.weeklyWarnUsd;
+  }
+
   weekStart(now: number): number {
     return weekStart(now, this.d.timeZone);
   }

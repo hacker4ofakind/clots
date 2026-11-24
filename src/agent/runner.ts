@@ -318,6 +318,11 @@ export class SdkRunner implements AgentRunner {
     this.graceMs = o.graceMs ?? 15_000;
   }
 
+  /** The project's test command, changed in the configuration: the next turn's lock reads it. */
+  setTestCommand(testCommand: string | undefined): void {
+    this.o = { ...this.o, testCommand };
+  }
+
   startTurn(req: TurnRequest): TurnHandle {
     const input = new InputQueue<SDKUserMessage>([userMessage(req.prompt, req.images)]);
     const finish = () => input.close();

@@ -22,6 +22,8 @@ export interface SettingsDeps {
   removeClot: (name: string) => Promise<void>;
   /** The names of the Clots that run, in the rail's order; changed when the order or the set changes. */
   reorder: (names: string[]) => void;
+  /** Whether a Clot is being made or moved to another repository right now: it cannot be deleted until that ends. */
+  building?: (name: string) => boolean;
   /** What the rest of the daemon wants said when the configuration changes. */
   announce: (e: { applied: string[]; needsRestart: string[]; fromFile: boolean; error?: string }) => void;
 }
@@ -44,16 +46,19 @@ export function registerSettingsRoutes(api: UiApi, d: SettingsDeps): void {
 
   api.route("GET", "/keys", () => d.config.keys());
 
-  api.route("PUT", "/keys/:name", (req) => {
+  api.route("PUT", "/keys/:name", async (req) => {
     const { value } = parseBody(valueSchema, req.body);
     const res = d.config.setKey(req.params.name!, value);
     if (!res.ok) throw new ApiError(400, res.error);
+    // An entry that waited for this key loads now; an account that uses it reconnects with the new value.
+    await d.config.reapply();
     return d.config.keys().find((k) => k.name === req.params.name);
   });
 
-  api.route("DELETE", "/keys/:name", (req) => {
+  api.route("DELETE", "/keys/:name", async (req) => {
     const res = d.config.removeKey(req.params.name!);
     if (!res.ok) throw new ApiError(409, res.error);
+    await d.config.reapply();
     return { ok: true };
   });
 
@@ -75,7 +80,10 @@ export function registerSettingsRoutes(api: UiApi, d: SettingsDeps): void {
     if (req.query.get("confirm") !== name) throw new ApiError(400, "Type the Clot's name to delete it.");
     const config = d.config.current;
     if (!config.clots.some((c) => c.name === name)) throw new ApiError(404, "no such Clot");
-    const users = [...config.sources.email.filter((a) => a.clot === name).map((a) => `the inbox ${a.account}`), ...config.sources.composio.filter((a) => a.clot === name).map((a) => `the tool ${a.toolkit}:${a.account}`)];
+    if (d.building?.(name)) throw new ApiError(409, `${name} is being set up right now. Wait for that to finish.`);
+    // From the file itself: an entry the loader left out as unusable still names the Clot, and would break once the Clot is gone.
+    const sources = (d.config.json().sources ?? {}) as { email?: { account?: string; clot?: string }[]; composio?: { toolkit?: string; account?: string; clot?: string }[] };
+    const users = [...(sources.email ?? []).filter((a) => a.clot === name).map((a) => `the inbox ${a.account}`), ...(sources.composio ?? []).filter((a) => a.clot === name).map((a) => `the tool ${a.toolkit}:${a.account}`)];
     if (users.length > 0) throw new ApiError(409, `${name} still has ${users.join(", ")}. Remove ${users.length === 1 ? "it" : "them"} first.`, { users });
     const result = await d.config.save({ clots: config.clots.filter((c) => c.name !== name) });
     if (!result.ok) throw new ApiError(400, "the Clot could not be removed");

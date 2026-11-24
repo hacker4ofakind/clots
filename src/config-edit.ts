@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import { CONFIG_KEYS, loadConfigLeaving } from "./config.js";
+import type { ConfigStore } from "./config-store.js";
 
 /** Keys a Clot may never change: who the daemon is, where it is reached, and which bot and server it runs on. */
 export const BLOCKED_KEYS = ["home", "publicUrl", "discord", "image", "ui"];
@@ -101,24 +101,22 @@ export interface Applied {
   text: string;
 }
 
-/**
- * Sets one key in the file. The file is read again here, so a change made since the user was asked is not lost;
- * the old file is kept beside it as `.bak`, and the new one is written whole and moved into place.
- */
-export function applyChange(file: string, key: string, value: unknown): Applied {
-  let current: Json;
-  try {
-    current = JSON.parse(fs.readFileSync(file, "utf8")) as Json;
-  } catch (error) {
-    return { ok: false, text: `Not changed: the configuration could not be read (${error instanceof Error ? error.message : String(error)}).` };
-  }
-  const checked = check(current, key, value);
-  if (typeof checked === "string") return { ok: false, text: checked };
-  fs.copyFileSync(file, `${file}.bak`);
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(checked.candidate, null, 2)}\n`);
-  fs.renameSync(tmp, file);
-  const missing = missingEnvKeys(checked.candidate);
+/** What a Clot is told after the user's yes: that the change is in force, or what it still waits for. */
+function savedText(key: string, top: string, result: { applied: string[]; needsRestart: string[] }, missing: string[]): string {
   const env = missing.length === 0 ? "" : ` The user still has to add ${missing.map((k) => `\`${k}\``).join(", ")} to the \`.env\` file in the daemon's folder (${process.cwd()}) before the entry can load.`;
-  return { ok: true, text: `Saved ${key}. It takes effect when the daemon restarts.${env}` };
+  const waits = result.needsRestart.includes(top);
+  return `Saved ${key}. ${waits ? "The daemon reads this setting only when it starts, so it applies after the next restart (the user restarts it)." : "It is in force now."}${env}`;
+}
+
+/**
+ * Sets one key through the config store, which writes the file whole (atomically, the old one kept as `.bak`), reads the file as it is
+ * now (a change made since the user was asked is not lost) and applies the change live. Refused, with the reason, when it would not load.
+ */
+export async function applyChangeLive(store: Pick<ConfigStore, "json" | "save">, env: Record<string, string | undefined>, key: string, value: unknown): Promise<Applied> {
+  const checked = check(store.json(), key, value);
+  if (typeof checked === "string") return { ok: false, text: checked };
+  const top = checked.path[0]!;
+  const result = await store.save({ [top]: checked.candidate[top] });
+  if (!result.ok) return { ok: false, text: `Not changed: ${Object.values(result.errors)[0] ?? "the configuration would not load"}.` };
+  return { ok: true, text: savedText(key, top, result, missingEnvKeys(checked.candidate, env)) };
 }

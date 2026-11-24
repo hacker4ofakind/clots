@@ -14,7 +14,7 @@ export const CONFIG_FILED = "Put to the user in your chat. Do not wait for the a
 
 /**
  * A change to `clots.config.json` that is not one of the plain tunables: a Clot proposes one key's new value, the user
- * sees the old and the new, and a yes saves it exactly as shown. A change takes effect at the daemon's next restart.
+ * sees the old and the new, and a yes saves it exactly as shown and applies it at once, with no restart, except for the few settings the daemon reads only when it starts.
  */
 export function configKind(d: { apply(key: string, value: unknown): { ok: boolean; text: string } | Promise<{ ok: boolean; text: string }> }): AskKind<ConfigPayload> {
   return {
@@ -47,7 +47,7 @@ export function configKind(d: { apply(key: string, value: unknown): { ok: boolea
         await io.close(`The user approved the change to ${p.key}, but it was not saved. ${done.text}`, done.text);
         return;
       }
-      // The Clot carries on: it tells the user what is left for them to do, and asks for the restart when that is done.
+      // The Clot carries on: it tells the user what is left for them to do, if anything.
       await io.close(null, `Saved ${p.key}.`, {
         inbox: { id: `config-saved:${ask.id}`, text: `[The user approved your change to ${p.key}, and it was saved. ${done.text} Tell the user what is left for them to do, if anything.]`, kind: "message", outsider: false },
       });

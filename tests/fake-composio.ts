@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import type { ComposioApi, Connection, ExecResult, ToolInfo, TriggerInstance } from "../src/composio/api.js";
+import type { ComposioApi, Connection, ExecResult, ToolInfo, ToolkitSummary, TriggerInstance } from "../src/composio/api.js";
 import type { AuthChoice, ToolkitInfo } from "../src/composio/auth.js";
 
 /** Composio's recorded metadata for a toolkit (tests/fixtures/composio/meta). */
@@ -45,6 +45,14 @@ export class FakeComposioApi implements ComposioApi {
   meta = new Map<string, ToolkitInfo>();
   /** Auth configs deleted, by ID. */
   deletedAuthConfigs: string[] = [];
+
+  /** What `listToolkits` answers. */
+  toolkitList: ToolkitSummary[] = [];
+
+  async listToolkits(): Promise<ToolkitSummary[]> {
+    this.enter("listToolkits");
+    return this.toolkitList;
+  }
 
   async toolkitInfo(slug: string): Promise<ToolkitInfo> {
     this.enter("toolkitInfo", slug);

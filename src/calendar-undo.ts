@@ -14,6 +14,11 @@ export class CalendarUndo {
 
   constructor(private d: CalendarUndoDeps) {}
 
+  /** The user's zone, changed in the configuration. */
+  setTimeZone(timeZone: string): void {
+    this.d.timeZone = timeZone;
+  }
+
   undo(clot: string): Promise<string> {
     const result = (this.chains.get(clot) ?? Promise.resolve()).then(() => this.undoOne(clot));
     this.chains.set(clot, result.catch(() => undefined));

@@ -85,6 +85,8 @@ export interface IntakeDeps {
   onPullRequest?: (a: PullRequestChange) => Promise<void>;
   /** GitHub's ping when a webhook is added, with the repository it is for (owner/name, lowercased). A Clot's onboarding checks its webhook by it. */
   onPing?: (repo: string) => void;
+  /** A push to a repository (owner/name, lowercased) and the GitHub login that made it. A Clot's onboarding checks its first pushed branch by it. */
+  onPush?: (repo: string, sender: string) => void;
 }
 
 export interface PullRequestChange {
@@ -132,6 +134,10 @@ export function acceptGithub(d: Delivery, deps: IntakeDeps): Answer {
     const repo = (payload as { repository?: { full_name?: unknown } } | null)?.repository?.full_name;
     if (typeof repo === "string") deps.onPing?.(repo.toLowerCase());
     return { status: 200, text: "ignored" };
+  }
+  if (d.eventName === "push") {
+    const p = payload as { repository?: { full_name?: unknown }; sender?: { login?: unknown } } | null;
+    if (typeof p?.repository?.full_name === "string" && typeof p.sender?.login === "string") deps.onPush?.(p.repository.full_name.toLowerCase(), p.sender.login);
   }
   // A pull request's own lifecycle is the workers' business, and is read before the Clot's own events are dropped.
   const pr = pullRequestChange(d.eventName, payload);

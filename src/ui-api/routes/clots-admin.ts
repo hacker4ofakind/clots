@@ -7,7 +7,8 @@ import { decodeImage } from "./clots.js";
 
 const iconSchema = z.union([z.object({ phosphor: z.string().regex(/^[A-Z][A-Za-z0-9]{0,40}$/), color: z.string().min(1).max(30) }), z.object({ upload: z.string().regex(/^[a-f0-9]{16}$/) })]);
 const validateSchema = z.object({ name: z.string().max(80), repo: z.string().max(200) });
-const createSchema = validateSchema.extend({ icon: iconSchema.optional() });
+// `toolJobs`: the connection jobs of services chosen in New Clot's Tools step; their entries are written with the Clot's own.
+const createSchema = validateSchema.extend({ icon: iconSchema.optional(), toolJobs: z.array(z.string().min(1).max(64)).max(30).optional() });
 const uploadSchema = z.object({ dataUrl: z.string().max(4_000_000) });
 
 export interface AdminDeps {
@@ -66,13 +67,22 @@ export function registerClotAdminRoutes(api: UiApi, d: AdminDeps): void {
     return new RawResult("image/png", png);
   });
 
-  // Editing a Clot: its icon. A Clot's name is fixed once it is made.
+  // Editing a Clot: its icon and its repository. A Clot's name is fixed once it is made. A new repository is cloned into a fresh workspace
+  // in the background (202, with `clot.build` events, the entry changing only once it has worked); the icon alone is saved at once.
   api.route("PUT", "/clots/:clot", async (req) => {
-    const { icon } = parseBody(z.object({ icon: iconSchema }), req.body);
+    const { icon, repo } = parseBody(z.object({ icon: iconSchema.optional(), repo: z.string().max(200).optional() }).refine((b) => b.icon !== undefined || b.repo !== undefined, "give an icon or a repository"), req.body);
+    const name = req.params.clot!;
     const current = d.config.json().clots as { name: string }[];
-    if (!current.some((c) => c.name === req.params.clot)) throw new ApiError(404, "no such Clot");
-    const result = await d.config.save({ clots: current.map((c) => (c.name === req.params.clot ? { ...c, icon } : c)) });
-    if (!result.ok) throw new ApiError(400, "the icon could not be saved");
+    if (!current.some((c) => c.name === name)) throw new ApiError(404, "no such Clot");
+    if (repo !== undefined) {
+      const moved = await d.creator.changeRepo(name, repo, icon);
+      if (!moved.ok) return new ApiResult(moved.status, { errors: moved.errors });
+      if (moved.moving) return new ApiResult(202, { ok: true, moving: true });
+    }
+    if (icon !== undefined) {
+      const result = await d.config.save({ clots: current.map((c) => (c.name === name ? { ...c, icon } : c)) });
+      if (!result.ok) throw new ApiError(400, "the icon could not be saved");
+    }
     return { ok: true };
   });
 

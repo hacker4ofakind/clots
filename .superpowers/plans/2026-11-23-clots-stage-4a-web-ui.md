@@ -67,7 +67,6 @@ Web (`web/` workspace):
 - **Streaming**: set `includePartialMessages: true` on main-session turns only; forward `stream_event` text deltas as `message.delta` with the message's id, and keep posting the final text exactly as `onText` does today (the stored message is the final text). Workers stay non-streaming.
 - **Activity lines**: runner already reports tool use to `src/agent/activity.ts` for the turn summary; add a per-call callback producing `{ icon, text }` (`Read issue #31`, `Searched the code for "delete"`, `Asking to send an email`). Icon names are Phosphor component names, rendered by the web app from a fixed map.
 - **SSE through Next.js**: the route handler must return a streaming `Response` (`ReadableStream`), set `export const dynamic = "force-dynamic"`, and pipe the daemon's body through with the secret added; disable compression for that route. Heartbeat every 20 s keeps `tailscale serve` from closing it.
-- **Tailscale header**: `tailscale serve` sets `Tailscale-User-Login` only for tailnet users; middleware also refuses when `x-forwarded-for` is absent or not loopback, so a request to :3000 that bypassed serve is refused.
 - **shadcn on Tailwind v4**: run `npx shadcn@latest init` in `web/` (choose Neutral, CSS variables), then replace its generated variables with the design system tokens (`tokens.json` from the design system; names are already shadcn's). Map extras (`highlight`, `calling`, `primary-ink`, `foreground-soft`, `muted-strong`, `tile`, `brand`) in `@theme inline`. shadcn `accent` = the value of `muted`.
 - **Fonts**: `next/font/google` for Rethink Sans and Red Hat Mono, as `--font-sans` / `--font-mono`.
 - **Phosphor in RSC**: import from `@phosphor-icons/react/dist/ssr` in server components, `@phosphor-icons/react` in client components.
@@ -80,7 +79,7 @@ Web (`web/` workspace):
 - **Tests that used `src/chat/fake.ts`** move to a fake `Conversation` with the same recording style.
 
 ### From the stress test (apply all)
-- **Access (replaces the x-forwarded-for rule above, which would refuse every real request: serve sets it to the tailnet client):** middleware checks `Tailscale-User-Login` == `ui.owner` and `Host` == the configured serve host; `web/lib/daemon.ts` re-checks the owner on every server-side call (defence in depth against middleware bypasses); missing `ui.owner` fails closed to the setup page. The test-only owner env var is ignored when `NODE_ENV=production`.
+- **Access:** `tailscale serve` sets `Tailscale-User-Login` only for tailnet users; middleware checks `Tailscale-User-Login` == `ui.owner` and `Host` == the configured serve host; `web/lib/daemon.ts` re-checks the owner on every server-side call (defence in depth against middleware bypasses); missing `ui.owner` fails closed to the setup page. The test-only owner env var is ignored when `NODE_ENV=production`.
 - **CSRF:** every mutating route handler goes through one wrapper requiring `Origin` == own origin, `Content-Type: application/json` (multipart only for uploads), and the owner check. One catch-all proxy route (`web/app/api/d/[...path]/route.ts`) forwards to the daemon through that wrapper, plus the separate stream route; no per-action route files.
 - **Pin and audit:** pin Next.js and React to patched versions (CVE-2025-29927, CVE-2025-55182); `npm audit --omit=dev` clean in Task 1 and Task 11.
 - **CSP:** site-wide CSP (`default-src 'self'`, `img-src 'self' data:` plus the proxy, no inline script beyond Next's nonce); `X-Content-Type-Options: nosniff` on every daemon-served file.
@@ -92,7 +91,7 @@ Web (`web/` workspace):
 - **Configurer:** the daemon overwrites audience, scope and owning Clot in the saved entry with the user's Options choices; its `web_fetch` uses the same SSRF guard as the 4b image proxy (shared module `src/net/safe-fetch.ts`, built here).
 - **Push:** subscription endpoints must be https on known push hosts (`*.push.apple.com`, `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `*.notify.windows.com`); `notificationclick` opens only same-origin paths. "No tab open" means no client that was **visible and active in the last 2 minutes** (the client reports `visibilitychange` over a tiny POST), so a desktop tab left open at home does not suppress the phone's pushes; the SSE proxy aborts its upstream when the browser disconnects.
 - **Web service env:** `clots-web.service` gets its own env file with only `CLOTS_UI_SECRET` and the daemon URL, never the full `.env`.
-- **Input hardening:** per-route body limits (messages 20 MB with images, others 256 KB); Clot names `^[a-z][a-z0-9-]{0,30}$`; repo as `owner/name` validated; `docker`/`git` via argv arrays only; the token scrubbed from clone logs.
+- **Input hardening:** per-route body limits (messages 20 MB with images, others 256 KB); Clot names are letters, digits and hyphens, starting with a letter, up to 31 characters, capitals allowed (the slug, the name in lower case, names the container, volumes and rule file); repo as `owner/name` validated; `docker`/`git` via argv arrays only; the token scrubbed from clone logs.
 - **Message idempotency:** the client generates the message id (UUID) and reuses it on Retry; the API keeps `INSERT OR IGNORE` semantics (today Discord's id did this). Same for ask answers (idempotency key).
 - **Event ids:** `<bootId>-<seq>`; a `Last-Event-ID` with another boot id gets `resync`. The stream route forwards `Last-Event-ID`; the page subscribes before its server data is considered fresh (or refetches after `open`).
 - **Phone resume:** on `visibilitychange` to visible and on stream reconnect, refetch the open screen and asks. Timers compute from the server deadline; a card past zero reads "Closing…" until `ask.closed` arrives.
@@ -124,7 +123,7 @@ Web (`web/` workspace):
 - Tokens from the design system in `globals.css` (light `:root`, `.dark`), `next-themes` with `attribute="class"`.
 - Middleware: Tailscale identity check against `ui.owner` (read from the daemon settings endpoint, cached 60 s; until Task 2 exists, from an env var in tests).
 **Tests (behaviours):**
-- request with matching `Tailscale-User-Login` → page renders; mismatched or missing → 403 page; missing `x-forwarded-for` → 403.
+- request with matching `Tailscale-User-Login` → page renders; mismatched or missing → 403 page; a `Host` other than the configured serve host → 403.
 - `npm run web:build` succeeds with no type errors.
 **Done when:** `npm run web:build` and `npm test -w web` pass.
 - [ ] Task 1 complete

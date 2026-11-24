@@ -15,9 +15,14 @@ export const PROTECTED_ENV_KEYS = ["CLOTS_UI_SECRET", "VAPID_PUBLIC_KEY", "VAPID
 export const ENV_KEY_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 type Json = Record<string, unknown>;
-type Apply = (next: Config, prev: Config) => void | Promise<void>;
+/** What an apply handler may answer: that part of the change still needs a restart (a handler cannot tell the store which part). */
+export type Applied = void | { restart: boolean };
+type Apply = (next: Config, prev: Config) => Applied | Promise<Applied>;
 
 export type SaveResult = { ok: true; applied: string[]; needsRestart: string[] } | { ok: false; errors: Record<string, string> };
+
+/** Keys whose values include what `.env` holds (a password, a token): a key written there changes them with the file as it is. */
+const RESOLVED: Record<string, (c: Config) => unknown> = { sources: (c) => c.sources, mcpServers: (c) => c.mcpServers };
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -44,6 +49,8 @@ export class ConfigStore {
       file: string;
       envFile: string;
       env: LiveEnv;
+      /** Told with the new configuration the moment it is in force, before any apply handler runs: what reads the configuration at call time sees it from then on. */
+      onAdopt?: (next: Config) => void;
       /** Told after every change that was applied, with the keys, and whether it came from the file. */
       onChanged?: (e: { keys: string[]; needsRestart: string[]; fromFile: boolean; error?: string }) => void;
       log?: (text: string) => void;
@@ -66,6 +73,21 @@ export class ConfigStore {
   /** The file as JSON, for the settings pages and the Clots' config tools. */
   json(): Json {
     return JSON.parse(JSON.stringify(this.raw)) as Json;
+  }
+
+  /**
+   * Reads the configuration again with the `.env` as it is now, and applies what that changed: an entry that was left out for a key
+   * that was not there yet loads, an account whose password changed reconnects. Nothing is written.
+   */
+  async reapply(): Promise<void> {
+    this.d.env.reload();
+    this.envSnapshot = readEnvFile(this.d.envFile);
+    try {
+      const loaded = loadConfigLeaving(this.raw, this.d.env.all());
+      await this.adopt(this.raw, loaded.config, loaded.skipped, false);
+    } catch (error) {
+      this.d.log?.(`[config] the configuration could not be read again after a key changed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** Registers what applies a change to some top-level keys, live. */
@@ -122,7 +144,8 @@ export class ConfigStore {
     this.raw = raw;
     this.config = next;
     this.skipped = skipped;
-    const changed = [...new Set([...Object.keys(prevRaw), ...Object.keys(raw)])].filter((key) => !same(prevRaw[key], raw[key]));
+    this.d.onAdopt?.(next);
+    const changed = [...new Set([...Object.keys(prevRaw), ...Object.keys(raw)])].filter((key) => !same(prevRaw[key], raw[key]) || (RESOLVED[key] !== undefined && !same(RESOLVED[key]!(prev), RESOLVED[key]!(next))));
     const needsRestart = changed.filter((key) => RESTART_KEYS.includes(key));
     const applied: string[] = [];
     for (const key of changed.filter((k) => !RESTART_KEYS.includes(k))) {
@@ -131,8 +154,19 @@ export class ConfigStore {
         needsRestart.push(key);
         continue;
       }
-      for (const handler of handlers) await handler.apply(next, prev);
-      applied.push(key);
+      let restart = false;
+      for (const handler of handlers) {
+        // A handler that fails leaves its key in the file and in force as configuration, but not applied: it is reported as waiting for a restart.
+        try {
+          const answer = await handler.apply(next, prev);
+          if (answer && answer.restart) restart = true;
+        } catch (error) {
+          this.d.log?.(`[config] applying ${key} live failed; it takes effect at the next restart: ${error instanceof Error ? error.message : String(error)}`);
+          restart = true;
+        }
+      }
+      // A key that still needs a restart is reported as one, not as applied.
+      (restart ? needsRestart : applied).push(key);
     }
     this.d.onChanged?.({ keys: changed, needsRestart, fromFile });
     return { applied, needsRestart };

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircleIcon } from "@phosphor-icons/react";
+import { CheckCircleIcon, SpinnerIcon } from "@phosphor-icons/react";
 import type { AskCard as AskCardData, AskSnapshot } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -110,6 +110,11 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
         ) : null}
       </div>
       {outcome !== undefined ? <p className="text-body text-muted-foreground">{outcome}</p> : null}
+      {closing && outcome === undefined ? (
+        <p role="status" data-ask-closing className="flex items-center gap-2 text-body text-muted-foreground">
+          <SpinnerIcon className="size-4 animate-spin" aria-hidden /> Closing…
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-body text-primary-ink">
           {error}

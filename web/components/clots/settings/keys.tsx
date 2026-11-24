@@ -10,7 +10,8 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { Label } from "@/components/ui/label";
 import { api, ApiFailure } from "@/lib/api-client";
 import { ConfirmDialog } from "../confirm-dialog";
-import { ListCard, ListRow } from "../list-card";
+import { ListCard } from "../list-card";
+import { ConnectionRow } from "./connection-row";
 import { Section } from "./section";
 
 interface KeyRow {
@@ -67,10 +68,7 @@ export function Keys() {
         {keys.length > 0 ? (
           <ListCard>
             {keys.map((key) => (
-              <ListRow key={key.name} className="py-2 pr-2" data-key={key.name}>
-                <KeyIcon size={20} aria-hidden />
-                <span className="min-w-0 flex-1 truncate font-mono text-code">{key.name}</span>
-                <span className="w-44 font-mono text-caption text-muted-foreground">•••• {key.last4}</span>
+              <ConnectionRow key={key.name} data-key={key.name} icon={<KeyIcon size={20} aria-hidden />} label={key.name} mono meta={`•••• ${key.last4}`}>
                 {key.protected ? (
                   <LockSimpleIcon size={18} aria-label="The daemon's own key" className="mx-2 text-muted-foreground" />
                 ) : (
@@ -83,7 +81,7 @@ export function Keys() {
                     </Button>
                   </>
                 )}
-              </ListRow>
+              </ConnectionRow>
             ))}
           </ListCard>
         ) : (

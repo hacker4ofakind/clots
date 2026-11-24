@@ -80,6 +80,12 @@ export interface DraftTrackerDeps {
 export class DraftTracker {
   constructor(private d: DraftTrackerDeps) {}
 
+  /** The accounts and the zone, changed in the configuration. */
+  configure(o: { accounts?: EmailAccount[]; timeZone?: string }): void {
+    if (o.accounts !== undefined) this.d.accounts = o.accounts;
+    if (o.timeZone !== undefined) this.d.timeZone = o.timeZone;
+  }
+
   /** Never throws: a lookup that fails leaves its drafts to the next turn. */
   async check(clot: string): Promise<void> {
     const { store } = this.d;

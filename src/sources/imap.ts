@@ -243,14 +243,28 @@ export interface MailboxListenerDeps {
  */
 export class MailboxListener {
   private key: string;
+  private current?: ImapClient;
+  private stopped = false;
 
   constructor(private d: MailboxListenerDeps) {
     this.key = `imap:${d.account.account}:${d.mailbox}`;
   }
 
+  /** Ends the connection that is open, for an account that changed or was removed. The listener's next run, if the supervisor still has one, ends at once. */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    await this.current?.logout().catch(() => undefined);
+  }
+
   async run(ready: () => void): Promise<void> {
+    if (this.stopped) return;
     const client = this.d.client();
+    this.current = client;
     await client.connect();
+    if (this.stopped) {
+      await client.logout().catch(() => undefined);
+      return;
+    }
     try {
       const status = await client.open(this.d.mailbox);
       const saved = this.d.store.getState(this.key);

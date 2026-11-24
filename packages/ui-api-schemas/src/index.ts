@@ -213,3 +213,95 @@ export const uiPrefsPatchSchema = z.object({
   paneWidths: z.record(z.string(), z.number().min(0).max(1)).optional(),
   notificationsDismissed: z.boolean().optional(),
 });
+
+// ---------------------------------------------------------------- integrations (connecting services)
+
+export const AUDIENCE_NAMES = ["private", "team", "public"] as const;
+export type AudienceName = (typeof AUDIENCE_NAMES)[number];
+
+/** How a toolkit connects: Composio's own sign-in (oauth), a key the user pastes, or not at all. */
+export const TOOLKIT_AUTH = ["oauth", "key", "none"] as const;
+export type ToolkitAuth = (typeof TOOLKIT_AUTH)[number];
+
+export const toolkitSummarySchema = z.object({
+  slug: z.string(),
+  name: z.string(),
+  logo: z.string().optional(),
+  description: z.string().optional(),
+  auth: z.enum(TOOLKIT_AUTH),
+});
+export type ToolkitSummaryView = z.infer<typeof toolkitSummarySchema>;
+export const toolkitListSchema = z.object({ toolkits: z.array(toolkitSummarySchema) });
+
+/** One connection attempt: what the dialog's Options step sends when Finish is pressed. `clot` absent = shared with every Clot. */
+export const configureBodySchema = z.object({
+  toolkit: z.string().regex(/^[a-z][a-z0-9_]*$/).max(64),
+  clot: z.string().min(1).max(80).optional(),
+  audience: z.enum(AUDIENCE_NAMES),
+  selfIsUser: z.boolean(),
+  events: z.boolean(),
+  pollMinutes: z.number().int().min(1).max(1440).optional(),
+  /** The same job again, after Back: it is updated, never doubled. */
+  jobId: z.string().min(1).max(64).optional(),
+  /** `<toolkit>:<account>` of the tool whose settings are being edited. */
+  replaces: z.string().min(1).max(120).optional(),
+});
+export type ConfigureBody = z.infer<typeof configureBodySchema>;
+
+export const INTEGRATION_STATES = ["working", "oauth", "key", "active", "failed"] as const;
+export type IntegrationState = (typeof INTEGRATION_STATES)[number];
+
+/** The data of an `integration.status` event. */
+export const integrationStatusSchema = z.object({
+  jobId: z.string(),
+  toolkit: z.string(),
+  state: z.enum(INTEGRATION_STATES),
+  link: z.string().optional(),
+  /** The configurer's step-by-step text for an API key: plain text, at most 1,200 characters. */
+  instructions: z.string().optional(),
+  keyName: z.string().optional(),
+  error: z.string().optional(),
+  /** Milliseconds since the epoch at which Done may be enabled (the link's time plus 5 s). */
+  oauthReadyAt: z.number().optional(),
+  /** The tool is saved, but only a restart of the daemon finishes wiring it (a built-in toolkit's own handlers). */
+  needsRestart: z.boolean().optional(),
+});
+export type IntegrationStatus = z.infer<typeof integrationStatusSchema>;
+
+/** `GET /integrations/jobs/:jobId`: the status, with the toolkit's name and the Clot it is for. */
+export const integrationJobSchema = integrationStatusSchema.extend({
+  name: z.string(),
+  clot: z.string().nullable(),
+  /** The entry is held until the Clot it names is created (New Clot's Tools step). */
+  held: z.boolean().optional(),
+});
+export type IntegrationJob = z.infer<typeof integrationJobSchema>;
+
+export const jobKeyBodySchema = z.object({ value: z.string().min(1).max(4000) });
+
+export const TOOL_STATUSES = ["active", "waiting", "failed", "unknown"] as const;
+export const toolViewSchema = z.object({
+  /** `<toolkit>:<account>` */
+  id: z.string(),
+  toolkit: z.string(),
+  account: z.string(),
+  clot: z.string().nullable(),
+  shared: z.boolean(),
+  audience: z.enum(AUDIENCE_NAMES),
+  logo: z.string().optional(),
+  status: z.enum(TOOL_STATUSES),
+  restartNeeded: z.literal(true).optional(),
+});
+export type ToolView = z.infer<typeof toolViewSchema>;
+
+export const inboxBodySchema = z.object({
+  address: z.email().max(200),
+  account: z.string().regex(/^[a-z][a-z0-9-]{0,30}$/).optional(),
+  /** Needed to add an inbox; optional when editing one (left out, the saved password stays). */
+  password: z.string().min(1).max(500).optional(),
+  mailboxes: z.array(z.string().min(1).max(100)).min(1).max(10).default(["INBOX"]),
+  clot: z.string().optional(),
+  imap: z.object({ host: z.string().min(1).max(200), port: z.number().int().min(1).max(65535) }).optional(),
+  smtp: z.object({ host: z.string().min(1).max(200), port: z.number().int().min(1).max(65535) }).optional(),
+});
+export type InboxBody = z.infer<typeof inboxBodySchema>;

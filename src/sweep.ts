@@ -149,6 +149,12 @@ export class Sweeper {
 
   constructor(private d: SweeperDeps) {}
 
+  /** Whether the sweep runs and how often, changed in the configuration: the next tick reads them. */
+  configure(o: { enabled?: boolean; everyMinutes?: number }): void {
+    if (o.enabled !== undefined) this.d.enabled = o.enabled;
+    if (o.everyMinutes !== undefined) this.d.everyMinutes = o.everyMinutes;
+  }
+
   /** Called every minute. Starts a sweep when one is due. */
   async tick(): Promise<void> {
     const { store, now } = this.d;

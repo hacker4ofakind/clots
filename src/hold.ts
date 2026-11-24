@@ -28,6 +28,11 @@ export class Hold {
 
   constructor(private o: HoldOptions) {}
 
+  /** New waits for the groups that start from now on; a group already held keeps the wait it was scheduled with. */
+  configure(o: { quietMs: number; capMs: number }): void {
+    this.o = { ...this.o, quietMs: o.quietMs, capMs: o.capMs };
+  }
+
   add(clot: string, event: ClotEvent): void {
     const key = `${clot}\n${event.place}\n${event.subject}`;
     const now = this.o.now();

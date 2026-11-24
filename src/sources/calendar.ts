@@ -122,6 +122,11 @@ export class CalendarFeed {
 
   constructor(private d: CalendarFeedDeps) {}
 
+  /** The user's zone, changed in the configuration. */
+  setTimeZone(timeZone: string): void {
+    this.d.timeZone = timeZone;
+  }
+
   /** One poll, for the supervisor: reads the coming days and makes the reminders that are due. Throws when the calendar cannot be read. */
   async poll(): Promise<void> {
     const now = this.d.now();

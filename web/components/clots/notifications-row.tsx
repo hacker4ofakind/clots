@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { BellIcon, BellRingingIcon } from "@phosphor-icons/react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -48,23 +48,34 @@ export function PushClient() {
  * Turn on button (iOS refuses it otherwise), and only in the installed app. A test notification checks the whole path.
  */
 export function NotificationsRow() {
-  const [permission, setPermission] = useState<Permission>("default");
+  // The browser's permission, read after hydration (the server has no browser); a click on Turn on replaces it with the answer.
+  const stored = useSyncExternalStore(
+    () => () => undefined,
+    (): Permission => (typeof Notification === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window) ? "unsupported" : (Notification.permission as Permission)),
+    (): Permission => "default",
+  );
+  const [answered, setAnswered] = useState<Permission>();
+  const permission = answered ?? stored;
+  // Allowed in the browser is not the same as this device being subscribed: a lost subscription needs Turn on again, without a prompt.
+  const [subscribed, setSubscribed] = useState<boolean>();
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    setPermission(typeof Notification === "undefined" || !("serviceWorker" in navigator) || !("PushManager" in window) ? "unsupported" : (Notification.permission as Permission));
-  }, []);
+    if (permission !== "granted") return;
+    void navigator.serviceWorker.ready.then((r) => r.pushManager.getSubscription()).then((sub) => setSubscribed(sub !== null), () => setSubscribed(false));
+  }, [permission]);
 
   const turnOn = useCallback(async () => {
     setBusy(true);
     try {
-      const result = await Notification.requestPermission();
-      setPermission(result as Permission);
+      const result = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+      setAnswered(result as Permission);
       if (result !== "granted") return;
       const registration = await navigator.serviceWorker.ready;
       const { key } = await api<{ key: string }>("/push/key");
       const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64ToBytes(key) });
       await api("/push/subscribe", { method: "POST", body: subscription.toJSON() });
+      setSubscribed(true);
       toast("Notifications are on");
     } catch {
       toast("Notifications could not be turned on");
@@ -83,7 +94,8 @@ export function NotificationsRow() {
   };
 
   if (permission === "unsupported") return null;
-  if (permission === "granted") {
+  if (permission === "granted" && subscribed === undefined) return null;
+  if (permission === "granted" && subscribed) {
     return (
       <div className="mx-5 my-2 flex items-center gap-3 text-body text-muted-foreground" data-notifications="on">
         <BellRingingIcon size={18} aria-hidden /> Notifications are on.

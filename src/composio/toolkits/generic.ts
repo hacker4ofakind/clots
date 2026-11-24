@@ -7,7 +7,7 @@ export const genericDef: ToolkitDef = {
   toolkit: "",
   source: "",
   async triggers(a) {
-    return a.triggers.map((t) => ({ slug: t.slug, config: t.config }));
+    return a.triggers.map((t) => ({ slug: t.slug, config: t.config, ...(t.pollMinutes === undefined ? {} : { pollingMinutes: t.pollMinutes }) }));
   },
   async identity(a, host) {
     const read = host.recipe(a.toolkit)?.identity;

@@ -19,5 +19,5 @@ export function ConnectionIcon({ kind, toolkit, address, size = 20 }: { kind: "e
   const slug = kind === "composio" ? toolkit : address !== undefined && isGmail(address) ? "gmail" : undefined;
   if (slug === undefined) return kind === "email" ? <EnvelopeSimpleIcon size={size} aria-hidden /> : <PlugsIcon size={size} aria-hidden />;
   if (failed) return <PlugsIcon size={size} aria-hidden />;
-  return <Image src={composioLogo(slug)} alt="" width={size} height={size} unoptimized className="shrink-0 rounded-sm object-contain" onError={() => setFailed(true)} />;
+  return <Image src={composioLogo(slug)} alt="" width={size} height={size} unoptimized className="shrink-0 rounded-sm object-contain dark:bg-primary-foreground" onError={() => setFailed(true)} />;
 }
