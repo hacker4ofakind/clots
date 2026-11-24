@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { FloppyDiskIcon, MonitorIcon, MoonIcon, SunIcon } from "@phosphor-icons/react";
 import { CONTENT_WIDTHS, THEMES } from "@clots/ui-api-schemas";
@@ -8,7 +8,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api, ApiFailure } from "@/lib/api-client";
+import { useUnsavedGuard } from "@/lib/use-unsaved-guard";
 import { useAppState } from "../app-state";
+import { ConfirmDialog } from "../confirm-dialog";
 import { FieldRow, PageHeader } from "../field-row";
 import { Segmented } from "../segmented";
 import { Stepper } from "../stepper";
@@ -34,7 +36,7 @@ const WIDTH_OPTIONS = CONTENT_WIDTHS.map((value) => ({ value, label: value[0]!.t
 
 /** Settings, General. Theme and content width are the UI's own and apply at once; the rest save with the Save button and apply as the daemon says. */
 export function GeneralSettings() {
-  const { prefs, updatePrefs, connection } = useAppState();
+  const { prefs, updatePrefs, connection, subscribe } = useAppState();
   const [saved, setSaved] = useState<General>();
   const [form, setForm] = useState<General>();
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -46,13 +48,24 @@ export function GeneralSettings() {
   }, []);
 
   const dirty = form !== undefined && saved !== undefined && JSON.stringify({ ...form, error: undefined }) !== JSON.stringify({ ...saved, error: undefined });
+  // A hand edit of the file was picked up (or refused): the page shows what is in force now, unless there are edits of its own to keep.
+  const dirtyNow = useRef(false);
+  useEffect(
+    () =>
+      subscribe((e) => {
+        if (e.type !== "config.changed" || !(e.data as { fromFile?: boolean } | undefined)?.fromFile) return;
+        void api<General>("/settings/general")
+          .then((g) => {
+            setSaved(g);
+            if (!dirtyNow.current) setForm(g);
+          })
+          .catch(() => undefined);
+      }),
+    [subscribe],
+  );
+  dirtyNow.current = dirty;
   // Leaving with unsaved edits asks first.
-  useEffect(() => {
-    if (!dirty) return;
-    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  const leave = useUnsavedGuard(dirty);
 
   if (!form) return <PageHeader title="General" />;
   const set = <K extends keyof General>(key: K, value: General[K]) => setForm({ ...form, [key]: value });
@@ -129,6 +142,7 @@ export function GeneralSettings() {
           <Input id="url" value={form.publicUrl} onChange={(e) => set("publicUrl", e.target.value)} className="w-75 font-mono text-code md:text-code" />
         </FieldRow>
       </div>
+      <ConfirmDialog open={leave.pending} onOpenChange={(open) => !open && leave.cancel()} title="Leave without saving?" description="Your changes to these settings will be lost." confirmLabel="Discard changes" cancelLabel="Keep editing" onConfirm={leave.proceed} />
     </form>
   );
 }

@@ -114,7 +114,7 @@ export function WaitingView() {
         <div className="flex items-baseline justify-between gap-3 max-md:px-5 max-md:pb-3 max-md:pt-[max(calc(env(safe-area-inset-top)+12px),62px)]">
           <h1 className="text-title-mobile md:text-title">Waiting for you</h1>
           {asks.length > 0 ? (
-            <p className="text-label font-normal text-muted-foreground md:text-body" aria-live="polite">
+            <p suppressHydrationWarning className="text-label font-normal text-muted-foreground md:text-body" aria-live="polite">
               {asks.length}
               <span className="max-md:hidden"> waiting</span> · {urgent} urgent
             </p>

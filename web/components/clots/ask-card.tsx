@@ -133,7 +133,7 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
         <div className="flex gap-2.5 md:justify-between">
           <Button variant="outline" size="lg" disabled={off} onClick={() => void send({ action: "block" })} className="h-11 flex-1 md:h-9 md:flex-none">
             {labels.block}
-            <span className="tabular-nums text-muted-foreground md:hidden">{timerView(snapshot.deadline, now).text}</span>
+            <span suppressHydrationWarning className="tabular-nums text-muted-foreground md:hidden">{timerView(snapshot.deadline, now).text}</span>
           </Button>
           <Button size="lg" disabled={off} onClick={allow} className="h-11 flex-1 md:h-9 md:flex-none">
             {working ? <Spinner /> : null}

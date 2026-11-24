@@ -36,7 +36,7 @@ describe("connecting a toolkit over the API", () => {
       { slug: "reddit", name: "Reddit", auth: "oauth" },
     ];
     expect((await call("GET", "/integrations/toolkits")).body.toolkits).toHaveLength(2);
-    expect((await call("GET", "/integrations/toolkits?q=SLA")).body).toEqual({ toolkits: [{ slug: "slack", name: "Slack", auth: "oauth", logo: "https://logo.example/slack.png" }] });
+    expect((await call("GET", "/integrations/toolkits?q=SLA")).body).toEqual({ toolkits: [{ slug: "slack", name: "Slack", auth: "oauth", logo: "https://logo.example/slack.png", webhooks: true }] });
 
     const bare = new UiApi({ secret: () => "s", bus: new EventBus("b") });
     registerIntegrationRoutes(bare, { config: h.config });
@@ -45,6 +45,23 @@ describe("connecting a toolkit over the API", () => {
     expect(res.status).toBe(503);
     expect(((await res.json()) as { error: string }).error).toContain("COMPOSIO_API_KEY");
     await bare.close();
+  });
+
+  it("marks a toolkit that has a webhook trigger type, waiting for it when the answer is short", async () => {
+    h.api.toolkitList = [
+      { slug: "slack", name: "Slack", auth: "oauth" },
+      { slug: "reddit", name: "Reddit", auth: "oauth" },
+      { slug: "linear", name: "Linear", auth: "key" },
+    ];
+    h.api.triggerTypes.set("slack", [{ slug: "SLACK_NEW_MESSAGE", type: "webhook" }]);
+    h.api.triggerTypes.set("reddit", [{ slug: "REDDIT_POLL", type: "poll" }]);
+    const slack = (await call("GET", "/integrations/toolkits?q=slack")).body.toolkits;
+    expect(slack).toEqual([{ slug: "slack", name: "Slack", auth: "oauth", webhooks: true }]);
+    expect((await call("GET", "/integrations/toolkits?q=reddit")).body.toolkits[0].webhooks).toBe(false);
+    // A built-in toolkit says so without asking Composio; read once, then kept.
+    const all = (await call("GET", "/integrations/toolkits")).body.toolkits;
+    expect(all.find((t: { slug: string }) => t.slug === "linear").webhooks).toBe(true);
+    expect(h.api.of("toolkitTriggers").filter((c: string) => c.includes("slack"))).toHaveLength(1);
   });
 
   it("configure answers 201 with a job id; the job reaches the link, and abandon removes it", async () => {
@@ -110,7 +127,7 @@ describe("GET /integrations", () => {
     await h.jobs.toolkits();
 
     const first = (await call("GET", "/integrations")).body;
-    expect(first.tools).toEqual([{ id: "slack:graphite", toolkit: "slack", account: "graphite", clot: "graphite", shared: false, audience: "private", logo: "https://logo.example/slack.png", status: "unknown" }]);
+    expect(first.tools).toEqual([{ id: "slack:graphite", toolkit: "slack", account: "graphite", clot: "graphite", shared: false, audience: "private", selfIsUser: false, events: true, logo: "https://logo.example/slack.png", status: "unknown" }]);
     statuses["slack:graphite"] = "waiting";
     expect((await call("GET", "/integrations")).body.tools[0].status).toBe("waiting");
     statuses["slack:graphite"] = "failed";
@@ -156,6 +173,42 @@ describe("inboxes", () => {
     expect(fs.readFileSync(h.envFile, "utf8")).toContain("EMAIL_ME_PASSWORD=new-password");
     expect((await call("PUT", "/inboxes/ghost", { address: "g@gmail.com", mailboxes: ["INBOX"] })).status).toBe(404);
     expect((await call("PUT", "/inboxes/me", { address: "me@gmail.com", mailboxes: ["INBOX"], account: "other" })).status).toBe(400);
+  });
+
+  it("fills in the servers of a well-known provider from the address, and names what to give for any other domain", async () => {
+    const outlook = await call("POST", "/inboxes", { address: "me@outlook.com", password: "pw", mailboxes: ["INBOX"] });
+    expect(outlook).toMatchObject({ status: 201, body: { account: "me", provider: "Email" } });
+    expect((h.config.json().sources as { email: Record<string, unknown>[] }).email[0]).toMatchObject({ imap: { host: "outlook.office365.com", port: 993 }, smtp: { host: "smtp-mail.outlook.com", port: 587 } });
+    expect(h.config.current.sources.email[0]).toMatchObject({ imap: { host: "outlook.office365.com" } });
+
+    const unknown = await call("POST", "/inboxes", { address: "me@acme-corp.example", account: "work", password: "pw", mailboxes: ["INBOX"] });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.errors.imap).toContain("acme-corp.example");
+    expect(unknown.body.errors.imap).toContain("IMAP and SMTP");
+    // Nothing was written for the refusal: no key, no entry.
+    expect(fs.readFileSync(h.envFile, "utf8")).not.toContain("EMAIL_WORK_PASSWORD");
+    expect((h.config.json().sources as { email: unknown[] }).email).toHaveLength(1);
+
+    const given = await call("POST", "/inboxes", { address: "me@acme-corp.example", account: "work", password: "pw", mailboxes: ["INBOX"], imap: { host: "mail.acme-corp.example", port: 993 }, smtp: { host: "mail.acme-corp.example", port: 465 } });
+    expect(given.status).toBe(201);
+  });
+
+  it("keeps an inbox's own servers on an edit that does not name them, as long as the domain stays", async () => {
+    await call("POST", "/inboxes", { address: "me@acme-corp.example", password: "pw", mailboxes: ["INBOX"], imap: { host: "mail.acme-corp.example", port: 993 }, smtp: { host: "mail.acme-corp.example", port: 587 } });
+    expect((await call("PUT", "/inboxes/me", { address: "other@acme-corp.example", mailboxes: ["INBOX", "Archive"] })).status).toBe(200);
+    expect(h.config.current.sources.email[0]).toMatchObject({ address: "other@acme-corp.example", mailboxes: ["INBOX", "Archive"], smtp: { host: "mail.acme-corp.example", port: 587 } });
+    expect((await call("PUT", "/inboxes/me", { address: "me@elsewhere.example", mailboxes: ["INBOX"] })).status).toBe(400);
+  });
+
+  it("lists an inbox with its folders, and a tool with how it was set up", async () => {
+    await call("POST", "/inboxes", { address: "me@gmail.com", password: "pw", mailboxes: ["INBOX", "Receipts"] });
+    expect((await call("GET", "/integrations")).body.inboxes[0]).toMatchObject({ account: "me", mailboxes: ["INBOX", "Receipts"] });
+    h.state.script = posthogScript;
+    const created = await call("POST", "/integrations/configure", { toolkit: "posthog", audience: "team", selfIsUser: true, events: true, pollMinutes: 45 });
+    await settle();
+    await call("PUT", `/integrations/jobs/${created.body.jobId}/key`, { value: "phx_value" });
+    const tool = (await call("GET", "/integrations")).body.tools[0];
+    expect(tool).toMatchObject({ id: "posthog:shared", audience: "team", selfIsUser: true, events: expect.any(Boolean) });
   });
 
   it("refuses an edit the configuration will not take, and changes nothing", async () => {

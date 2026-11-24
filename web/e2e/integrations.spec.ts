@@ -165,61 +165,7 @@ test("editing a tool opens its options filled in, and Finish replaces it, keepin
   await expect(rows).toContainText("Truecast only · private");
 });
 
-test("the tool tile's menu: right-click or Enter opens Edit settings, Reconnect and Remove from the Clot, and Remove asks first", async ({ page }) => {
-  await page.goto("/e2e-harness/tools");
-  const tile = page.getByRole("button", { name: "PostHog, options" });
-  await tile.click({ button: "right" });
-  const menu = page.getByRole("menu", { name: "PostHog" });
-  await expect(menu.getByRole("menuitem")).toHaveText(["Edit settings", "Reconnect", "Remove from Truecast"]);
-  await page.keyboard.press("Escape");
-
-  // The keyboard reaches the same menu.
-  await tile.focus();
-  await page.keyboard.press("Enter");
-  await expect(menu).toBeVisible();
-  await menu.getByRole("menuitem", { name: "Edit settings" }).click();
-  const dialog = page.getByRole("dialog", { name: "Configure PostHog" });
-  await expect(dialog.getByLabel("Share with every Clot")).not.toBeChecked();
-  await expect(dialog.getByText("Off: only Truecast uses it")).toBeVisible();
-  await dialog.getByRole("button", { name: "Cancel" }).click();
-
-  // Reconnect goes straight to the connect step.
-  await tile.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Reconnect" }).click();
-  await expect(dialog.getByLabel("API key")).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Close" })).toHaveCount(0);
-  await dialog.getByLabel("API key").fill("sk_live_789");
-  await dialog.getByRole("button", { name: "Done" }).click();
-  await expect(dialog).toHaveCount(0);
-
-  // Remove asks, and Cancel keeps it.
-  await tile.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Remove from Truecast" }).click();
-  const confirm = page.getByRole("alertdialog", { name: "Remove PostHog from Truecast?" });
-  await confirm.getByRole("button", { name: "Cancel" }).click();
-  await expect(tile).toBeVisible();
-  await tile.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Remove from Truecast" }).click();
-  await confirm.getByRole("button", { name: "Remove" }).click();
-  await expect(tile).toHaveCount(0);
-});
-
-test("the dialog opened for a Clot offers to share the tool with every Clot, and a tool added for a Clot is its own", async ({ page, request }) => {
-  await page.goto("/e2e-harness/tools");
-  await page.getByRole("button", { name: "Add a tool" }).click();
-  const dialog = page.getByRole("dialog");
-  await dialog.getByRole("button", { name: "Instagram", exact: true }).click();
-  await expect(dialog.getByLabel("Share with every Clot")).not.toBeChecked();
-  await dialog.getByRole("button", { name: "Finish" }).click();
-  await expect(dialog.getByText("You’re almost done!")).toBeVisible();
-  await control(request, "/integrations/activate");
-  const done = dialog.getByRole("button", { name: /^Done/ });
-  await expect(done).toBeEnabled({ timeout: 8000 });
-  await done.click();
-  await expect(page.getByRole("button", { name: "Instagram, options" })).toBeVisible();
-  await page.goto("/settings/integrations");
-  await expect(row(page, "Instagram")).toContainText("Truecast only");
-});
+// The tool tile's menu and the dialog opened for a Clot are tested on the New Clot Tools step (new-clot.spec.ts).
 
 test("an inbox: the provider is detected from the address, and it can be added, edited and removed", async ({ page }) => {
   await page.goto("/settings/integrations");

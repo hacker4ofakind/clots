@@ -28,6 +28,8 @@ export class JobError extends Error {
 }
 
 /** The built-in toolkits have entries of a fixed shape, which decides how they connect. */
+/** Whether the built-in toolkits' events come as webhooks: the calendar is polled by the daemon. */
+const BUILTIN_WEBHOOKS: Record<string, boolean> = { linear: true, notion: true, stripe: true, googlecalendar: false };
 const BUILTIN_AUTH: Record<string, ConnectAuth> = { linear: "key", notion: "key", stripe: "key", googlecalendar: "oauth" };
 
 /** How a toolkit connects from the dialog, or why it cannot: the daemon decides this, the configurer never does. */
@@ -83,7 +85,7 @@ interface Job {
 
 export interface JobsDeps {
   config: Pick<ConfigStore, "current" | "json" | "save" | "setKey" | "removeKey" | "usersOf" | "keys" | "skipped">;
-  api: Pick<ComposioApi, "listToolkits" | "toolkitInfo" | "ensureAuthConfig" | "linkManaged" | "connection" | "deleteConnection" | "findConnection">;
+  api: Pick<ComposioApi, "listToolkits" | "toolkitTriggers" | "toolkitInfo" | "ensureAuthConfig" | "linkManaged" | "connection" | "deleteConnection" | "findConnection">;
   configurer: { configure(req: ConfigureRequest): Promise<ConfigureResult> };
   emit(type: "integration.status", data: IntegrationStatus): void;
   now(): number;
@@ -115,6 +117,8 @@ export class IntegrationJobs {
   private jobs = new Map<string, Job>();
   private toolkitCache?: { at: number; list: ToolkitSummaryView[] };
   private toolkitLoading?: Promise<ToolkitSummaryView[]>;
+  /** Whether each toolkit has a webhook trigger type, read from Composio once per toolkit and kept for the day with the list. */
+  private webhookFlags = new Map<string, { at: number; value: boolean } | Promise<void>>();
   private ticking = false;
 
   constructor(private d: JobsDeps) {}
@@ -141,11 +145,40 @@ export class IntegrationJobs {
     return this.toolkitLoading;
   }
 
-  /** The toolkits whose name or slug holds `q`, at most 60. */
+  /** Starts reading whether a toolkit has a webhook trigger type, unless it is known or being read. A failed read is left unknown. */
+  private resolveWebhooks(slug: string): Promise<void> | undefined {
+    if (BUILTIN_WEBHOOKS[slug] !== undefined) return undefined;
+    const known = this.webhookFlags.get(slug);
+    if (known instanceof Promise) return known;
+    if (known !== undefined && this.d.now() - known.at < TOOLKIT_CACHE_MS) return undefined;
+    const read = this.d.api
+      .toolkitTriggers(slug)
+      .then((types) => void this.webhookFlags.set(slug, { at: this.d.now(), value: types.some((t) => t.type === "webhook") }))
+      .catch(() => void this.webhookFlags.delete(slug));
+    this.webhookFlags.set(slug, read);
+    return read;
+  }
+
+  private webhooksOf(slug: string): boolean | undefined {
+    if (BUILTIN_WEBHOOKS[slug] !== undefined) return BUILTIN_WEBHOOKS[slug];
+    const flag = this.webhookFlags.get(slug);
+    return flag === undefined || flag instanceof Promise ? undefined : flag.value;
+  }
+
+  /**
+   * The toolkits whose name or slug holds `q`, at most 60, each with whether it has a webhook trigger. A short answer (a toolkit looked
+   * up by name) waits for that to be read; a long one gets what is known and reads the rest in the background for the next ask.
+   */
   async toolkits(q?: string): Promise<ToolkitSummaryView[]> {
     const all = await this.loadToolkits();
     const needle = (q ?? "").trim().toLowerCase();
-    return (needle === "" ? all : all.filter((t) => t.name.toLowerCase().includes(needle) || t.slug.toLowerCase().includes(needle))).slice(0, TOOLKIT_LIMIT);
+    const found = (needle === "" ? all : all.filter((t) => t.name.toLowerCase().includes(needle) || t.slug.toLowerCase().includes(needle))).slice(0, TOOLKIT_LIMIT);
+    const reads = found.map((t) => this.resolveWebhooks(t.slug)).filter((r): r is Promise<void> => r !== undefined);
+    if (found.length <= 3) await Promise.race([Promise.all(reads), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
+    return found.map((t) => {
+      const webhooks = this.webhooksOf(t.slug);
+      return webhooks === undefined ? t : { ...t, webhooks };
+    });
   }
 
   /** A toolkit's logo from the list read so far; asks for the list when it was never read. */

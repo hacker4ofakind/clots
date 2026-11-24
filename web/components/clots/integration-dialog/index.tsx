@@ -23,14 +23,22 @@ export interface IntegrationDialogProps {
   clot?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** The connection is ready: the daemon holds it (or has written it) under this job. */
-  onAdded: (jobId: string) => void;
+  /** The connection is ready: the daemon holds it (or has written it) under this job. `info` says what was connected and with which options. */
+  onAdded: (jobId: string, info?: AddedInfo) => void;
   /** A connected tool's id: the dialog opens on its options, and Finish replaces that tool. */
   edit?: string;
   /** A job already under way (Reconnect): the dialog opens on whichever step it is at. */
   resume?: string;
   /** Toolkits already added by the caller (a Clot that does not exist yet), shown as "added". */
   added?: string[];
+  /** A job the caller holds for a Clot that does not exist yet: the dialog opens on its options, and Finish runs the same job again. */
+  retool?: { jobId: string; toolkit: Toolkit; options: ToolOptions };
+}
+
+/** What the dialog tells its caller when a tool is connected. */
+export interface AddedInfo {
+  toolkit?: Toolkit;
+  options: ToolOptions;
 }
 
 const message = (e: unknown) => (e instanceof ApiFailure ? (e.unreachable ? "The daemon cannot be reached." : e.message) : "Something went wrong.");
@@ -83,28 +91,30 @@ export function IntegrationDialog(props: IntegrationDialogProps) {
   );
 }
 
-function Flow({ clot: given, edit, resume, added = [], onAdded, onOpenChange, close, registerLeave, onLayout }: IntegrationDialogProps & { close: () => void; registerLeave: (fn: (() => void) | undefined) => void; onLayout: (layout: Layout) => void }) {
+function Flow({ clot: given, edit, resume, added = [], retool, onAdded, onOpenChange, close, registerLeave, onLayout }: IntegrationDialogProps & { close: () => void; registerLeave: (fn: (() => void) | undefined) => void; onLayout: (layout: Layout) => void }) {
   const { subscribe, onResync } = useAppState();
-  const [step, setStepState] = useState<Step>(edit !== undefined || resume !== undefined ? "loading" : "pick");
-  const [toolkit, setToolkit] = useState<Toolkit>();
+  const [step, setStepState] = useState<Step>(edit !== undefined || resume !== undefined ? "loading" : retool ? "options" : "pick");
+  const [toolkit, setToolkit] = useState<Toolkit | undefined>(retool?.toolkit);
   // A tool being edited keeps the scope it has: the Clot it is bound to, if any.
   const [editClot, setEditClot] = useState<string>();
   const clot = given ?? editClot;
-  const [options, setOptions] = useState<ToolOptions>(DEFAULT_OPTIONS);
+  const [options, setOptions] = useState<ToolOptions>(retool?.options ?? DEFAULT_OPTIONS);
   const [job, setJob] = useState<Job>();
   const [kind, setKind] = useState<"oauth" | "key">();
   const [shownAt, setShownAt] = useState(0);
   const [failure, setFailure] = useState<string>();
   const [saving, setSaving] = useState(false);
   const [keyError, setKeyError] = useState<string>();
-  const jobId = useRef<string | undefined>(undefined);
+  const jobId = useRef<string | undefined>(retool?.jobId);
   const stepRef = useRef(step);
   const kindRef = useRef<"oauth" | "key" | undefined>(undefined);
   const finished = useRef(false);
   const restart = useRef(false);
   const callbacks = useRef({ onAdded, onOpenChange });
+  const latest = useRef({ toolkit, options });
   useEffect(() => {
     callbacks.current = { onAdded, onOpenChange };
+    latest.current = { toolkit, options };
   });
 
   const go = useCallback((next: Step) => {
@@ -116,10 +126,12 @@ function Flow({ clot: given, edit, resume, added = [], onAdded, onOpenChange, cl
   useEffect(() => onLayout({ wide: step === "pick", locked: step === "working" || step === "connect" }), [step, onLayout]);
 
   const abandon = useCallback(() => {
+    // A job the caller holds is not the dialog's to drop: closing the options leaves it as it was.
+    if (retool !== undefined) return;
     const id = jobId.current;
     jobId.current = undefined;
     if (id !== undefined && !finished.current) void api(`/integrations/jobs/${id}/abandon`, { method: "POST", body: {} }).catch(() => undefined);
-  }, []);
+  }, [retool]);
   useEffect(() => {
     registerLeave(abandon);
     return () => registerLeave(undefined);
@@ -129,7 +141,7 @@ function Flow({ clot: given, edit, resume, added = [], onAdded, onOpenChange, cl
     if (finished.current || jobId.current === undefined) return;
     finished.current = true;
     if (restart.current) toast("Restart the daemon to finish.");
-    callbacks.current.onAdded(jobId.current);
+    callbacks.current.onAdded(jobId.current, { toolkit: latest.current.toolkit, options: latest.current.options });
     callbacks.current.onOpenChange(false);
   }, []);
 
@@ -273,9 +285,9 @@ function Flow({ clot: given, edit, resume, added = [], onAdded, onOpenChange, cl
         clot={clot === undefined ? undefined : labelOfName(clot)}
         options={options}
         onChange={setOptions}
-        editing={edit !== undefined}
+        editing={edit !== undefined || retool !== undefined}
         onBack={() => {
-          if (edit !== undefined) return close();
+          if (edit !== undefined || retool !== undefined) return close();
           abandon();
           setJob(undefined);
           go("pick");

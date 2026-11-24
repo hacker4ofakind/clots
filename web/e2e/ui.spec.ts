@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { clearAsks, control } from "./helpers";
+import { clearAsks, control, gotoLive } from "./helpers";
 
 test.beforeEach(async ({ page }) => {
   await clearAsks(page);
@@ -38,7 +38,7 @@ test("the slash menu is exactly as wide as the composer, wherever the content wi
   for (const width of ["Wide", "Narrow"]) {
     await page.goto("/settings/general");
     await page.getByRole("radiogroup", { name: "Content width" }).getByRole("radio", { name: width }).click();
-    await page.goto("/c/Truecast");
+    await gotoLive(page, "/c/Truecast");
     await page.getByLabel("Message Truecast").fill("/");
     const menu = await page.getByRole("listbox", { name: "Commands" }).boundingBox();
     const composer = await page.getByLabel("Message Truecast").locator("xpath=ancestor::div[contains(@class,'rounded-composer')]").boundingBox();

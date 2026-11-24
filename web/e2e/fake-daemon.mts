@@ -22,13 +22,13 @@ import { registerPrefsRoutes } from "../../src/ui-api/routes/prefs.js";
 import { registerWorkerRoutes } from "../../src/ui-api/routes/workers.js";
 import { registerPushRoutes } from "../../src/ui-api/routes/push.js";
 import { registerClotAdminRoutes } from "../../src/ui-api/routes/clots-admin.js";
-import { onboardingMessage } from "../../src/onboarding/create.js";
+import { ClotCreator, onboardingMessage, type HeldTools } from "../../src/onboarding/create.js";
 import { registerSettingsRoutes } from "../../src/ui-api/routes/settings.js";
 import { registerFakeIntegrations } from "./fake-integrations.mts";
 import { ConfigStore } from "../../src/config-store.js";
 import { LiveEnv } from "../../src/live-env.js";
 import { Push } from "../../src/push.js";
-import { UiApi } from "../../src/ui-api/server.js";
+import { ApiError, ApiResult, UiApi, type ApiRequest } from "../../src/ui-api/server.js";
 import type { Config } from "../../src/config.js";
 
 const PORT = Number(process.env.FAKE_DAEMON_PORT ?? 8791);
@@ -78,7 +78,7 @@ const addRoute = api.route.bind(api);
 api.route = (method, route, handler, o) =>
   addRoute(method, route, async (req) => {
     if (slowMs > 0 && method === "GET" && (route === "/clots" || route === "/clots/:clot/messages")) await new Promise((r) => setTimeout(r, slowMs));
-    return handler(req);
+    return heldOverlay(method, route, req, await handler(req));
   }, o);
 registerClotRoutes(api, { store, conv, asks, config: () => config, clots: () => clots, names: () => NAMES, now: () => Date.now() });
 registerWorkerRoutes(api, { store });
@@ -86,14 +86,113 @@ registerWorkerRoutes(api, { store });
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clots-fake-"));
 fs.writeFileSync(path.join(dir, ".env"), ["CLAUDE_CODE_OAUTH_TOKEN=c", "CLOT_GITHUB_TOKEN=g", "GITHUB_WEBHOOK_SECRET=w", ""].join("\n"));
 fs.writeFileSync(path.join(dir, "clots.config.json"), JSON.stringify({ timeZone: "UTC", image: "clots-clot:dev", ui: { owner: process.env.CLOTS_UI_DEV_OWNER ?? "owner@example.com" }, publicUrl: `https://${HOST}`, home: true, clots: config.clots }, null, 2));
-const configStore = new ConfigStore({ file: path.join(dir, "clots.config.json"), envFile: path.join(dir, ".env"), env: new LiveEnv(path.join(dir, ".env"), {}) });
+const CONFIG_FILE = path.join(dir, "clots.config.json");
+const ORIGINAL_CONFIG = fs.readFileSync(CONFIG_FILE, "utf8");
+// The daemon's own announcement of a change (a save or a hand edit picked up), as the UI hears it; the keys the daemon applies live take no restart.
+const configStore = new ConfigStore({
+  file: CONFIG_FILE,
+  envFile: path.join(dir, ".env"),
+  env: new LiveEnv(path.join(dir, ".env"), {}),
+  onChanged: (e) => void bus.emit("config.changed", { keys: e.keys.filter((k) => !e.needsRestart.includes(k)), needsRestart: e.needsRestart, fromFile: e.fromFile, ...(e.error === undefined ? {} : { error: e.error }) }),
+});
+configStore.onChange(["timeZone", "rolloverPercent", "maxWorkers", "maxProposals", "askTimeoutMinutes"], () => undefined);
+configStore.watch();
 registerSettingsRoutes(api, { config: configStore, announce: () => undefined, reorder: () => undefined, removeClot: async () => undefined });
 // The integrations are fake too (a fake Composio and configurer), so the dialog can be driven end to end.
 const integrations = registerFakeIntegrations(api, bus);
+
+// New Clot: the real creator, with a fake GitHub and a fake Docker. Each build step takes `buildMs`; a repository with "broken" in its name
+// fails its first build, one with "private" is not reachable (the machine account must be invited).
+let buildMs = 250;
+const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const failedOnce = new Set<string>();
+const jsonResponse = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const githubFetch = (async (input: string | URL | Request) => {
+  const url = String(input);
+  if (url.includes("/repos/")) return /private/i.test(url) ? jsonResponse(404, {}) : jsonResponse(200, { full_name: "octo/any" });
+  if (url.endsWith("/user/repository_invitations")) return jsonResponse(200, []);
+  if (url.endsWith("/user")) return jsonResponse(200, { login: "clots-dot-dev" });
+  return jsonResponse(404, {});
+}) as typeof fetch;
+const addClot = async (name: string, repoUrl: string) => {
+  if (!NAMES.some((n) => sameName(n, name))) NAMES.push(name);
+  if (!(config.clots as { name: string }[]).some((c) => c.name === name)) (config.clots as { name: string; repoUrl: string }[]).push({ name, repoUrl });
+};
+const dropClot = (name: string) => {
+  NAMES.splice(0, NAMES.length, ...NAMES.filter((n) => n !== name));
+  (config.clots as { name: string }[]).splice(0, config.clots.length, ...(config.clots as { name: string }[]).filter((c) => c.name !== name));
+};
+/** The steps of a build, failing the first time for a "broken" repository. */
+async function buildSteps(def: { name: string; repoUrl: string }, step: (s: "cloning" | "building" | "starting") => void): Promise<void> {
+  step("cloning");
+  await wait(buildMs);
+  if (/broken/.test(def.repoUrl) && !failedOnce.has(def.name)) {
+    failedOnce.add(def.name);
+    throw new Error("fatal: Remote branch main not found in upstream origin\nThe build stopped before the container started.");
+  }
+  step("building");
+  await wait(buildMs);
+  step("starting");
+  await wait(buildMs);
+}
+// The connections New Clot's Tools step made for a Clot that does not exist yet are held under their job; they show in the lists once it does.
+const heldJobs = new Map<string, string>();
+const held: HeldTools = {
+  claim: (ids, clot) => (ids.every((id) => heldJobs.get(id) !== undefined && sameName(heldJobs.get(id)!, clot)) ? { ok: true, entries: [] } : { ok: false, error: `That tool is not ready to be added to ${clot}.` }),
+  committed: (ids) => ids.forEach((id) => heldJobs.delete(id)),
+};
+function heldOverlay(method: string, route: string, req: ApiRequest, out: unknown): unknown {
+  if (route === "/integrations/configure" && out instanceof ApiResult) {
+    const clot = (req.body as { clot?: string } | undefined)?.clot;
+    const jobId = (out.body as { jobId: string }).jobId;
+    if (clot && !NAMES.some((n) => sameName(n, clot))) heldJobs.set(jobId, clot);
+    else heldJobs.delete(jobId);
+  }
+  if (route === "/integrations/jobs/:jobId" && heldJobs.has(req.params.jobId!)) return { ...(out as object), held: true };
+  if (route === "/integrations" && method === "GET") return { ...(out as { tools: { clot: string | null }[] }), tools: (out as { tools: { clot: string | null }[] }).tools.filter((t) => t.clot === null || NAMES.some((n) => sameName(n, t.clot!))) };
+  return out;
+}
+const creator = new ClotCreator({
+  config: configStore,
+  tools: held,
+  token: () => "token",
+  fetchFn: githubFetch,
+  emit: (e) => void bus.emit("clot.build", e),
+  start: async (def, step) => {
+    await addClot(def.name, def.repoUrl);
+    try {
+      await buildSteps(def, step);
+    } catch (error) {
+      dropClot(def.name);
+      throw error;
+    }
+    if (!clots.has(def.name)) {
+      const clot = new Clot({ name: def.name, store, conv, router: { decide: async () => ({ effort: "low" as const }) }, runner: new FakeRunner(), timeZone: "UTC", rolloverPercent: 65, now: () => new Date(), newId: randomUUID, schedule: (ms, fn) => void setTimeout(fn, ms) });
+      clots.set(def.name, clot);
+      await clot.init();
+    }
+  },
+  reclone: async (def, step) => {
+    await buildSteps(def, step);
+    const entry = (config.clots as { name: string; repoUrl: string }[]).find((c) => c.name === def.name);
+    if (entry) entry.repoUrl = def.repoUrl;
+  },
+  onReady: async (name, repo) => {
+    const { text, data } = onboardingMessage({ name, repo, webhookUrl: "https://box.example.ts.net/webhooks/github" });
+    await conv.post(name, text, { kind: "onboarding", data });
+  },
+});
+// Where a build is, for a page that was reloaded in the middle of it (the daemon's own route for this is still to come).
+api.route("GET", "/clots/:clot/build", (req) => {
+  const state = creator.building.get(req.params.clot!);
+  if (!state) throw new ApiError(404, "No build is under way.");
+  return { step: state.step, ...(state.log === undefined ? {} : { log: state.log }) };
+});
 // A new Clot's checklist: the steps start undone, and the test's controls tick them.
 const onboardingDone = new Set<string>();
 registerClotAdminRoutes(api, {
-  creator: {} as never,
+  creator,
   icons: {} as never,
   config: configStore,
   webhookSecret: () => "whsec_fake_secret",
@@ -125,6 +224,13 @@ const control = http.createServer(async (req, res) => {
   else if (url === "/integrations/activate") out = integrations.activate(data.jobId);
   else if (url === "/integrations/reset") integrations.reset();
   else if (url === "/timeout") timeoutMinutes = data.minutes;
+  else if (url === "/build-ms") buildMs = data.ms ?? 250;
+  // A hand edit of clots.config.json (the file watcher picks it up), and the file as it started.
+  else if (url === "/config-write") fs.writeFileSync(CONFIG_FILE, data.text ?? JSON.stringify({ ...JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")), ...data.patch }, null, 2));
+  else if (url === "/config-reset") {
+    fs.writeFileSync(CONFIG_FILE, ORIGINAL_CONFIG);
+    await configStore.reload();
+  }
   else if (url === "/slow") slowMs = data.ms ?? 0;
   else if (url === "/sent") out = sent;
   else if (url === "/stop") await api.close();

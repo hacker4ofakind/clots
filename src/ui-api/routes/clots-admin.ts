@@ -29,6 +29,12 @@ export function registerClotAdminRoutes(api: UiApi, d: AdminDeps): void {
     return result.ok ? new ApiResult(202, { ok: true }) : new ApiResult(400, { errors: result.errors });
   });
 
+  api.route("GET", "/clots/:clot/build", (req) => {
+    const build = d.creator.buildOf(req.params.clot!);
+    if (build === undefined) throw new ApiError(404, "No build is kept for this Clot.");
+    return build;
+  });
+
   api.route("POST", "/clots/:clot/retry", async (req) => {
     if (!(await d.creator.retry(req.params.clot!))) throw new ApiError(409, "Nothing to retry for this Clot.");
     return new ApiResult(202, { ok: true });

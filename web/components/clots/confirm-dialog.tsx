@@ -7,7 +7,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
  * The confirm step before something is removed. The action is an outline button with red text, never a solid red one; Cancel is the
  * first thing focused.
  */
-export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, onConfirm }: { open: boolean; onOpenChange: (open: boolean) => void; title: string; description: ReactNode; confirmLabel: string; onConfirm: () => void }) {
+export function ConfirmDialog({ open, onOpenChange, title, description, confirmLabel, cancelLabel = "Cancel", onConfirm }: { open: boolean; onOpenChange: (open: boolean) => void; title: string; description: ReactNode; confirmLabel: string; cancelLabel?: string; onConfirm: () => void }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
@@ -16,7 +16,7 @@ export function ConfirmDialog({ open, onOpenChange, title, description, confirmL
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction variant="destructive" onClick={onConfirm}>
             {confirmLabel}
           </AlertDialogAction>

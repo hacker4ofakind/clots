@@ -229,6 +229,8 @@ export const toolkitSummarySchema = z.object({
   logo: z.string().optional(),
   description: z.string().optional(),
   auth: z.enum(TOOLKIT_AUTH),
+  /** Whether Composio has a webhook trigger type for it (the polling time is used only when it has none). Absent when not known yet. */
+  webhooks: z.boolean().optional(),
 });
 export type ToolkitSummaryView = z.infer<typeof toolkitSummarySchema>;
 export const toolkitListSchema = z.object({ toolkits: z.array(toolkitSummarySchema) });
@@ -288,6 +290,10 @@ export const toolViewSchema = z.object({
   clot: z.string().nullable(),
   shared: z.boolean(),
   audience: z.enum(AUDIENCE_NAMES),
+  /** How the tool was set up, for Edit settings. */
+  selfIsUser: z.boolean(),
+  events: z.boolean(),
+  pollMinutes: z.number().int().optional(),
   logo: z.string().optional(),
   status: z.enum(TOOL_STATUSES),
   restartNeeded: z.literal(true).optional(),

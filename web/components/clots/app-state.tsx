@@ -87,7 +87,7 @@ export function AppStateProvider({ initial, children }: { initial: { clots: Clot
         // A hand edit of the file: picked up and applied, or refused with the reason.
         if (event.data?.fromFile) {
           if (event.data.error) toast.error("clots.config.json was not picked up", { description: String(event.data.error) });
-          else if ((event.data.keys?.length ?? 0) > 0) toast("Picked up changes to clots.config.json", event.data.needsRestart?.length ? { description: `${event.data.needsRestart.join(", ")} takes effect after a restart.` } : undefined);
+          else if ((event.data.keys?.length ?? 0) + (event.data.needsRestart?.length ?? 0) > 0) toast("Picked up changes to clots.config.json", event.data.needsRestart?.length ? { description: `${event.data.needsRestart.join(", ")} takes effect after a restart.` } : undefined);
         }
         break;
       default:

@@ -117,6 +117,12 @@ export class ClotCreator {
     return { ok: true };
   }
 
+  /** Where a build is now, for a page reloaded mid-build: the step and, for a failed one, its log. Undefined when none is kept. */
+  buildOf(name: string): { step: BuildStep; log?: string } | undefined {
+    const state = this.building.get(name);
+    return state === undefined ? undefined : { step: state.step, ...(state.log === undefined ? {} : { log: state.log }) };
+  }
+
   /** Whether the Clot is being made or moved right now: it cannot be deleted or moved again until that ends. */
   isBuilding(name: string): boolean {
     const state = this.building.get(name);

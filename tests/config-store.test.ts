@@ -164,6 +164,7 @@ describe("the settings routes", () => {
     expect(await ok.json()).toMatchObject({ maxWorkers: 2, askTimeoutMinutes: 2, applied: [] });
     const bad = await call("/settings/general", { method: "PUT", body: JSON.stringify({ rolloverPercent: 300 }) });
     expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { errors: Record<string, string> }).errors.rolloverPercent).toBeTruthy();
     expect(store.current.rolloverPercent).toBe(65);
   });
 

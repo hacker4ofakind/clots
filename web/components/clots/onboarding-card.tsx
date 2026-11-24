@@ -8,6 +8,7 @@ import type { MessageView } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
+import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
@@ -76,7 +77,18 @@ export function OnboardingCard({ message }: { message: MessageView }) {
     <div className="flex flex-col gap-3" data-onboarding>
       <p className="text-chat">{message.text}</p>
       <Card size="flush" className="gap-0 py-0">
-        <ol className="flex flex-col">
+        <ol className="flex flex-col" aria-busy={steps === undefined}>
+          {steps === undefined
+            ? [0, 1, 2].map((i) => (
+                <li key={i} className="flex items-start gap-3 px-4 py-3.5 not-first:border-t">
+                  <Skeleton className="mt-0.5 size-5 shrink-0 rounded-full" />
+                  <div className="flex flex-1 flex-col gap-2">
+                    <Skeleton className="h-4 w-48" />
+                    <Skeleton className="h-3.5 w-72 max-w-full" />
+                  </div>
+                </li>
+              ))
+            : null}
           {(steps ?? []).map((step, i) => (
             <li key={step.id} data-step={step.id} data-done={step.done} className="flex flex-col gap-3 px-4 py-3.5 not-first:border-t">
               <div className="flex items-start gap-3">
@@ -95,12 +107,14 @@ export function OnboardingCard({ message }: { message: MessageView }) {
               </div>
               {step.id === "webhook" && !step.done && data.webhookUrl ? (
                 <div className="ml-8 flex flex-col gap-3">
-                  <Button asChild variant="outline" size="sm" className="w-fit">
-                    <a href={`https://github.com/${data.repo}/settings/hooks/new`} target="_blank" rel="noopener noreferrer">
-                      Open the webhook form <ArrowSquareOutIcon />
-                    </a>
-                  </Button>
-                  <p className="text-label font-normal text-muted-foreground">Send everything, as JSON.</p>
+                  {data.repo ? (
+                    <Button asChild variant="outline" size="sm" className="w-fit">
+                      <a href={`https://github.com/${data.repo}/settings/hooks/new`} target="_blank" rel="noopener noreferrer">
+                        Open the webhook form <ArrowSquareOutIcon />
+                      </a>
+                    </Button>
+                  ) : null}
+                  <p className="text-label font-normal text-muted-foreground">Set the content type to application/json and send everything.</p>
                   <CopyField label="Payload URL" value={data.webhookUrl} />
                   <CopyField label="Secret" masked load={async () => (await api<{ secret: string }>(`/clots/${encodeURIComponent(message.clot)}/webhook-secret`)).secret} />
                 </div>

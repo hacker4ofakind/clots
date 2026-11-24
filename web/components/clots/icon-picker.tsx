@@ -76,7 +76,7 @@ export function IconPicker({ value, onChange }: { value: ClotIconValue; onChange
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button type="button" variant="outline" aria-label="Pick an icon" className="size-18 rounded-2xl text-foreground">
+        <Button type="button" variant="outline" aria-label="Pick an icon" className="size-18 rounded-2xl text-foreground [&_svg:not([class*='size-'])]:size-9">
           <ClotIcon icon={value} size={36} tile={72} />
         </Button>
       </DialogTrigger>

@@ -37,7 +37,10 @@ export function registerSettingsRoutes(api: UiApi, d: SettingsDeps): void {
   api.route("GET", "/settings/general", () => publicOf(d.config));
 
   api.route("PUT", "/settings/general", async (req) => {
-    const patch = parseBody(generalSchema.partial(), req.body);
+    // A value the page's own limits refuse is answered as the store's refusals are: the error beside the field, under `errors`.
+    const parsed = generalSchema.partial().safeParse(req.body);
+    if (!parsed.success) return new ApiResult(400, { errors: Object.fromEntries(parsed.error.issues.map((i) => [String(i.path[0] ?? "config"), i.message]).reverse()) });
+    const patch = parsed.data;
     const result = await d.config.save(patch);
     if (!result.ok) return new ApiResult(400, { errors: result.errors });
     d.announce({ applied: result.applied, needsRestart: result.needsRestart, fromFile: false });

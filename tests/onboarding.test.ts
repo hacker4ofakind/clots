@@ -196,6 +196,8 @@ describe("creating a Clot", () => {
     expect(failed.step).toBe("failed");
     expect(failed.log).not.toContain("ghp_secret123");
     expect(failed.log).toContain("***");
+    // A page reloaded after the failure still finds the step and the cleaned log.
+    expect(creator.buildOf("fresh")).toEqual({ step: "failed", log: failed.log });
     expect(config.current.clots.some((c) => c.name === "fresh")).toBe(false);
     startFails = undefined;
     steps = [];
@@ -203,6 +205,7 @@ describe("creating a Clot", () => {
     await waitDone();
     expect(steps.at(-1)!.step).toBe("done");
     expect(config.current.clots.some((c) => c.name === "fresh")).toBe(true);
+    expect(creator.buildOf("fresh")).toBeUndefined();
   });
 
   it("scrubs secrets and URL credentials from a log, and names the checklist's data, with no secret in the message", () => {
