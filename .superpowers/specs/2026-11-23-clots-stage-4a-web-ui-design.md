@@ -1,7 +1,7 @@
 # Clots stage 4a: the web UI
 
 Date: 2026-11-23
-Status: approved in brainstorming; not built.
+Status: built on branch `stage-4a-web-ui`; the plan's Implementation Notes list the names and what was not checked live.
 Parent design: `.superpowers/specs/2026-10-10-clots-design.md` (stage list in
 section 16). Second half of stage 4: `.superpowers/specs/2026-11-23-clots-stage-4b-claritee-clapboards-design.md`.
 Mockups: the "Clots Web UI" Design canvas, https://claude.ai/artifact/6cEazNWMA5h7eiTedSTuZw
@@ -90,35 +90,40 @@ Daemon intake       127.0.0.1:8787  ◄── Tailscale Funnel :443 (webhooks on
   the PC, `npm run web` starts it in development.
 - **Tailnet-only access**: `tailscale serve --bg --https=8443 http://127.0.0.1:3000`.
   Funnel stays on 443 for the webhooks and nothing else.
-- **Who may use it**: Next.js middleware requires the `Tailscale-User-Login`
-  header that `tailscale serve` adds, and compares it with `ui.owner` in
-  `clots.config.json`. Any other value, or none, gets a 403 page. A request
+- **Who may use it**: the Next.js proxy (`web/proxy.ts`, Next 16's name for
+  middleware) requires the `Tailscale-User-Login` header that `tailscale serve`
+  adds, compares it with `ui.owner` in `clots.config.json` (read from the
+  daemon's `GET /identity`), and checks that the `Host` is the serve host. Any other value, or none, gets a 403 page. A request
   that reaches port 3000 directly (no header) is refused the same way.
 - **The browser never calls the daemon.** Next.js route handlers and server
   components call the UI API with the header `X-Clots-UI-Secret`, the value of
   `CLOTS_UI_SECRET` in `.env` (created on first start). The API refuses a
   request without it, so no other local process can drive the daemon.
-- **The deploy script** (`scripts/deploy.mjs`) builds the web app, installs
-  `clots-web.service`, and sets up `tailscale serve` on the Pi; it no longer
-  creates a Discord bot or server.
+- **The deploy script** (`scripts/deploy.mjs`) runs `deploy/update.sh` on the Pi,
+  which builds the web app, writes `data/web.env` (only the shared secret and
+  the daemon's address, never the whole `.env`), installs `clots-web.service`,
+  and sets up `tailscale serve`; nothing creates a Discord bot or server.
 
 ## 4. The daemon's UI API
 
 JSON over HTTP, all under `/api/v1`, plus one event stream. The web app wraps
 each call in a typed client (`web/lib/daemon.ts`) shared by server components,
 route handlers and the stream proxy. The API's request and response shapes are
-zod schemas in `src/ui-api/schemas.ts`, imported by both sides.
+zod schemas in the workspace package `packages/ui-api-schemas`
+(`@clots/ui-api-schemas`), imported by both sides. Bodies are capped at 256 KB,
+except a message with images (24 MB, since images travel as base64) and an icon
+upload (4 MB).
 
 | Area | Endpoints |
 |---|---|
-| Clots | list (name, icon, order, state, unread, waiting count); one Clot's info (repository, connections); reorder; create (section 9); edit; delete |
+| Clots | who may use the UI (`/identity`); list (name, icon, order, state, unread, waiting count); one Clot's info (repository, connections); mark read; reorder; create, build progress, retry, edit, delete (section 9); the onboarding checklist and the webhook secret |
 | Messages | page through a Clot's chat (newest first, cursor); send a message (text and attached images); the slash command list |
 | Asks | list open asks and choices; answer one (`allow`, `block`, `edit` with new text, `pick` with an option) |
 | Workers | the workers of a turn, with status and pull request |
 | Settings | read and write General settings; UI preferences |
 | Keys | list `.env` key names with their last 4 characters; set one; remove one |
-| Integrations | inboxes and Composio accounts (list, add, edit, remove); search Composio toolkits; start the configurer; connection status |
-| Push | register and remove a push subscription; the VAPID public key |
+| Integrations | inboxes and Composio accounts (list, add, edit, remove); search Composio toolkits; start the configurer as a job; a job's status, its key, abandoning it; reconnect a tool |
+| Push | register and remove a push subscription; the VAPID public key; a device reporting itself visible; a test notification |
 | Stream | `GET /api/v1/stream` (Server-Sent Events) |
 
 **The stream** sends one event per change, each with an increasing `id`:
@@ -146,8 +151,9 @@ conversation store, a set of SQLite tables, and emits a stream event.
   `clot` (the main session's text), `activity` (the turn summary and
   tool-activity lines), `note` (rollover, context limit, ask outcomes, daemon
   notices such as a global memory applied), `ask` (points at the ask), and
-  `workers` (points at a turn's workers). Each row has its session ID, so the
-  UI can mark where a rollover happened.
+  `workers` (points at a turn's workers), and `onboarding` (a new Clot's first
+  message, with its repository and webhook address as data). Each row has its
+  session ID, so the UI can mark where a rollover happened.
 - The recap that starts a new session is a `note` with the recap text, folded
   by default.
 - **Typing** becomes `clot.state` working/idle.
@@ -198,9 +204,10 @@ cannot show.
   system's Layout section. Side pane width is dragged on its grip, saved per
   Clot in UI preferences; dragging to the left edge makes it full width,
   dragging to the right edge closes it. No close or full-screen buttons.
-- Rail order is the Clots' order, changed by dragging in the rail (persisted
-  through the reorder endpoint). With more than three Clots, the rest and New
-  Clot collapse into a "…" menu.
+- The rail has no logo. From the top: Home, every Clot (the list scrolls when
+  they do not fit), New Clot, then at the bottom Waiting for you and Settings.
+  Rail order is the Clots' order, changed by dragging in the rail (persisted
+  through the reorder endpoint) or with Alt and the arrow keys.
 - The bell shows a `highlight` dot while anything is waiting.
 
 ### Waiting for you
@@ -217,21 +224,22 @@ cannot show.
 
 ### A Clot's chat
 
-- Header: the Clot's name, centred. Right side: Info (opens the info pane) and
+- Header: the Clot's name, centred. Right side: Info (an icon button that opens the info pane) and
   Clapboards (4b; hidden until the Clot has one).
 - Messages, activity lines, notes, ask cards and worker cards in order. Your
-  messages are right-aligned `muted` bubbles; the Clot's are plain text, in
+  messages are right-aligned `muted` bubbles with no timestamp; the Clot's are plain text, in
   markdown (`react-markdown` with `remark-gfm`; raw HTML is not rendered;
-  links open in a new tab). Timestamps show under a group of messages from the
-  same side within 5 minutes.
+  links open in a new tab; images show as links). A timestamp shows under a
+  group of the Clot's messages within 5 minutes.
 - The info pane: repository, connections (each with the service's real logo
-  from Composio, or Phosphor's for email), and nothing else in this stage.
-- Composer: attach (desktop), text, send. Pasting an image attaches it on both
+  from Composio, Gmail's for a Gmail address, Phosphor's envelope for any other
+  inbox), and nothing else in this stage.
+- Composer: attach (a `+` button, desktop), text, send. Pasting an image attaches it on both
   desktop and phone. Enter sends, Shift+Enter adds a line. Images go to the
   Clot as image content in the prompt.
 - Slash menu on `/`: every command with its options and description in plain
-  English, fuzzy filtered, matched prefix in bold. On a phone it is narrower and
-  has no descriptions.
+  English, fuzzy filtered, matched prefix in bold, as wide as the composer. On a
+  phone it has no descriptions.
 - Scrolling up loads older messages, across rollovers.
 
 ### Worker card
@@ -246,12 +254,15 @@ Each row links to its pull request once there is one.
 - **General**: time zone, theme (system, light, dark), content width (wide,
   medium, narrow; default wide), start a new session at (`rolloverPercent`),
   workers at once (`maxWorkers`), open rule asks per Clot (`maxProposals`),
-  ask timeout (`askTimeoutMinutes`, as the time input), public URL. Save writes
+  ask timeout (`askTimeoutMinutes`, as the time input), public URL. Theme and
+  content width are segmented controls, the start-a-session, workers and rule-ask
+  limits are steppers. Leaving a page with unsaved edits asks first. Save writes
   and applies (section 10). Theme and content width are UI preferences, saved
   at once.
-- **Manage Clots**: each Clot with its icon, name, repository, state (working,
-  idle, paused with reason), Edit (opens the New Clot steps prefilled) and
-  Delete. Delete is refused for the home Clot; for others it asks for the name
+- **Manage Clots**: one list, each Clot with its icon, name, repository (Home:
+  "No repository"), its state alone (working, idle, paused with reason), and
+  icon buttons Edit (opens the New Clot steps prefilled) and Delete; New Clot
+  sits beside the heading. Delete is refused for the home Clot; for others it asks for the name
   typed in, then stops the container, removes the config entry and keeps the
   volumes and the chat history (a later Clot with the same name gets them
   back). Order is changed in the rail.
@@ -269,8 +280,12 @@ Each row links to its pull request once there is one.
   button.
 - Asks on Waiting for you show only Block and Allow (or the choice options);
   tapping the row opens it in the chat.
-- A one-time "Get a notification when a Clot needs you" row with Turn on, in
-  `highlight-soft`, until notifications are allowed or dismissed.
+- On Waiting for you only: a one-time "Get a notification when a Clot needs you"
+  row with one Turn on button, in `highlight-soft`, until notifications are
+  allowed or dismissed.
+- The Clots list shows each Clot with its icon, a sub-line (the last message, "1
+  waiting for you", or why it is paused) and a chevron; the screen is full bleed,
+  with no rounded shell.
 - Settings, New Clot and integrations are not reachable from the phone.
 
 ## 8. Push notifications and the installed app
@@ -309,13 +324,20 @@ Each row links to its pull request once there is one.
    Uploaded icons are stored under `data/icons/`, with an active variant made
    with `sharp`: two colours are swapped, anything else is inverted. After
    Next, the heading animates into the icon and "Creating <name>".
-2. **Tools.** Shared Composio accounts are listed first; Add a tool opens the
-   integration dialog (section 11), scoped to this Clot. A right-click menu on
-   a tool offers Edit settings, Reconnect, and Remove from <name>.
+2. **Tools.** Shared Composio accounts are listed first, then this Clot's own
+   tools; Add a tool opens the integration dialog (section 11), scoped to this
+   Clot. A Clot that does not exist yet has its tools held: each is connected at
+   once, but its config entry is written only when Create runs (the held
+   connections are sent with it). A right-click menu on a tool offers Edit
+   settings, Reconnect and Remove from <name> (a held tool has Edit settings and
+   Remove). The step, name, repository, icon and held tools are kept in the
+   address, so a reload keeps them.
 3. **Create <name>.** The daemon writes the config entry, clones the
    repository and builds the container, sending `clot.build` progress (cloning,
-   building, starting). A failure shows its log with Retry. When the container
-   runs, the user lands in the new Clot's chat.
+   building, starting); a reload during the build asks `GET /clots/:clot/build`
+   for the step. A failure shows its log with Retry and removes the config entry
+   (so the name is free again); Retry continues from the failed build's record.
+   When the container runs, the user lands in the new Clot's chat.
 
 The Clot's first message is one line ("<name> is ready. Three steps finish its
 setup.") and the onboarding checklist (parent section 11) as a card at normal
@@ -332,8 +354,11 @@ resumes after a reload.
 
 Steps slide: the current one leaves to the left, the next enters from the right.
 Reset clears the steps. Edit on an existing Clot opens the same steps,
-prefilled, with Save instead of Create. A Clot's name cannot be changed after
-creation; changing its repository re-clones into a fresh workspace.
+prefilled, with Save instead of Create (`PUT /clots/:clot`). A Clot's name
+cannot be changed after creation; changing its repository checks access like a
+new Clot's, then re-clones into a fresh workspace volume in the background (the
+old one is kept, and the entry changes only once it worked; refused while a turn
+or a worker is running). Changing only the icon saves at once.
 
 ## 10. Configuration and hot reload
 
@@ -346,10 +371,15 @@ creation; changing its repository re-clones into a fresh workspace.
   a toast and on the Settings page.
 - **Applying**: each subsystem registers the keys it owns and a function that
   applies a change live. Time zone, hold, rollover, workers, proposals, ask
-  timeout, gates, sweep, spend, Composio accounts (the existing sync), email
-  accounts (reconnect the changed ones), MCP servers and recipes' secrets apply
-  at once; adding or removing a Clot starts or stops its container. The intake
-  port, the image and `ui.owner` apply after a restart, and the UI says so.
+  timeout, gates, sweep, spend, email accounts (new ones connect, changed ones
+  reconnect, removed ones disconnect), generic Composio toolkits, MCP servers and
+  recipes' secrets apply at once; adding or removing a Clot starts or stops its
+  container. The intake port, the image, `ui.owner`, the rulebook folder, the
+  home Clot, the public URL, the built-in toolkits (Linear, Notion, Stripe,
+  Google Calendar: their enrichers and feeds are set up once at start) and the
+  daemon's own `.env` tokens apply after a restart, and the UI says so. A key
+  with no live handler is reported the same way, never ignored. A hand-edited
+  repository for an existing Clot is not re-cloned; Edit does that.
 - **`set_config`** (the Clot tool) always becomes a config ask: the user's yes
   saves and applies it at once, with no `daemon_restart`. Because changes now
   apply live, no key is changed by a Clot without a yes; `ui` joins the keys a
@@ -369,20 +399,23 @@ creation; changing its repository re-clones into a fresh workspace.
 1. **Pick**: Composio's toolkits in a two-column grid, searchable; the list is
    cached by the daemon for a day and shows skeletons while it loads. Added
    ones show "added" with a remove button.
-2. **Options**: audience (private, team, public, with their icons), whether it
-   is the user's own account, shared with every Clot or only this one, events
-   on or off, and a polling time (the time input; used only when the toolkit
-   has no webhook trigger). Finish.
+2. **Options**: audience (a select: private, team, public, with their icons),
+   whether it is the user's own account, shared with every Clot or only this
+   one, events on or off, and a polling time (the time input; shown when events
+   are on and the toolkit has no webhook trigger). Finish.
 3. **Configurer**: a throwaway session (Sonnet 5.5, medium effort) runs in the
    daemon with the integration skill and these tools: read the toolkit's
    metadata and auth schemes, list its trigger types with their config
    schemas, web search and fetch, and `save_integration(entry, instructions?)`.
    `save_integration` validates the entry against the config schema and refuses
-   anything else. The session picks the triggers and their config, writes a
-   Composio recipe when one is needed (2e any-toolkit design), and, for an API
-   key, writes step-by-step instructions that fit the dialog. The dialog shows
+   anything else. The session picks the triggers and their config and, for an API key, writes
+   step-by-step instructions that fit the dialog. How a toolkit connects is the
+   daemon's decision, not the session's, and a connection from the dialog holds
+   one secret (the generated key); a toolkit that needs its own OAuth app is
+   refused at Finish with a pointer to the config file. Recipes are written by a
+   Clot afterwards (2e any-toolkit design), not by the session. The dialog shows
    skeletons while it works.
-4. **Connect**: the daemon writes the entry and reloads. For OAuth, it gets the
+4. **Connect**: the daemon writes the entry once the connection is ready (for OAuth when it is active; for a key right after the key is saved) and reloads. For OAuth, it gets the
    sign-in link from Composio (never from the configurer), shows it as a
    button that opens a new tab, and watches the connection until it is active;
    Done stays disabled for 5 seconds. For an API key, the field and the
@@ -392,8 +425,10 @@ creation; changing its repository re-clones into a fresh workspace.
    connection; Back returns to options.
 
 **Inboxes**: a form with the address, the provider (detected from the domain,
-which also picks the icon), the password or app password (saved to `.env`),
-the folders or labels to watch, and shared or one Clot.
+which also picks the icon and the default IMAP and SMTP servers; an unknown
+domain asks for the servers), the password or app password (saved to `.env`),
+the folders or labels to watch, and shared or one Clot. Adding, editing and
+removing apply at once.
 
 ## 12. Error handling
 
@@ -426,7 +461,9 @@ the folders or labels to watch, and shared or one Clot.
   `next/image`; repeated structures become components.
 - Custom components (no shadcn equivalent): the time input, ask actions, timer,
   ask card, worker card, composer, rail, side pane, ClapboardLink (4b), the
-  Clapboard icon, the logo.
+  Clapboard icon, the logo, and the small shared pieces a pattern used twice
+  becomes (segmented control, stepper, list card, icon tile, status dot,
+  confirm dialog, connection icon, field row).
 - The design system's README rules apply to all UI copy (no em dashes, the
   Clot's name alone, verbs on buttons).
 
@@ -438,7 +475,9 @@ the folders or labels to watch, and shared or one Clot.
   ask; config store (atomic write, backup, invalid file ignored, each
   subsystem's apply); keys never returned; Tailscale identity and secret
   checks; push subscription pruning.
-- **End to end (Playwright)** against the daemon with a fake session runner:
+- **End to end (Playwright)** against a fake daemon (`web/e2e/fake-daemon.mts`, a
+  stand-in process that speaks the API and the stream, with a fake Docker,
+  GitHub and Composio):
   sending and streaming a reply, answering each ask kind from the chat and from
   Waiting for you, the slash menu, New Clot (with a fake Docker), adding a
   Composio tool with a fake Composio, settings save and reload, reconnecting

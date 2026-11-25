@@ -28,58 +28,59 @@
 
 Daemon (root workspace):
 - `package.json` (modify): `workspaces: ["web", "packages/*"]`; scripts `web`, `web:build`, `test:e2e`.
-- `src/ui-api/server.ts` (create): the loopback HTTP server, secret check, routing.
-- `src/ui-api/schemas.ts` (create): zod request/response schemas, exported to `web/`.
-- `src/ui-api/routes/*.ts` (create): clots, messages, asks, workers, settings, keys, integrations, push, img placeholder none.
-- `src/ui-api/events.ts` (create): the event bus with a 1,000-event replay ring and SSE writer.
-- `src/conversation/store.ts` (create): message rows, paging, UI preferences.
+- `src/ui-api/server.ts` (create): the loopback HTTP server (`UiApi`, `api.route(method, path, handler, { maxBytes })`), secret check, routing; `src/ui-api/secrets.ts` (`ensureEnvKey`: a key made and saved to `.env` at first start; the VAPID keys are made in `src/daemon.ts` with `newVapidKeys`).
+- `packages/ui-api-schemas/src/index.ts` (create): zod request/response schemas, imported by the daemon and `web/` as `@clots/ui-api-schemas`.
+- `src/ui-api/routes/*.ts` (create): `clots.ts` (identity, Clots, messages, message images, asks, commands), `clots-admin.ts` (validate, create, retry, build state, edit, icons, webhook secret, onboarding checklist), `settings.ts` (general settings, keys, Clot order, delete), `prefs.ts` (UI preferences), `workers.ts`, `push.ts`, `integrations.ts` (toolkits, jobs, tools, inboxes).
+- `src/ui-api/events.ts` (create): the `EventBus` with a 1,000-event replay ring and the SSE writer (`serveStream`).
+- `src/conversation/store.ts` (create): message rows, images, paging, ask history, UI preferences.
 - `src/conversation/conversation.ts` (create): the `Conversation` interface implementation (replaces `ChatAdapter`).
 - `src/conversation/activity-lines.ts` (create): tool call → one line with an icon name.
-- `src/chat/` (delete), `src/asks-migration.ts` (review; drop Discord-only parts).
-- `src/clot.ts`, `src/pipeline.ts`, `src/waiting.ts`, `src/workers.ts`, `src/global-memory.ts`, `src/daemon.ts` (modify): post through `Conversation`, no channels.
+- `src/chat/`, `src/waiting.ts`, `src/asks-migration.ts`, `src/events/reply.ts` (deleted).
+- `src/clot.ts`, `src/pipeline.ts`, `src/workers.ts`, `src/global-memory.ts`, `src/daemon.ts` (modify): post through `Conversation`, no channels.
 - `src/asks.ts`, `src/asks/*.ts` (modify): answers instead of reply matching, deadlines on every kind.
-- `src/commands.ts` (modify): `/` prefix, command list export.
-- `src/agent/runner.ts` (modify): partial messages → text deltas; tool calls → activity callback.
+- `src/commands.ts` (modify): `/` prefix, `COMMAND_LIST` export.
+- `src/agent/runner.ts` (modify): partial messages → text deltas (`TextStreams`, `onTextDelta`); tool calls → `onToolUse`.
 - `src/store.ts` (modify): migration dropping `category_id`/`channel_id`, new tables.
-- `src/config.ts`, `src/config-edit.ts` (modify); `src/config-store.ts` (create): load, validate, atomic write with backup, watch, apply handlers.
-- `src/push.ts` (create): VAPID, subscriptions, sends.
+- `src/config.ts`, `src/config-edit.ts` (modify); `src/config-store.ts` (create): load, validate, atomic write with backup, watch, apply handlers, keys; `src/live-config.ts` (create): the apply handler of each live key; `src/live-env.ts` (create): the live `.env` map; `src/email-sync.ts` (create): live email accounts; `src/email-providers.ts` (create): default IMAP/SMTP hosts by domain; `src/clot-name.ts` (create): name rule, `slugOf`, `labelOf`.
+- `src/push.ts` (create): VAPID, subscriptions, sends. `src/net/safe-fetch.ts` (create): the SSRF-guarded fetch, shared with 4b.
 - `src/onboarding/*.ts` (create): New Clot creation, repo access, icon processing, checklist.
-- `src/integrations/configurer.ts` (create): the configurer session and its tools.
+- `src/integrations/{configurer,jobs,apply}.ts` (create): the configurer session and its tools, the connection jobs, the `sources` apply handler.
 - `deploy/update.sh` (modify), `deploy/clots-web.service` (create), `README.md` (modify).
 - `tests/**` (create/modify) per task.
 
 Web (`web/` workspace):
-- `web/app/layout.tsx`, `web/app/globals.css` (tokens), `web/middleware.ts` (Tailscale check).
-- `web/app/(app)/…` routes: `/` (redirects to Waiting), `/waiting`, `/c/[clot]`, `/settings/{general,clots,integrations}`, `/new`.
-- `web/app/api/stream/route.ts` (SSE proxy), `web/app/api/**/route.ts` (actions proxied to the daemon).
-- `web/lib/daemon.ts` (typed client), `web/lib/stream.ts` (client hook with reconnect).
-- `web/components/ui/*` (shadcn), `web/components/clots/*` (rail, chat, composer, ask-card, ask-actions, timer, worker-card, time-input, side-pane, logo, clapboard-icon placeholder for 4b).
+- `web/app/layout.tsx`, `web/app/globals.css` (the design tokens, mapped in `@theme inline`), `web/proxy.ts` (the Tailscale check and the CSP; Next 16's name for middleware).
+- `web/app/(app)/…` routes: `/` (redirects to Waiting), `/waiting`, `/clots` (the phone's list), `/c/[clot]`, `/settings/{general,clots,integrations}`, `/new`; `/offline` outside the group.
+- `web/app/api/stream/route.ts` (SSE proxy), `web/app/api/d/[...path]/route.ts` (every action, proxied to the daemon through `guard`).
+- `web/lib/`: `daemon.ts` (server-side client with the secret), `api-client.ts` (browser calls to `/api/d`), `guard.ts`, `access.ts`, `identity.ts`, `stream.ts` (client hook with reconnect), `use-unsaved-guard.ts`, `images.ts`, `draft.ts`, `edge-swipe.ts`, `viewport.ts`, `integrations.ts`.
+- `web/components/ui/*` (shadcn), `web/components/clots/*` (`rail`, `chat-view`, `composer`, `slash-menu`, `ask-card`, `ask-actions`, `timer`, `worker-card`, `onboarding-card`, `time-input`, `side-pane`, `info-pane`, `markdown`, `logo`, `tab-bar`, `waiting-view`, `clots-list`, `new-clot*`, `icon-picker`, `integration-dialog/*`, `tool-tile`, `settings/*`, and the shared pieces `segmented`, `stepper`, `list-card`, `icon-tile`, `status-dot`, `confirm-dialog`, `connection-icon`, `field-row`). The Clapboard icon is 4b's.
 - `web/public/manifest.webmanifest`, `web/public/sw.js`, icons from the logo mark.
-- `web/e2e/*.spec.ts` (Playwright), `web/e2e/fake-daemon.ts`.
+- `web/e2e/*.spec.ts` (Playwright), `web/e2e/fake-daemon.mts`, `web/e2e/fake-integrations.mts`, `web/e2e/helpers.ts`.
 
 ## Key Decisions & Gotchas
 
 - **`Conversation` keeps the adapter's verbs but is keyed by Clot, not channel.** Every `chat.post(channelId, …)` becomes `conv.post(clot, …)`; categories, channel creation, read-only, pins, `channelExists`, `mention`, `channelLink` disappear. A rollover creates a new session row and a `note` message; it no longer creates anything else. `sessionByChannel` is replaced by "active session of a Clot". Read every call site in `clot.ts` (about 40) and `asks.ts` before starting: the order of "save, then announce" in `rollover` must be kept (the comment at "Saved before anything is announced").
-- **Store migration**: SQLite ≥3.35 supports `ALTER TABLE … DROP COLUMN`; drop `clots.category_id`, `sessions.channel_id`, `inbox.channel_id`, `asks.channel_id`, `asks.channel_name`. Inbox rows that need a "where to answer" use the Clot. Run it inside the existing schema-version step so a restart mid-migration is safe.
-- **Asks**: replace `onReply(ask, text, io)` with two methods: `onAnswer(ask, answer, io)` for buttons and `onFeedback(ask, text, io)` for chat text (today's "any other reply" branch of each kind, moved unchanged). Delete the exact-word matchers. `AskIo.repeat` and `dropChannel` go; `close` posts a `note` and an `ask.closed` event. Kinds `config` and `restart` stay (a config key that needs a restart still asks). Add `onDeadline` to every kind: choice keeps its timeout turn; others close as blocked with the note "Blocked: no answer within N minutes." `stale()` withdrawals are unchanged.
+- **Store migration** (`user_version` 1): `sessions` and `user_asks` hold a UNIQUE on a channel column, which SQLite cannot drop, so the migration rebuilds those two tables, copying only the columns the new table has (a column an older version left behind, such as `steered`, is dropped); `clots.category_id`, `inbox.channel_id` and the asks' channel columns are removed. Inbox rows that need a "where to answer" use the Clot. It runs inside the schema-version step so a restart mid-migration is safe.
+- **Asks**: replace `onReply(ask, text, io)` with `onAnswer(ask, answer, io)` for buttons and an optional `onFeedback(ask, text, io)` for chat text (today's "any other reply" branch of each kind, moved unchanged; the rule, memory and restart kinds have none, so a typed message reaches the Clot as an ordinary message). Each kind also gives an `AskView` (heading, rows, body, labels, options, pick) that the UI draws. Delete the exact-word matchers. `AskIo.repeat` and `dropChannel` go; `close` posts a `note` and an `ask.closed` event. Kinds `config` and `restart` stay (a config key that needs a restart still asks). `onDeadline` is on every kind: choice keeps its timeout turn; others close as blocked with the note "Blocked: no answer within N minutes." `stale()` withdrawals are unchanged.
 - **Email edit**: the answer `{ action: "edit", body }` replaces the payload's body, then runs the same path as allow; the note to the main session quotes the user's changed lines (a simple line diff, removed and added).
 - **Waiting summary** comes from open asks; `clots-waiting` pin logic in `waiting.ts` is removed, but its list-building (summary, deadline) is reused by the API.
-- **Streaming**: set `includePartialMessages: true` on main-session turns only; forward `stream_event` text deltas as `message.delta` with the message's id, and keep posting the final text exactly as `onText` does today (the stored message is the final text). Workers stay non-streaming.
-- **Activity lines**: runner already reports tool use to `src/agent/activity.ts` for the turn summary; add a per-call callback producing `{ icon, text }` (`Read issue #31`, `Searched the code for "delete"`, `Asking to send an email`). Icon names are Phosphor component names, rendered by the web app from a fixed map.
+- **Streaming**: `includePartialMessages: true` on main-session turns only (when the turn has `onTextDelta`); `TextStreams` (runner.ts) turns `stream_event` text deltas into `message.delta` under a key `<message id>:<n>`, and the final text is posted exactly as `onText` does today (the stored message is the final text, under the same id). Workers stay non-streaming.
+- **Activity lines**: the runner's `onToolUse` callback gives each tool call to `activityLine()` (activity-lines.ts), producing `{ icon, text }` (`Read issue #31`, `Searched the code for "delete"`, `Asking to send an email`). Icon names are Phosphor component names, rendered by the web app from a fixed map.
 - **SSE through Next.js**: the route handler must return a streaming `Response` (`ReadableStream`), set `export const dynamic = "force-dynamic"`, and pipe the daemon's body through with the secret added; disable compression for that route. Heartbeat every 20 s keeps `tailscale serve` from closing it.
-- **shadcn on Tailwind v4**: run `npx shadcn@latest init` in `web/` (choose Neutral, CSS variables), then replace its generated variables with the design system tokens (`tokens.json` from the design system; names are already shadcn's). Map extras (`highlight`, `calling`, `primary-ink`, `foreground-soft`, `muted-strong`, `tile`, `brand`) in `@theme inline`. shadcn `accent` = the value of `muted`.
+- **shadcn on Tailwind v4**: run `npx shadcn@latest init` in `web/` (choose Neutral, CSS variables), then replace its generated variables with the design system tokens (`tokens.json` from the design system; names are already shadcn's). Map extras (`highlight`, `calling`, `primary-soft`, `primary-ink`, `foreground-soft`, `muted-strong`, `tile`, `brand`, `scrim`) in `@theme inline`. shadcn `accent` = the value of `muted`. A pattern used twice is a component (`Segmented` on ToggleGroup, `Stepper`, `ListCard`/`ListRow`, `IconTile`, `StatusDot`, `ConfirmDialog`, `ConnectionIcon`, `FieldRow`/`PageHeader`).
 - **Fonts**: `next/font/google` for Rethink Sans and Red Hat Mono, as `--font-sans` / `--font-mono`.
 - **Phosphor in RSC**: import from `@phosphor-icons/react/dist/ssr` in server components, `@phosphor-icons/react` in client components.
 - **Clot icons**: a Clot's icon is either `{ phosphor: "Sliders", color }` or an uploaded file; the active variant of an upload is precomputed with `sharp` (count opaque-pixel colour clusters: exactly 2 → swap, else negate) and stored beside it.
-- **Hot reload apply handlers**: register per top-level key; the Composio sync and email (IMAP) source restarts already exist as functions called at startup: call them with the new config. Keys flagged `restart` (intake port, image, `ui.owner`) are saved and reported, not applied.
+- **Hot reload apply handlers**: register per top-level key (`registerLiveConfig`, `configStore.onChange`); a handler may return `{ restart: true }` to be reported under `needsRestart`. Live: time zone, hold, rollover, workers, proposals, ask timeout, gates, sweep, spend, `sources.email` (`EmailSync`), generic Composio toolkits (`Composio.setAccounts`), MCP servers, Clots added or removed, a Clot's test command, recipes' secrets. Saved and reported, not applied (read once at start): `intake`, `image`, `ui`, `rulebookDir`, `home`, `publicUrl`, the built-in toolkits (linear, notion, stripe, googlecalendar), the `.env` tokens. A key with no handler is reported under `needsRestart`, never ignored.
 - **`.env` writing**: reuse `src/env-file.ts` for reading; writing keeps comments and order, replaces a key's line in place, appends new keys; atomic write like the config.
-- **Configurer**: a throwaway Agent SDK session in the daemon (not in a container), `model: "claude-sonnet-5-5"`, effort medium, with the existing `plugin/skills/composio-integration` skill content in its system prompt and only these tools via `createSdkMcpServer`: `toolkit_info`, `trigger_types`, `web_search`, `web_fetch`, `save_integration`. No Bash, no file tools. `save_integration` validates with the `sources.composio` entry schema; the API key value is never in its context.
-- **OAuth link**: from the existing Composio connect flow in `src/composio/auth.ts`/`hub.ts` (managed link), never from the configurer.
+- **Configurer**: a throwaway Agent SDK session in the daemon (not in a container), `model: "claude-sonnet-5-5"`, effort medium, with the existing `plugin/skills/composio-integration` skill content in its system prompt and only these tools: `toolkit_info`, `trigger_types`, `web_fetch`, `save_integration` via `createSdkMcpServer`, plus the SDK's built-in `WebSearch` (the repo has no search backend). No Bash, no file tools (`canUseTool` allow-list). `save_integration` validates with the `sources.composio` entry schema; the API key value is never in its context. The daemon, not the configurer, decides how a toolkit connects (`authFor`), and a connection from the dialog holds one secret (the generated key name); a toolkit needing its own OAuth app is refused at Finish with a pointer to the config file. The configurer cannot write recipes, so a generic toolkit's events are the generic `trigger` kind.
+- **Connection jobs** (`IntegrationJobs`, in memory): `working → oauth | key → active | failed`; the config entry is written only when the connection is ready (OAuth: the Composio connection is active; key: right after the key is in `.env`); an entry for a Clot that does not exist yet is held in the job and written by `POST /clots` with `toolJobs`; a `tick()` every 3 s (from `daemon.ts`) watches sign-ins and the 1 h abandon.
+- **OAuth link**: made directly through `ComposioApi` (`ensureAuthConfig` + `linkManaged`, Composio user id `<toolkit>:<account>`), never from the configurer.
 - **Discord leftovers**: `config.ts` must accept a file that still has `discord` (ignore with one log line) so the Pi does not fail to start after deploy; `ui.owner` missing → the web app shows a setup page naming the key.
 - **Tests that used `src/chat/fake.ts`** move to a fake `Conversation` with the same recording style.
 
 ### From the stress test (apply all)
-- **Access:** `tailscale serve` sets `Tailscale-User-Login` only for tailnet users; middleware checks `Tailscale-User-Login` == `ui.owner` and `Host` == the configured serve host; `web/lib/daemon.ts` re-checks the owner on every server-side call (defence in depth against middleware bypasses); missing `ui.owner` fails closed to the setup page. The test-only owner env var is ignored when `NODE_ENV=production`.
+- **Access:** `tailscale serve` sets `Tailscale-User-Login` only for tailnet users; `web/proxy.ts` checks `Tailscale-User-Login` == `ui.owner` and `Host` == the configured serve host (from `GET /identity`: `ui.owner` and the host of `publicUrl`); `web/lib/daemon.ts` and `web/lib/guard.ts` re-check the owner on every server-side call (defence in depth against proxy bypasses); missing `ui.owner` fails closed to the setup page. The test-only owner env vars (`CLOTS_UI_DEV_OWNER`, `CLOTS_UI_DEV_HOST`) are ignored when `NODE_ENV=production`.
 - **CSRF:** every mutating route handler goes through one wrapper requiring `Origin` == own origin, `Content-Type: application/json` (multipart only for uploads), and the owner check. One catch-all proxy route (`web/app/api/d/[...path]/route.ts`) forwards to the daemon through that wrapper, plus the separate stream route; no per-action route files.
 - **Pin and audit:** pin Next.js and React to patched versions (CVE-2025-29927, CVE-2025-55182); `npm audit --omit=dev` clean in Task 1 and Task 11.
 - **CSP:** site-wide CSP (`default-src 'self'`, `img-src 'self' data:` plus the proxy, no inline script beyond Next's nonce); `X-Content-Type-Options: nosniff` on every daemon-served file.
@@ -91,12 +92,12 @@ Web (`web/` workspace):
 - **Configurer:** the daemon overwrites audience, scope and owning Clot in the saved entry with the user's Options choices; its `web_fetch` uses the same SSRF guard as the 4b image proxy (shared module `src/net/safe-fetch.ts`, built here).
 - **Push:** subscription endpoints must be https on known push hosts (`*.push.apple.com`, `fcm.googleapis.com`, `updates.push.services.mozilla.com`, `*.notify.windows.com`); `notificationclick` opens only same-origin paths. "No tab open" means no client that was **visible and active in the last 2 minutes** (the client reports `visibilitychange` over a tiny POST), so a desktop tab left open at home does not suppress the phone's pushes; the SSE proxy aborts its upstream when the browser disconnects.
 - **Web service env:** `clots-web.service` gets its own env file with only `CLOTS_UI_SECRET` and the daemon URL, never the full `.env`.
-- **Input hardening:** per-route body limits (messages 20 MB with images, others 256 KB); Clot names are letters, digits and hyphens, starting with a letter, up to 31 characters, capitals allowed (the slug, the name in lower case, names the container, volumes and rule file); repo as `owner/name` validated; `docker`/`git` via argv arrays only; the token scrubbed from clone logs.
+- **Input hardening:** per-route body limits (messages 24 MB: up to 6 images of 5 MB as data URLs, which are a third larger as base64; icon uploads 4 MB; others 256 KB); Clot names are letters, digits and hyphens, starting with a letter, up to 31 characters, capitals allowed (the slug, the name in lower case, names the container, volumes and rule file); repo as `owner/name` validated; `docker`/`git` via argv arrays only; the token scrubbed from clone logs.
 - **Message idempotency:** the client generates the message id (UUID) and reuses it on Retry; the API keeps `INSERT OR IGNORE` semantics (today Discord's id did this). Same for ask answers (idempotency key).
 - **Event ids:** `<bootId>-<seq>`; a `Last-Event-ID` with another boot id gets `resync`. The stream route forwards `Last-Event-ID`; the page subscribes before its server data is considered fresh (or refetches after `open`).
 - **Phone resume:** on `visibilitychange` to visible and on stream reconnect, refetch the open screen and asks. Timers compute from the server deadline; a card past zero reads "Closing…" until `ask.closed` arrives.
 - **Asks UI:** buttons disable with a spinner until the daemon replies; failure keeps the card with Retry; the closed outcome shows on the card itself, not only a toast. An email edit that hits 409 keeps the edited text in the card with the outcome. `/commands`, widget submits and image-only messages are **not** feedback to an open ask. Answering a busy ask returns `{ outcome: "in progress" }`.
-- **Option numbering:** choices are stored with pick 1|2; the API uses 0|1. Convert in one place (`routes/asks.ts`) and test it.
+- **Option numbering:** choices are stored with pick 1|2; the API uses 0|1. Convert in one place (`src/asks/choice.ts`) and test it.
 - **Upgrade:** asks open before the upgrade get `deadline = now + askTimeoutMinutes` at first start.
 - **Startup-captured config:** `src/daemon.ts` builds the email ask kind only when an inbox exists (lines ~256-259) and reads the ask timeout once (~263, ~421). Make both read the live config so adding the first inbox and changing the timeout work without restart.
 - **File watching:** watch the directory, not the file (atomic renames replace the inode); ignore the store's own writes by comparing content hash with the last write.
@@ -116,23 +117,23 @@ Web (`web/` workspace):
 ## Tasks
 
 ### Task 1: Workspaces, web scaffold, tokens, access check
-**Files:** `package.json`, `web/**` (Next app, shadcn init, `globals.css`, `layout.tsx`, `middleware.ts`), `web/lib/daemon.ts` (empty typed shell)
+**Files:** `package.json`, `web/**` (Next app, shadcn init, `globals.css`, `layout.tsx`, `proxy.ts`), `web/lib/daemon.ts` (empty typed shell)
 **Interfaces:** Produces: `npm run web` (dev on :3000), `npm run web:build`.
 **Build:**
 - npm workspaces; Next.js App Router with TypeScript and Tailwind v4; shadcn init and the components listed under "From the stress test".
 - Tokens from the design system in `globals.css` (light `:root`, `.dark`), `next-themes` with `attribute="class"`.
-- Middleware: Tailscale identity check against `ui.owner` (read from the daemon settings endpoint, cached 60 s; until Task 2 exists, from an env var in tests).
+- Proxy (`web/proxy.ts`, Next 16's middleware): Tailscale identity check against `ui.owner` (read from `GET /identity`, cached 60 s; until Task 2 exists, from `CLOTS_UI_DEV_OWNER` in tests).
 **Tests (behaviours):**
 - request with matching `Tailscale-User-Login` → page renders; mismatched or missing → 403 page; a `Host` other than the configured serve host → 403.
 - `npm run web:build` succeeds with no type errors.
 **Done when:** `npm run web:build` and `npm test -w web` pass.
-- [ ] Task 1 complete
+- [x] Task 1 complete
 
 ### Task 2: UI API server and event stream
-**Files:** `src/ui-api/server.ts`, `src/ui-api/events.ts`, `src/ui-api/schemas.ts`, `src/daemon.ts` (start it), `tests/ui-api/*.test.ts`
+**Files:** `src/ui-api/server.ts`, `src/ui-api/events.ts`, `packages/ui-api-schemas/src/index.ts`, `src/daemon.ts` (start it), `tests/ui-api/*.test.ts`
 **Interfaces:**
-- Produces: `EventBus.emit(type: UiEventType, data: unknown): void`; `UiEventType` = `"message.created" | "message.delta" | "message.done" | "activity" | "clot.state" | "ask.opened" | "ask.updated" | "ask.closed" | "workers.updated" | "config.changed" | "clot.build" | "integration.status" | "resync"`.
-- Produces: `registerRoute(method, path, handler(req, body) => Promise<Json>)`; handlers validate with schemas from `schemas.ts`.
+- Produces: `EventBus.emit(type: UiEventType, data: unknown): UiEvent` (ids `<bootId>-<seq>`); `UiEventType` = `"message.created" | "message.delta" | "message.done" | "activity" | "clot.state" | "ask.opened" | "ask.updated" | "ask.closed" | "workers.updated" | "config.changed" | "clot.build" | "integration.status" | "resync"`.
+- Produces: `UiApi.route(method, path, handler(req: ApiRequest) => unknown, { maxBytes }?)` (`req.params`, `req.query`, `req.body` already parsed; `ApiResult(status, body)`, `RawResult`, `ApiError(status, message)`); handlers validate with `parseBody(schema, req.body)` and the schemas in `@clots/ui-api-schemas`.
 **Build:**
 - Loopback server on 8788 with secret check (constant-time compare); 401 without it.
 - SSE at `/api/v1/stream`: replay from `Last-Event-ID` if in the ring, else a `resync` event; heartbeat 20 s.
@@ -142,15 +143,15 @@ Web (`web/` workspace):
 - reconnect with a recent id → missed events in order; with an id older than the ring → `resync`.
 - port 8787 does not serve `/api/v1`.
 **Done when:** `npm test` passes.
-- [ ] Task 2 complete
+- [x] Task 2 complete
 
 ### Task 3: Conversation store replaces Discord
 _Execute in two passes with a green test run between them: (a) store, migration, `Conversation`, routes and `asks`/`waiting` call sites; (b) `clot.ts` (about 40 call sites), runner streaming, activity lines, images, deleting `src/chat/`._
-**Files:** `src/conversation/{store,conversation,activity-lines}.ts`, `src/store.ts` (migration), `src/clot.ts`, `src/pipeline.ts`, `src/waiting.ts`, `src/workers.ts`, `src/global-memory.ts`, `src/daemon.ts`, `src/agent/runner.ts`, delete `src/chat/**`, remove `discord.js`; tests moved to a fake `Conversation`
+**Files:** `src/conversation/{store,conversation,activity-lines}.ts`, `src/store.ts` (migration), `src/clot.ts`, `src/pipeline.ts`, `src/workers.ts`, `src/global-memory.ts`, `src/daemon.ts`, `src/agent/runner.ts`, delete `src/chat/**`, `src/waiting.ts`, `src/asks-migration.ts`, remove `discord.js`; tests moved to a fake `Conversation`
 **Interfaces:**
-- Produces: `interface Conversation { post(clot, text, o?: { kind?: "clot" | "note"; recap?: boolean }): Promise<string>; postActivity(clot, a: TurnActivity): Promise<void>; activityLine(clot, l: { icon: string; text: string }): void; setState(clot, s: "idle" | "working" | "paused" | "failed", reason?: string): void; postAsk(clot, askId): Promise<string>; postWorkers(clot, turnId): Promise<string>; delta(clot, messageId, text): void }`.
-- Produces: message row `{ id, clot, sessionId, kind: "user" | "clot" | "activity" | "note" | "ask" | "workers", text, ref: string | null, createdAt }`; `listMessages(clot, before?: string, limit = 50)`.
-- Produces routes: `GET /clots`, `GET /clots/:clot`, `GET /clots/:clot/messages?before=`, `POST /clots/:clot/messages` (text, images[] as data URLs ≤ 5 MB each), `GET /commands`.
+- Produces: `interface Conversation { post(clot, text, o?: { kind?: "clot" | "note" | "onboarding"; data?; recap?: boolean; id?: string }): Promise<string>; addUser(clot, { id, text, images?, at }): { message, created }; postActivity(clot, a: TurnActivity): Promise<void>; activityLine(clot, l: { icon: string; text: string }): void; setState(clot, s: "idle" | "working" | "paused" | "failed", reason?: string): void; stateOf(clot); postAsk(clot, askId): Promise<string>; postWorkers(clot, turnId): Promise<string>; delta(clot, messageId, text): void }`.
+- Produces: message row `MessageView { id, clot, sessionId, kind: "user" | "clot" | "activity" | "note" | "ask" | "workers" | "onboarding", text, ref: string | null, data: object | null, createdAt, images: number }`; `ConversationStore.list(clot, before?: string, limit = 50)`.
+- Produces routes: `GET /identity`, `GET /clots`, `GET /clots/:clot`, `GET /clots/:clot/messages?before=` (an `ask` message carries its card, a `workers` message its workers), `POST /clots/:clot/messages` (`{ id, text, images[] }`, images as data URLs ≤ 5 MB each, at most 6; a repeated `id` answers `duplicate: true`), `GET /clots/:clot/messages/:id/images/:n`, `POST /clots/:clot/read`, `GET /commands`.
 **Build:**
 - Migration dropping channel/category columns (see Key Decisions).
 - Every channel post in the listed files goes through `Conversation`; user messages from the API enter the existing queue path (`store.enqueue`) with the Clot as the key.
@@ -165,14 +166,14 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 - the store migrates a database with the old columns without losing sessions or asks.
 - no file under `src/` imports `discord.js` (a test that greps the source).
 **Done when:** `npm test` and `npm run typecheck` pass.
-- [ ] Task 3 complete
+- [x] Task 3 complete
 
 ### Task 4: Asks answered in the UI, deadlines on every ask
-**Files:** `src/asks.ts`, `src/asks/*.ts`, `src/config.ts` (rename, removals), `src/asks-migration.ts`, `src/ui-api/routes/asks.ts`, tests
+**Files:** `src/asks.ts`, `src/asks/*.ts`, `src/config.ts` (rename, removals), `src/ui-api/routes/clots.ts` (the asks routes), tests
 **Interfaces:**
 - Produces: `type AskAnswer = { action: "allow" } | { action: "block" } | { action: "edit"; body: string } | { action: "pick"; option: 0 | 1 }`.
-- Produces: `AskKind.onAnswer(ask, answer: AskAnswer, io)`, `AskKind.onFeedback(ask, text, io)`, `AskKind.onDeadline(ask, io)` (required on every kind).
-- Produces routes: `GET /asks` (open asks with `{ id, clot, kind, summary, details, deadline, timer: "calm" | "calling" | "urgent", options?, pick? }`), `POST /asks/:id/answer` → `{ outcome }` (already closed → the stored outcome, HTTP 409).
+- Produces: `AskKind.onAnswer(ask, answer: AskAnswer, io)`, `AskKind.onFeedback?(ask, text, io)` (optional), `AskKind.onDeadline(ask, io)` (required on every kind); `Asks.answer(id, answer, key?)`, `Asks.onUserMessage(clot, text)`, `Asks.list()`, `Asks.snapshot(ask)`.
+- Produces routes: `GET /asks` (open asks as `AskSnapshot { id, clot, kind, summary, view, deadline, timer: "calm" | "calling" | "urgent", state: "open" | "busy", openedAt, outsider, messageId }`; `view` carries heading, rows, body, labels, `options` and `pick`), `POST /asks/:id/answer` (`{ answer: AskAnswer, key? }`) → `{ outcome }` (already closed → the stored outcome, HTTP 409; busy → `{ outcome: "in progress" }`). The asks restructure (answers, feedback, deadlines) landed with Task 3, since the conversation had to replace the reply path at once.
 **Build:**
 - Remove exact-reply matching; a user message in a Clot's chat while one of its asks is open goes to that ask's `onFeedback` (most recent open ask of the Clot).
 - `askTimeoutMinutes` on every ask (config migration renames `choiceTimeoutMinutes`; `sendReview` dropped, ignoring it if present).
@@ -186,14 +187,14 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 - a restart with a passed deadline closes it at start.
 - a config with `choiceTimeoutMinutes: 20` loads as `askTimeoutMinutes: 20`.
 **Done when:** `npm test` passes.
-- [ ] Task 4 complete
+- [x] Task 4 complete
 
 ### Task 5: Commands, workers and settings endpoints
 **Files:** `src/commands.ts`, `src/workers.ts`, `src/ui-api/routes/{workers,settings}.ts`, `src/conversation/store.ts` (UI preferences), tests
 **Interfaces:**
-- Produces: `GET /commands` → `[{ name: "effort", options: "low or medium", description: "Sets the effort for your next message" }, …]` for: effort, close, rules (undo), memory (undo), spend, calendar undo, composio undo.
-- Produces: `GET /turns/:id/workers` → `[{ id, brief, model, effort, status: "queued" | "running" | "pr-open" | "failed", pr?: string }]`; `workers.updated` events.
-- Produces: `GET/PUT /settings/general`, `GET/PUT /settings/ui` (`{ theme, contentWidth: "wide" | "medium" | "narrow", paneWidths: Record<string, number>, notificationsDismissed: boolean }`).
+- Produces: `GET /commands` → `[{ name: "effort", options: "low or medium", description: "Sets the effort for your next message" }, …]` (`COMMAND_LIST` in `src/commands.ts`) for: close, effort, rules (undo), memory (undo), spend, calendar undo, composio undo, composio reconnect.
+- Produces: `GET /turns/:id/workers` → `[{ id, brief, model, effort, status: "queued" | "running" | "pr-open" | "done" | "failed", pr?: string }]`; `workers.updated` events.
+- Produces: `GET/PUT /settings/general`, `GET/PUT /settings/ui` (`{ theme: "system" | "light" | "dark", contentWidth: "wide" | "medium" | "narrow", paneWidths: Record<string, number>, notificationsDismissed: boolean }`; `paneWidths` are fractions of the window, 0 to 1).
 **Build:**
 - `/` parsing with the same semantics as `&`; `&` no longer recognised.
 - A `workers` message posted once after the turn that dispatched them.
@@ -202,52 +203,52 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 - worker statuses move queued → running → pr-open and emit events.
 - UI preferences persist across a daemon restart.
 **Done when:** `npm test` passes.
-- [ ] Task 5 complete
+- [x] Task 5 complete
 
 ### Task 6: Desktop chat, Waiting for you, shell
-**Files:** `web/app/(app)/**`, `web/components/clots/**`, `web/lib/{daemon,stream}.ts`, `web/app/api/**`, `web/e2e/fake-daemon.ts`, `web/e2e/chat.spec.ts`, `web/e2e/waiting.spec.ts`
-**Interfaces:** Consumes Tasks 2 to 5 routes and events. Produces `useStream(handlers)` client hook (reconnect with backoff 1 s → 30 s, `Last-Event-ID`, `resync` → `router.refresh()`).
+**Files:** `web/app/(app)/**`, `web/components/clots/**`, `web/lib/{daemon,stream,guard}.ts`, `web/app/api/**`, `web/e2e/fake-daemon.mts`, `web/e2e/chat.spec.ts`, `web/e2e/waiting.spec.ts`
+**Interfaces:** Consumes Tasks 2 to 5 routes and events. Produces `useStream({ onEvent, onOpen })` client hook returning `"connecting" | "up" | "down"` (reconnect with backoff 1 s → 30 s, `Last-Event-ID`); `AppStateProvider` (`useAppState()`: Clots, asks, prefs, `subscribe`, `onResync`, `answer`) opens it once, and a `resync` event or a reopened stream makes each screen refetch.
 **Build:**
-- Shell: rail (Clots with icons, active = bold weight or swapped upload, drag to reorder → `POST /clots/order`, "…" menu after three, bell dot), page container, resizable side pane (widths saved to UI prefs; drag to edges = full/close).
-- Chat: header (name, Info), messages (markdown, raw HTML off, links new tab), activity lines, notes (recap folded), ask cards (email card with editable body; merge/rule/choice cards), worker card, timestamps rule, infinite scroll up, composer (paste images, Enter/Shift+Enter, slash menu with fuzzy filter and bold prefix), optimistic send with Retry.
-- Info pane: repository, connections with real logos (Composio `logo` URL via `next/image` with that host in `remotePatterns`; email → Phosphor `EnvelopeSimple`).
+- Shell: rail (no logo; Home, every Clot with its icon, New Clot, then Waiting with the bell dot and Settings at the bottom; the Clots scroll when they do not fit; active = bold weight or swapped upload; drag to reorder → `POST /clots/order`), page container, side pane (`useSidePane().open({ clot, label, render })`; its own grip, no X or full-screen button; widths saved to UI prefs; drag to the left edge = full, to the right edge = close).
+- Chat: header (name, an icon-only Info button), messages (markdown, raw HTML off, links new tab), activity lines, notes (recap folded), ask cards (email card with editable body; merge/rule/choice cards), worker card, timestamps under the Clot's messages only, infinite scroll up, composer (a `+` attach button, paste images, Enter/Shift+Enter, slash menu as wide as the composer with fuzzy filter and bold prefix), optimistic send with Retry.
+- Info pane: repository (Phosphor `GithubLogo`), connections with real logos (`ConnectionIcon`: Composio's logo for the toolkit via `next/image` with `logos.composio.dev` in `remotePatterns`; a Gmail address uses Composio's `gmail` logo; another inbox → Phosphor `EnvelopeSimple`).
 - Waiting for you: grouped by Clot in rail order, summary line, ask actions per kind, hover preview for email body, empty state copy from the spec.
 - Content width and theme from UI prefs; banner when the daemon is unreachable.
-- Playwright against a fake daemon (an in-process server speaking the API and stream).
+- Playwright against a fake daemon (`web/e2e/fake-daemon.mts`: a separate process speaking the API and stream, with a control server on its port + 1).
 **Tests (behaviours):**
 - a sent message appears at once, the streamed reply grows and then settles.
 - each ask kind answered from the chat card and from Waiting for you; a closed ask shows the outcome toast.
-- the slash menu filters `/cl` to close, calendar undo, composio undo with the prefix bold.
+- the slash menu lists every command on `/`; `/cl` leaves close and calendar undo with the matched letters bold; `/sp` leaves spend.
 - killing the fake daemon shows the banner; restarting it clears it and resyncs.
 - axe finds no serious violations on chat and Waiting, in light and dark.
 **Done when:** `npm run test:e2e` passes for these specs.
-- [ ] Task 6 complete
+- [x] Task 6 complete
 
 ### Task 7: Phone, install and push
 **Files:** `web/app/(app)/**` (responsive variants), `web/components/clots/tab-bar.tsx`, `web/public/{manifest.webmanifest,sw.js,icons/*}`, `src/push.ts`, `src/ui-api/routes/push.ts`, tests
-**Interfaces:** Produces `POST /push/subscribe` (subscription JSON), `DELETE /push/subscribe`, `GET /push/key`; `push.notify(event)` called from asks, timer and Clot state.
+**Interfaces:** Produces `POST /push/subscribe` (subscription JSON), `DELETE /push/subscribe`, `GET /push/key`, `POST /push/visibility` (a device reports itself visible or not), `POST /push/test`, `GET /push/status`; `Push.notify(n)` called from asks, timer and Clot state (`src/push.ts`: `Push`, `PushStore`, `allowedEndpoint`, `webPushSender`).
 **Build:**
 - Below 768 px: Clots list, chat (back button + edge-swipe back, no header actions, no attach), Waiting (Block/Allow or options only; row tap opens the ask); floating tab bar (Clots, Waiting) hidden in chats and while the keyboard is open (`visualViewport`); safe-area insets; 16 px inputs (no zoom).
-- Turn on row (highlight-soft) until granted or dismissed; permission requested only from that button.
-- Push sends per the spec's list; "no tab open" = no SSE client connected; 404/410 deletes the subscription.
+- On Waiting for you only: a Turn on row (highlight-soft, one button) until granted or dismissed; permission requested only from that button, and "on" means a real push subscription exists.
+- Push sends per the spec's list; "no tab open" = no device visible and in use in the last 2 minutes (`POST /push/visibility`); 404/410 deletes the subscription.
 - Settings, New Clot and integrations routes redirect to Clots on phone widths.
 **Tests (behaviours):**
 - at 390×844: tab bar visible on Clots and Waiting, hidden in a chat; Waiting rows show two buttons.
-- a new ask with no stream client sends one push per subscription; with a client connected, a reply sends none.
+- a new ask sends one push per subscription; a reply sends none while a device has been visible in the last 2 minutes.
 - a 410 from the push service deletes that subscription.
 - manifest valid (name, icons, `display: standalone`).
 **Done when:** `npm test` and `npm run test:e2e` pass.
-- [ ] Task 7 complete
+- [x] Task 7 complete
 
 ### Task 8: Config store, hot reload, settings pages
-**Files:** `src/config-store.ts`, `src/config.ts`, `src/config-edit.ts`, `src/env-file.ts`, `src/agent/tool-server.ts` (`set_config` text, no restart), `src/ui-api/routes/{settings,keys,clots}.ts`, `web/app/(app)/settings/**`, tests
+**Files:** `src/config-store.ts`, `src/live-config.ts`, `src/live-env.ts`, `src/config.ts`, `src/config-edit.ts`, `src/env-file.ts`, `src/email-sync.ts`, `src/agent/tool-server.ts` (`set_config` text, no restart), `src/ui-api/routes/{settings,clots-admin}.ts`, `web/app/(app)/settings/**`, `web/lib/use-unsaved-guard.ts`, tests
 **Interfaces:**
-- Produces: `configStore.onChange(keys: string[], apply: (next: Config, prev: Config) => Promise<void>)`; `configStore.save(patch)` → `{ applied: string[]; needsRestart: string[] }` or field errors; `config.changed` event.
-- Produces: `GET /keys` → `[{ name, last4 }]`, `PUT /keys/:name` (value), `DELETE /keys/:name`.
+- Produces: `configStore.onChange(keys: string[], apply: (next: Config, prev: Config) => void | { restart: boolean } | Promise<…>)`; `configStore.save(patch)` → `{ ok: true, applied, needsRestart }` or `{ ok: false, errors }`; `configStore.reapply()` (re-reads `.env`; `PUT`/`DELETE /keys` call it); `config.changed` event `{ keys, needsRestart, fromFile?, error? }`.
+- Produces: `GET /keys` → `[{ name, last4, protected }]`, `PUT /keys/:name` (value), `DELETE /keys/:name`; `POST /clots/order`, `DELETE /clots/:clot`.
 **Build:**
 - Atomic write + backup; watch both files (300 ms debounce); invalid hand edit → keep last good, emit `config.changed` with the error.
 - Register apply handlers for every key group in the spec; restart-only keys reported.
-- Settings: General (fields and help text as on the canvas, time input custom component with keyboard rules from the design system), Manage Clots (state, Edit → `/new?edit=<clot>`, Delete with typed name; refused for home; volumes and history kept), Integrations (inboxes list, Composio list, Keys list).
+- Settings: General (fields and help text as on the canvas, time input custom component with keyboard rules from the design system), Manage Clots (state, Edit → `/new?edit=<clot>`, Delete with typed name; refused for home; volumes and history kept), Integrations (inboxes list, Composio list, Keys list). Leaving a page with unsaved edits asks first (`useUnsavedGuard`: in-app links and Back, plus the browser's own warning on close).
 - The "Picked up changes to clots.config.json" toast on `config.changed` from a file edit.
 **Tests (behaviours):**
 - a hand edit changing `maxWorkers` applies without restart; a hand edit with invalid JSON is ignored and reported.
@@ -256,19 +257,19 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 - `.env` comments and order survive a key write.
 - deleting home is refused; deleting another Clot stops its container and keeps its volumes.
 **Done when:** `npm test` and the settings e2e spec pass.
-- [ ] Task 8 complete
+- [x] Task 8 complete
 
 ### Task 9: New Clot and onboarding
-**Files:** `src/onboarding/{create,repo-access,icons,checklist}.ts`, `src/ui-api/routes/clots.ts`, `web/app/(app)/new/**`, `web/components/clots/icon-picker.tsx`, tests
+**Files:** `src/onboarding/{create,repo-access,icons,checklist}.ts`, `src/clot-name.ts`, `src/ui-api/routes/clots-admin.ts`, `web/app/(app)/new/**`, `web/components/clots/{new-clot,new-clot-tools,build-progress,onboarding-card,icon-picker}.tsx`, tests
 **Interfaces:**
-- Produces: `POST /clots/validate` (`{ name, repo }` → field errors or ok; accepts a pending invitation), `POST /clots/icons` (upload → `{ iconId }`), `POST /clots` (create; progress as `clot.build` events `{ clot, step: "cloning" | "building" | "starting" | "done" | "failed", log? }`), `POST /clots/:clot/retry`.
-- Produces: checklist items `{ id: "webhook" | "tools" | "push-branch", done: boolean, detail }` stored per Clot; `GET /clots/:clot/webhook-secret` (`{ secret }`, read only when the user presses Copy).
+- Produces: `POST /clots/validate` (`{ name, repo }` → field errors or ok; accepts a pending invitation), `POST /clots/icons` (upload → `{ iconId }`), `POST /clots` (`{ name, repo, icon, toolJobs? }` → 202; progress as `clot.build` events `{ clot, step: "cloning" | "building" | "starting" | "done" | "failed", log? }`; `toolJobs` are the connection jobs held for this Clot, Task 10), `GET /clots/:clot/build` (`{ step, log? }`, 404 when nothing is being built; a reload mid-build reads it), `POST /clots/:clot/retry`, `PUT /clots/:clot` (Edit: `{ icon?, repo? }`; a changed repository is checked like a new Clot's, refused with 409 while a turn runs, then moved in the background → 202 `{ ok, moving: true }` with `clot.build` events, the entry changing only after it worked; the icon alone saves at once).
+- Produces: checklist items `{ id: "webhook" | "tools" | "push-branch", done: boolean, detail }` from `GET /clots/:clot/onboarding` (`{ items }`; the marks are kept in the store, so a restart does not untick them); `GET /clots/:clot/webhook-secret` (`{ secret }`, read only when the user presses Copy).
 - A Clot's name keeps its capitals (letters, digits, hyphens); `src/clot-name.ts` gives `slugOf` (lower case), which container, volume, rule-file and uniqueness checks use.
 **Build:**
-- Steps 1 to 3 with slide transitions (`motion`), heading animates to icon + "Creating <name>", Reset, Edit mode with Save.
+- Steps 1 to 3 with slide transitions (`motion`), heading animates to icon + "Creating <name>", Reset, Edit mode with Save. The step, name, repository, icon and held tools live in the address (`history.replaceState`), so a reload keeps them. Step 2 (Tools) lists shared accounts, the Clot's own tools and an Add tile that opens the integration dialog for a Clot that does not exist yet; the tools it makes are held (Task 10) and sent as `toolJobs`.
 - Icon picker: all Phosphor icons (regular), search, eight colours, upload or paste; active variant via `sharp`.
 - Create writes the config entry through the config store (Task 8), clones, builds, starts; failure shows log + Retry.
-- First Clot message = one line plus the checklist card (message kind `onboarding`, data `{ repo, webhookUrl }`, never the secret); the card lists the steps, ticks them live, and puts the webhook address and the secret behind Copy buttons. Webhook item turns done on GitHub's `ping` for that repo; branch item on the first push by the Clot's token.
+- First Clot message = one line plus the checklist card (message kind `onboarding`, data `{ repo, webhookUrl }`, never the secret); the card lists the steps, ticks them live, and puts the webhook address and the secret behind Copy buttons. Webhook item turns done on GitHub's `ping` for that repo; branch item on a GitHub `push` event whose sender is the Clots' login, or a worker's pull request; tools item when every Composio tool of the Clot is active (done when there is none). A failed build removes the config entry (and the Clot's tools with it), so the name is free again; Retry re-adds them from the failed build's record.
 **Tests (behaviours):**
 - a taken name or invalid container name → field error; no access → the invite instructions; pending invitation → accepted.
 - a name with capitals is accepted and kept as typed; `Truecast` is taken when `truecast` exists; the container is `clot-truecast`; a lowercase Clot keeps its container.
@@ -277,17 +278,17 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 - a failed build reports `failed` with the log; Retry continues.
 - a GitHub ping for the repo marks the webhook item done.
 **Done when:** `npm test` and the new-clot e2e spec pass (fake Docker and fake GitHub).
-- [ ] Task 9 complete
+- [x] Task 9 complete
 
 ### Task 10: Connecting services
-**Files:** `src/integrations/configurer.ts`, `src/ui-api/routes/integrations.ts`, `web/components/clots/integration-dialog/*`, `web/app/(app)/settings/integrations/**`, tests
+**Files:** `src/integrations/{configurer,jobs,apply}.ts`, `src/composio/{component,api}.ts`, `src/ui-api/routes/integrations.ts`, `web/components/clots/integration-dialog/*`, `web/components/clots/{tool-tile,tool-logo}.tsx`, `web/components/clots/settings/{integrations,inbox-dialog,connection-row}.tsx`, tests
 **Interfaces:**
-- Produces: `GET /integrations/toolkits?q=` (cached 24 h), `POST /integrations/configure` (`{ toolkit, clot | "shared", audience, selfIsUser, events, pollMinutes }` → `{ jobId }`), events `integration.status` `{ jobId, state: "working" | "oauth" | "key" | "active" | "failed", link?, instructions?, keyName?, error? }`, `PUT /integrations/:jobId/key` (value → `.env`), inbox CRUD `GET/POST/PUT/DELETE /inboxes`.
+- Produces: `GET /integrations` (`{ inboxes, tools }`: each tool with `status` and `restartNeeded`), `GET /integrations/toolkits?q=` (`{ toolkits: [{ slug, name, logo?, description?, auth, webhooks? }] }`, cached 24 h, at most 60), `POST /integrations/configure` (`{ toolkit, clot?, audience, selfIsUser, events, pollMinutes?, jobId?, replaces? }`, no `clot` = shared with every Clot; 201 `{ jobId }`), `GET /integrations/jobs/:jobId`, events `integration.status` `{ jobId, toolkit, state: "working" | "oauth" | "key" | "active" | "failed", link?, oauthReadyAt?, instructions?, keyName?, error?, needsRestart? }`, `PUT /integrations/jobs/:jobId/key` (`{ value }` → `.env`), `POST /integrations/jobs/:jobId/abandon`, `POST /integrations/tools/:id/reconnect` (`:id` is `toolkit:account`), `DELETE /integrations/tools/:id`, inbox routes `POST /inboxes`, `PUT /inboxes/:account`, `DELETE /inboxes/:account` (the list is in `GET /integrations`). Without `COMPOSIO_API_KEY` at daemon start, routes that need Composio answer 503.
 **Build:**
-- Dialog steps: pick (two-column grid, skeletons, added state with remove), options, working (skeletons), connect (OAuth link button new tab, Done disabled 5 s; or key field with eye toggle and instructions, Done disabled while empty). No close button in working/connect; Back to options.
+- Dialog steps: pick (two-column grid, skeletons, added state with remove), options (audience as a Select with icons; own account; every Clot or this one; events; polling time shown when events are on and the toolkit has no webhook), working (skeletons), connect (OAuth link button new tab, Done disabled 5 s; or key field with eye toggle and instructions, Done disabled while empty). No close button in working/connect; Back to options. Props: `clot?`, `edit?`, `resume?`, `retool?`, `added?`.
 - Configurer session as in Key Decisions; `save_integration` writes through the config store.
 - OAuth: watch the connection until active; abandoned after an hour → removed from Composio.
-- Inbox form with provider detection by domain (gmail.com, googlemail.com → Gmail icon; others → envelope).
+- Inbox form with provider detection by domain (gmail.com, googlemail.com → Gmail icon; others → envelope); IMAP/SMTP hosts default from the domain (`src/email-providers.ts`), an unknown domain asks for them.
 - Right-click menu on tool tiles (Edit settings, Reconnect, Remove from <name>).
 **Tests (behaviours):**
 - `save_integration` with an invalid entry is refused and nothing is written.
@@ -295,21 +296,21 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 - OAuth state reaches active when the fake Composio connection activates; Done enables after 5 s.
 - an abandoned connection is removed after the hour (fake clock).
 **Done when:** `npm test` and the integration e2e spec pass (fake Composio, fake configurer model responses).
-- [ ] Task 10 complete
+- [x] Task 10 complete
 
 ### Task 11: Deploy, docs and parent design
 **Files:** `deploy/update.sh`, `deploy/clots-web.service`, `README.md`, `.superpowers/specs/2026-10-10-clots-design.md` (sections 2, 6, 7, 11, 16 in place, no change notes), `clots.config.example.json`
 **Build:**
-- `update.sh`: `npm ci`, `npm run web:build`, install/restart `clots-web.service`, ensure `tailscale serve --bg --https=8443 http://127.0.0.1:3000`.
-- README: web UI setup (ui.owner, serve, installing on iPhone, notifications), Discord sections removed.
+- `update.sh`: `npm ci`, `npm run web:build` (when `web/`, `packages/` or the lockfile changed), write `data/web.env` (only `CLOTS_UI_SECRET` and the daemon URL), install/restart `clots-web.service`, ensure `tailscale serve --bg --https=8443 http://127.0.0.1:3000`.
+- README: web UI setup (ui.owner, serve, installing on iPhone, notifications, developing behind `tailscale serve` with `CLOTS_UI_DEV_ORIGINS`), Discord sections removed.
 - Example config: `ui.owner`, `askTimeoutMinutes`, no `discord`, no `sendReview`.
 **Tests (behaviours):** `bash -n deploy/update.sh`; the example config validates with the schema.
 **Done when:** `npm test`, `npm run typecheck`, `npm run web:build` pass.
-- [ ] Task 11 complete
+- [x] Task 11 complete
 
 ## Manual Verification Checklist
 
-**Shared setup:** Docker Desktop running (`docker info` succeeds). `npm ci`; `.env` with the existing keys; `clots.config.json` with `"ui": { "owner": "<your tailscale login>" }`. Start `npm run daemon` in the background and `npm run web:build && npm run web -- --prod` (or `next start -p 3000` in `web/`). `tailscale serve --bg --https=8443 http://127.0.0.1:3000`. Open `https://laptop-nj7mbno6.tailf707aa.ts.net:8443` in the built-in browser.
+**Shared setup:** Docker Desktop running (`docker info` succeeds). `npm ci`; `.env` with the existing keys; `clots.config.json` with `"ui": { "owner": "<your tailscale login>" }`. Start `npm run daemon` in the background and `npm run web:build && npm run web:start` with `CLOTS_UI_SECRET` (from `.env`) and `CLOTS_DAEMON_URL=http://127.0.0.1:8788` in the environment. `tailscale serve --bg --https=8443 http://127.0.0.1:3000`. Open `https://laptop-nj7mbno6.tailf707aa.ts.net:8443` in the built-in browser.
 
 #### MV-1: Access is tailnet and owner only
 - **Steps:** 1. Open the URL above. 2. `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/waiting`. 3. `curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8788/api/v1/clots`.
@@ -374,7 +375,7 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 - **How the executor runs it:** browser + curl.
 
 #### MV-13: New Clot end to end
-- **Steps:** 1. Click + in the rail. 2. Pick the Sliders icon, name `graphite`, repository `hacker4ofakind/chess-gpt`. Next. 3. No tools; Next/Create graphite.
+- **Steps:** 1. Click + in the rail. 2. Pick the Sliders icon, name `graphite`, repository `hacker4ofakind/chess-gpt`. Next. 3. No tools; Create graphite.
 - **Expected:** progress shows cloning, building, starting; you land in graphite's chat with the onboarding checklist, the webhook address and a Copy button for the secret (the secret is not in the message); after adding the webhook on GitHub, the webhook item turns done.
 - **How the executor runs it:** browser + GitHub in the built-in browser. Delete the Clot afterwards (Settings → Manage Clots → Delete, typing the name).
 
@@ -419,4 +420,56 @@ Claritee, inline widgets, Clapboards and the Clapboard header button (4b). Daily
 
 ## Implementation Notes
 
-_Filled in by the executor: deviations and why, changed names/interfaces, surprises, notes for the next stage's planner._
+Written when the build stopped at checkpoint 2 (`6f24d95`): `npm test` 109 files and 1,817 tests, `npm run typecheck`, `npm audit --omit=dev` and `npm run web:build` green; web e2e 74 of 75 in the full run (the miss was a cold-compile flake, see Traps). All eleven tasks are built and ticked. The Manual Verification Checklist has not been run yet (the verifier does it). The builders' working notes are in `.superpowers/handoffs/` (not committed).
+
+### Deviations, and why
+- **Rail**: lists every Clot and scrolls when they do not fit; there is no "…" menu after three (the user's fix list and the canvas show none). Order: Home, each Clot, New Clot, spacer, Waiting, Settings; no logo.
+- **Next 16**: `middleware.ts` is `web/proxy.ts` (Next 16.4.6, React 19.3.1). The side pane has its own grip (`side-pane.tsx`); the shadcn `resizable.tsx` exists but the pane does not use it.
+- **Schemas** live in the workspace package `packages/ui-api-schemas` (`@clots/ui-api-schemas`), not `src/ui-api/schemas.ts`.
+- **The asks restructure landed in Task 3**, not Task 4 (the conversation had to replace the reply path at once). `onFeedback` is optional (rule, memory and restart kinds leave typed text to the Clot). The email "draft" answer is gone. `needsAsk` is always true.
+- **Message body limit 24 MB** (spec 20): up to 6 images of 5 MB are a third larger as base64 in JSON. Icon uploads 4 MB, everything else 256 KB.
+- **Message kind `onboarding`** (data `{ repo, webhookUrl }`) joins the six kinds. Clot names keep capitals; `slugOf` (lower case) names everything on disk and in Docker.
+- **Integration dialog**: audience is a Select, not segmented; the polling time shows when events are on and the toolkit has no webhook; one secret per connection (the generated `<TOOLKIT>_<ACCOUNT>_KEY`), a toolkit that needs its own OAuth app is refused at Finish; the daemon decides how a toolkit connects (`authFor`), never the configurer; `web_search` is the SDK's built-in `WebSearch`; the configurer cannot write recipes.
+- **Live apply**: email accounts, generic Composio toolkits, MCP servers, gates, sweep, spend, hold, time zone and the other keys apply at once. Built-in toolkits (linear, notion, stripe, googlecalendar) and `intake`, `image`, `ui`, `rulebookDir`, `home`, `publicUrl` and the `.env` tokens need a restart (`needsRestart`, and `restartNeeded` on a tile). A hand-edited `repoUrl` is not re-cloned (logged; use Edit).
+- **Held tools**: a tool added for a Clot that does not exist yet is held in its job and written by `POST /clots` with `toolJobs`.
+- **Extra routes** beyond the plan: `GET /identity`, `GET /clots/:clot/build`, `PUT /clots/:clot`, `GET /clots/:clot/onboarding`, `POST /clots/:clot/read`, `POST /push/visibility`, `POST /push/test`, `GET /push/status`, `POST /integrations/jobs/:id/abandon`.
+- **Push "no tab open"** means no device visible and in use for 2 minutes, not "no SSE client".
+- **Small ones**: `composio reconnect` joined the commands; worker status gained `done`; the phone's Clots list keeps an unread dot (not on the canvas); the stage has checkpoint commits, not one. Planned items (todo, voice, browser, computer, Secret Storage, the Clapboard icon) are absent.
+
+### Names the 4b planner needs
+Daemon
+- UI API: `UiApi` (`src/ui-api/server.ts`; `127.0.0.1:8788`, `/api/v1`, header `X-Clots-UI-Secret`; `api.route(method, path, handler, { maxBytes })`, `ApiRequest`, `ApiResult`, `RawResult`, `ApiError`, `parseBody`). Routes in `src/ui-api/routes/{clots,clots-admin,settings,prefs,workers,push,integrations}.ts`.
+- `EventBus` (`events.ts`; ring of 1,000; ids `<bootId>-<seq>`; heartbeat 20 s). Event types are `UI_EVENT_TYPES` in the schemas package: message.created, message.delta, message.done, activity, clot.state, ask.opened, ask.updated, ask.closed, workers.updated, config.changed, clot.build, integration.status, resync.
+- `Conversation` (`src/conversation/conversation.ts`: `post`, `addUser`, `postActivity`, `activityLine`, `setState`, `postAsk`, `postWorkers`, `delta`) and `ConversationStore` (`store.ts`: messages, message_images, ask_history, ui_prefs). `MessageView { id, clot, sessionId, kind, text, ref, data, createdAt, images }`; kinds are in `MESSAGE_KINDS` (schemas) and `MessageKind` (`store.ts`; the column has no CHECK). `PostOptions.data` carries structured messages; `PostOptions.id` keeps a streamed reply's delta id.
+- Asks: `Asks` (`src/asks.ts`: `answer`, `onUserMessage`, `list`, `snapshot`), `AskKind { onAnswer, onFeedback?, onDeadline, view }`, `AskAnswer`, `AskSnapshot`; choice numbers 0/1 in the API and 1/2 stored, converted in `src/asks/choice.ts`.
+- Config: `ConfigStore` (`src/config-store.ts`: `onChange`, `save`, `reapply`, `reload`, `watch`, `keys`, `setKey`, `removeKey`, `usersOf`; `RESTART_KEYS`, `PROTECTED_ENV_KEYS`), `registerLiveConfig` and `LiveTargets` (`src/live-config.ts`), `LiveEnv` (`src/live-env.ts`; secrets are read from it, never from `process.env`).
+- Connecting: `IntegrationJobs` (`src/integrations/jobs.ts`), `Configurer`, `sdkConfigurerModel`, `keyNameFor` (`configurer.ts`), `sourcesApplier` (`apply.ts`), `ComposioApi.listToolkits`.
+- `safeFetch(url, { maxBytes, timeoutMs, maxRedirects, headers })`, `BlockedError`, `isPrivateAddress` in `src/net/safe-fetch.ts` (the configurer's `web_fetch` uses it; use it for the image proxy). Push: `Push`, `PushStore`, `allowedEndpoint` in `src/push.ts`. Runner hooks: `TurnBase.onText(text, key)`, `onTextDelta`, `onToolUse`, `images`; `TextStreams`.
+
+Web
+- Proxy route `web/app/api/d/[...path]/route.ts` and `web/app/api/stream/route.ts`, both through `guard` (`web/lib/guard.ts`: owner re-check, Origin equals the serve host, JSON content type, so every non-DELETE call, even a bodiless one, sends `{}`). Browser calls use `api()` from `web/lib/api-client.ts`; server code uses `daemon()`.
+- Stream: `useStream({ onEvent, onOpen })` (`web/lib/stream.ts`) runs once inside `AppStateProvider`; screens use `useAppState().subscribe(fn)` and `onResync(fn)`.
+- Markdown: `web/components/clots/markdown.tsx` (not a `chat/` folder); images render as links. The CSP `img-src` is `'self' data: blob: https://logos.composio.dev` (`web/proxy.ts`), so 4b's image proxy needs a same-origin route.
+- Side pane: `useSidePane().open({ clot, label, render })` (`side-pane.tsx`); the Info pane is its first user. The Clapboard header button goes beside the Info button in `chat-view.tsx`.
+- Shared components in `web/components/clots/`: `segmented`, `stepper`, `list-card` (`ListCard`, `ListRow`), `icon-tile`, `status-dot`, `confirm-dialog`, `connection-icon` (`composioLogo()`), `field-row` (`FieldRow`, `PageHeader`), `time-input`, `timer`, `tool-tile`, `tool-logo`, `slash-menu`, `skeletons`. `IntegrationDialog` takes `clot?`, `open`, `onOpenChange`, `onAdded`, `edit?`, `resume?`, `retool?`, `added?`. Tokens are in `web/app/globals.css`.
+- Fake daemon and e2e: `web/e2e/fake-daemon.mts` (port `FAKE_DAEMON_PORT`, default 8791; its control server is on that port + 1), `fake-integrations.mts`, `helpers.ts` (`gotoLive` waits for the stream; use it, not `goto`). Env: `E2E_WEB_PORT` (3100), `E2E_DAEMON_PORT` (8791), `NEXT_DIST_DIR` (a moved web port gets `.next-e2e-<port>`), and for the web app `CLOTS_DAEMON_URL`, `CLOTS_UI_SECRET`, `CLOTS_UI_DEV_OWNER`, `CLOTS_UI_DEV_HOST` (both ignored in production), `CLOTS_UI_DEV_ORIGINS` (dev behind `tailscale serve`).
+
+### Surprises and traps
+- A key tool is reported `active` when its entry is saved, not when Composio accepts the key (a wrong key shows as `unknown` or `waiting` and retries with backoff). `config.current` holds key values: `setKey` alone does not refresh them, so anything that changes a key under a live account calls `configStore.save({})` or `reapply()`.
+- Jobs are in memory: a daemon restart drops them; `tick()` (every 3 s, from `daemon.ts`) is the only watcher of sign-ins and of the 1 h abandon. `Composio` exists only when `COMPOSIO_API_KEY` is in `.env` at start. Held tools that never become a Clot are dropped after an hour; the web abandons them on Reset and Remove, not on leaving the page. `PUT /inboxes/:account` writes the new password before the save, so a refused save loses the old one. A failed move after the container swap leaves the Clot on the new volume with the old entry.
+- SQLite cannot drop a UNIQUE column, so the store migration rebuilds `sessions` and `user_asks` (regression test in `tests/store-migration.test.ts`). `choiceTimeoutMinutes` is renamed (`renamedKeysIn`); `discord` and `sendReview` are ignored (`legacyKeysIn`). The loader silently skips an entry it cannot use (for example no `publicUrl`), so a connection job checks `configStore.skipped` after saving and rolls back.
+- **Lint is broken here**: the root TypeScript is 7.0.2 and typescript-eslint refuses it, so `npm run lint -w web` crashes. Builders linted through a TS 5 preload; React-compiler rule errors were left in `app-state.tsx`, `clot-icon.tsx`, `onboarding-card.tsx`, `new-clot.tsx` and `integration-dialog` (not rechecked since).
+- **Next's generated files**: a dev server with its own `NEXT_DIST_DIR` rewrites `web/tsconfig.json` (`include`), so run `git checkout web/tsconfig.json` before committing. Stale `web/.next*/types/**/validator.ts` naming a deleted page break typecheck and build (delete them). `web/AGENTS.md` and `web/next-env.d.ts` are generated and ignored.
+- **Tests under a cold `next dev`** flake (a route's first compile outruns the timeouts). Parallel sessions collide on 8791 and 3100 and one wipes `web/test-results`: use your own ports and `--output`. Timers need `suppressHydrationWarning` (they read the clock on both sides). The browser pane blocks `_next` scripts on the tailnet URL (`ERR_BLOCKED_BY_CLIENT`): check through `next dev` with `CLOTS_UI_DEV_OWNER` behind a header-adding proxy, or the fake daemon. Without `CLOTS_UI_DEV_ORIGINS` a dev page behind `tailscale serve` never hydrates.
+- Windows: Python rewrites LF files as CRLF (run `scripts/fix-eol.py` before committing; `src/store.ts` and `tests/composio-component.test.ts` have mixed endings in git: leave them). `web-push` 4 is ESM (named imports). `components/ui/label.tsx` sets `text-sm font-medium leading-none` and beats `text-label`, so callers use `!` overrides. Dark `--primary-hover` gives 3.9:1 with white text while hovered (the design's token; the e2e moves the pointer away). SSR paints a chat at its top until hydration scrolls it down.
+
+### Not live-verified
+- `ComposioApi.listToolkits` (`composio.toolkits.get({ sortBy: "usage", limit: 1000 })`) against the real Composio; if the limit is capped the list is shorter than the catalogue.
+- `sdkConfigurerModel` (Sonnet 5.5, medium effort, `createSdkMcpServer` plus `WebSearch`, 5 minutes, 30 turns) has not run against the real Anthropic API. The daemon wiring of jobs and the creator was type-checked and unit-tested; Docker was not started for it.
+- Push on iOS (MV-19, user-only); the service worker registering in the installed app (it did not register in the built-in browser; try Chrome first); `tailscale serve` and the deploy on the Pi (MV-20).
+
+### For the 4b planner
+- Widgets render only in `clot` messages, never in notes, asks, onboarding or user text; the pane takes any `render()`.
+- A new message kind touches `MESSAGE_KINDS`, `MessageKind`, the chat renderer and `activity-lines.ts`. The Clapboard icon is the one custom icon.
+- Main turns stream through `TextStreams` and workers do not, so a widget in a streaming reply must tolerate a half-written body until `message.done`.
+- Reuse `safeFetch` for the image proxy and add its route to the CSP; markdown images are links today.
