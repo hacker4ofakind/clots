@@ -202,6 +202,28 @@ export class ConfigStore {
     return this.serial(() => this.doSave(patch));
   }
 
+  /**
+   * A change built from the file as it stands when its turn in the queue comes: `plan` reads the current configuration, may write
+   * `.env` keys, and answers the patch (with what undoes those key writes) or a refusal. The read, the key writes, the save and the
+   * undo of a refused save all happen in one turn, so a change queued behind it is planned against what this one saved, and cannot
+   * be rolled back over by it. `plan` may throw: that ends the turn with nothing saved.
+   */
+  update<R>(plan: (raw: Json) => { patch: Json; undo?: () => void } | { refuse: R }): Promise<{ saved: SaveResult } | { refused: R }> {
+    return this.serial(async () => {
+      const planned = plan(this.json());
+      if ("refuse" in planned) return { refused: planned.refuse };
+      let saved: SaveResult;
+      try {
+        saved = await this.doSave(planned.patch);
+      } catch (error) {
+        planned.undo?.();
+        throw error;
+      }
+      if (!saved.ok) planned.undo?.();
+      return { saved };
+    });
+  }
+
   private async doSave(patch: Json): Promise<SaveResult> {
     const candidate: Json = { ...this.raw, ...patch };
     for (const [key, value] of Object.entries(patch)) if (value === undefined) delete candidate[key];

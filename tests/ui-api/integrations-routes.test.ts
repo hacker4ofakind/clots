@@ -230,6 +230,27 @@ describe("inboxes", () => {
     expect(env).not.toContain("changed-password");
   });
 
+  it("keeps both of two inboxes added at the same moment", async () => {
+    const [a, b] = await Promise.all([call("POST", "/inboxes", body), call("POST", "/inboxes", { address: "me@outlook.com", password: "pw2", mailboxes: ["INBOX"] })]);
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect(new Set([a.body.account, b.body.account]).size).toBe(2);
+    expect((h.config.json().sources as { email: unknown[] }).email).toHaveLength(2);
+    expect(h.config.current.sources.email).toHaveLength(2);
+  });
+
+  it("does not let a refused edit's undo put an old password over a later edit's new one", async () => {
+    await call("POST", "/inboxes", body);
+    const [refused, accepted] = await Promise.all([
+      call("PUT", "/inboxes/me", { address: "me@gmail.com", mailboxes: ["INBOX"], password: "first-password", clot: "nobody" }),
+      call("PUT", "/inboxes/me", { address: "me@gmail.com", mailboxes: ["INBOX"], password: "second-password" }),
+    ]);
+    expect(refused.status).toBe(400);
+    expect(accepted.status).toBe(200);
+    const env = fs.readFileSync(h.envFile, "utf8");
+    expect(env).toContain("EMAIL_ME_PASSWORD=second-password");
+    expect(env).not.toContain("first-password");
+  });
+
   it("refuses an edit the configuration will not take, and changes nothing", async () => {
     await call("POST", "/inboxes", body);
     const res = await call("PUT", "/inboxes/me", { address: "me@example.com", mailboxes: ["INBOX"] });

@@ -115,31 +115,35 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
   api.route("POST", "/inboxes", async (req) => {
     const body = parseBody(inboxBodySchema, req.body);
     if (body.password === undefined) throw new ApiError(400, "invalid request", { fieldErrors: { password: ["A password is needed."] } });
-    const sources = sourcesOf() ?? {};
-    const email = [...(sources.email ?? [])];
-    // The form gives no name: the address's local part, made distinct when another address already took it (`me@gmail.com`, then `me@outlook.com`).
-    let account = body.account;
-    if (account === undefined) {
-      const base = slug(body.address.split("@")[0]!).slice(0, 30) || "inbox";
-      const sameAddress = email.find((e) => typeof e.address === "string" && e.address.toLowerCase() === body.address.toLowerCase());
-      if (sameAddress !== undefined) throw new ApiError(409, `There is an inbox for ${body.address} already (${String(sameAddress.account)}).`);
-      account = base;
-      for (let n = 2; email.some((e) => e.account === account); n++) account = `${base}-${n}`;
-    }
-    if (email.some((e) => e.account === account)) throw new ApiError(409, `There is an inbox named ${account} already.`);
-    const servers = serversOf(body);
-    if ("error" in servers) return new ApiResult(400, { errors: { imap: servers.error } });
-    const key = passwordKey(account);
-    const undo = d.config.keyUndo(key);
-    const written = d.config.setKey(key, body.password);
-    if (!written.ok) throw new ApiError(400, written.error);
-    const entry = { account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
-    const result = await d.config.save({ sources: { ...sources, email: [...email, entry] } });
-    if (!result.ok) {
-      undo();
-      return new ApiResult(400, { errors: result.errors });
-    }
-    return new ApiResult(201, { account, provider: providerOf(body.address), needsRestart: result.needsRestart.includes("sources") });
+    const password = body.password;
+    let added = "";
+    // Planned against the file as it is when this request's turn comes, so two inboxes added at once both land and get distinct names.
+    const done = await d.config.update<ApiResult>((raw) => {
+      const sources = (raw.sources ?? {}) as NonNullable<ReturnType<typeof sourcesOf>>;
+      const email = [...(sources.email ?? [])];
+      // The form gives no name: the address's local part, made distinct when another address already took it (`me@gmail.com`, then `me@outlook.com`).
+      let account = body.account;
+      if (account === undefined) {
+        const base = slug(body.address.split("@")[0]!).slice(0, 30) || "inbox";
+        const sameAddress = email.find((e) => typeof e.address === "string" && e.address.toLowerCase() === body.address.toLowerCase());
+        if (sameAddress !== undefined) throw new ApiError(409, `There is an inbox for ${body.address} already (${String(sameAddress.account)}).`);
+        account = base;
+        for (let n = 2; email.some((e) => e.account === account); n++) account = `${base}-${n}`;
+      }
+      if (email.some((e) => e.account === account)) throw new ApiError(409, `There is an inbox named ${account} already.`);
+      const servers = serversOf(body);
+      if ("error" in servers) return { refuse: new ApiResult(400, { errors: { imap: servers.error } }) };
+      const key = passwordKey(account);
+      const undo = d.config.keyUndo(key);
+      const written = d.config.setKey(key, password);
+      if (!written.ok) throw new ApiError(400, written.error);
+      added = account;
+      const entry = { account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
+      return { patch: { sources: { ...sources, email: [...email, entry] } }, undo };
+    });
+    if ("refused" in done) return done.refused;
+    if (!done.saved.ok) return new ApiResult(400, { errors: done.saved.errors });
+    return new ApiResult(201, { account: added, provider: providerOf(body.address), needsRestart: done.saved.needsRestart.includes("sources") });
   });
 
   // Edit: the same body as adding, the password optional (left out, the saved one stays). The account's name is fixed.
@@ -147,29 +151,31 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
     const body = parseBody(inboxBodySchema, req.body);
     const account = req.params.account!;
     if (body.account !== undefined && body.account !== account) throw new ApiError(400, "An inbox keeps its name.");
-    const sources = sourcesOf() ?? {};
-    const email = sources.email ?? [];
-    const found = email.find((e) => e.account === account);
-    if (!found) throw new ApiError(404, "no such inbox");
-    const servers = serversOf(body, found);
-    if ("error" in servers) return new ApiResult(400, { errors: { imap: servers.error } });
-    const key = typeof found.password === "string" ? found.password : passwordKey(account);
-    // The password is written before the save, since the entry is checked against .env; a refused edit puts the old one back.
-    let undo = () => {};
-    if (body.password !== undefined) {
-      undo = d.config.keyUndo(key);
-      const written = d.config.setKey(key, body.password);
-      if (!written.ok) throw new ApiError(400, written.error);
-    }
-    // The edit replaces what the form holds; what it does not hold (other addresses, whether the address is told) stays.
-    const { clot: _clot, shared: _shared, imap: _imap, smtp: _smtp, ...kept } = found;
-    const entry = { ...kept, account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
-    const result = await d.config.save({ sources: { ...sources, email: email.map((e) => (e === found ? entry : e)) } });
-    if (!result.ok) {
-      undo();
-      return new ApiResult(400, { errors: result.errors });
-    }
-    return { account, provider: providerOf(body.address), needsRestart: result.needsRestart.includes("sources") };
+    // Planned in the config store's turn, so the password write, the save and a refused save's undo of it are one step: another edit of
+    // the same inbox cannot land its password between them and have it rolled back over.
+    const done = await d.config.update<ApiResult>((raw) => {
+      const sources = (raw.sources ?? {}) as NonNullable<ReturnType<typeof sourcesOf>>;
+      const email = sources.email ?? [];
+      const found = email.find((e) => e.account === account);
+      if (!found) throw new ApiError(404, "no such inbox");
+      const servers = serversOf(body, found);
+      if ("error" in servers) return { refuse: new ApiResult(400, { errors: { imap: servers.error } }) };
+      const key = typeof found.password === "string" ? found.password : passwordKey(account);
+      // The password is written before the save, since the entry is checked against .env; a refused edit puts the old one back.
+      let undo = () => {};
+      if (body.password !== undefined) {
+        undo = d.config.keyUndo(key);
+        const written = d.config.setKey(key, body.password);
+        if (!written.ok) throw new ApiError(400, written.error);
+      }
+      // The edit replaces what the form holds; what it does not hold (other addresses, whether the address is told) stays.
+      const { clot: _clot, shared: _shared, imap: _imap, smtp: _smtp, ...kept } = found;
+      const entry = { ...kept, account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
+      return { patch: { sources: { ...sources, email: email.map((e) => (e === found ? entry : e)) } }, undo };
+    });
+    if ("refused" in done) return done.refused;
+    if (!done.saved.ok) return new ApiResult(400, { errors: done.saved.errors });
+    return { account, provider: providerOf(body.address), needsRestart: done.saved.needsRestart.includes("sources") };
   });
 
   api.route("DELETE", "/inboxes/:account", async (req) => {

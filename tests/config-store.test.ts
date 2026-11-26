@@ -65,6 +65,31 @@ describe("the config store", () => {
     expect(JSON.parse(fs.readFileSync(file, "utf8")).maxWorkers).toBe(3);
   });
 
+  it("plans each update against the file as the one before it left it, so two changes made at once both land", async () => {
+    const add = (name: string) => store.update((raw) => ({ patch: { clots: [...(raw.clots as unknown[]), { name, repoUrl: `https://github.com/o/${name}.git` }] } }));
+    const [a, b] = await Promise.all([add("one"), add("two")]);
+    expect(a).toMatchObject({ saved: { ok: true } });
+    expect(b).toMatchObject({ saved: { ok: true } });
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).clots.map((c: { name: string }) => c.name)).toEqual(["graphite", "shop", "one", "two"]);
+  });
+
+  it("undoes an update's key write when its save is refused, before the next update is planned", async () => {
+    const seen: (string | undefined)[] = [];
+    const refused = store.update((raw) => {
+      const undo = store.keyUndo("ZED_KEY");
+      store.setKey("ZED_KEY", "first-value");
+      return { patch: { maxWorkers: -1 }, undo };
+    });
+    const next = store.update(() => {
+      seen.push(store.keys().find((k) => k.name === "ZED_KEY")?.last4);
+      return { patch: { maxWorkers: 2 } };
+    });
+    expect(await refused).toMatchObject({ saved: { ok: false } });
+    expect(await next).toMatchObject({ saved: { ok: true } });
+    expect(seen).toEqual(["1234"]);
+    expect(fs.readFileSync(envFile, "utf8")).toContain("ZED_KEY=zzzz1234");
+  });
+
   it("carries a file's choiceTimeoutMinutes over as askTimeoutMinutes, and renames it in the file when it saves", async () => {
     store.close();
     write({ ...base, choiceTimeoutMinutes: 7 });
