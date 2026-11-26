@@ -115,19 +115,28 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
   api.route("POST", "/inboxes", async (req) => {
     const body = parseBody(inboxBodySchema, req.body);
     if (body.password === undefined) throw new ApiError(400, "invalid request", { fieldErrors: { password: ["A password is needed."] } });
-    const account = body.account ?? (slug(body.address.split("@")[0]!).slice(0, 30) || "inbox");
     const sources = sourcesOf() ?? {};
     const email = [...(sources.email ?? [])];
+    // The form gives no name: the address's local part, made distinct when another address already took it (`me@gmail.com`, then `me@outlook.com`).
+    let account = body.account;
+    if (account === undefined) {
+      const base = slug(body.address.split("@")[0]!).slice(0, 30) || "inbox";
+      const sameAddress = email.find((e) => typeof e.address === "string" && e.address.toLowerCase() === body.address.toLowerCase());
+      if (sameAddress !== undefined) throw new ApiError(409, `There is an inbox for ${body.address} already (${String(sameAddress.account)}).`);
+      account = base;
+      for (let n = 2; email.some((e) => e.account === account); n++) account = `${base}-${n}`;
+    }
     if (email.some((e) => e.account === account)) throw new ApiError(409, `There is an inbox named ${account} already.`);
     const servers = serversOf(body);
     if ("error" in servers) return new ApiResult(400, { errors: { imap: servers.error } });
     const key = passwordKey(account);
+    const undo = d.config.keyUndo(key);
     const written = d.config.setKey(key, body.password);
     if (!written.ok) throw new ApiError(400, written.error);
     const entry = { account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
     const result = await d.config.save({ sources: { ...sources, email: [...email, entry] } });
     if (!result.ok) {
-      d.config.removeKey(key);
+      undo();
       return new ApiResult(400, { errors: result.errors });
     }
     return new ApiResult(201, { account, provider: providerOf(body.address), needsRestart: result.needsRestart.includes("sources") });
@@ -145,7 +154,10 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
     const servers = serversOf(body, found);
     if ("error" in servers) return new ApiResult(400, { errors: { imap: servers.error } });
     const key = typeof found.password === "string" ? found.password : passwordKey(account);
+    // The password is written before the save, since the entry is checked against .env; a refused edit puts the old one back.
+    let undo = () => {};
     if (body.password !== undefined) {
+      undo = d.config.keyUndo(key);
       const written = d.config.setKey(key, body.password);
       if (!written.ok) throw new ApiError(400, written.error);
     }
@@ -153,7 +165,10 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
     const { clot: _clot, shared: _shared, imap: _imap, smtp: _smtp, ...kept } = found;
     const entry = { ...kept, account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
     const result = await d.config.save({ sources: { ...sources, email: email.map((e) => (e === found ? entry : e)) } });
-    if (!result.ok) return new ApiResult(400, { errors: result.errors });
+    if (!result.ok) {
+      undo();
+      return new ApiResult(400, { errors: result.errors });
+    }
     return { account, provider: providerOf(body.address), needsRestart: result.needsRestart.includes("sources") };
   });
 

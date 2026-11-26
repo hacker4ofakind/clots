@@ -156,7 +156,17 @@ describe("inboxes", () => {
     expect(res).toEqual({ status: 201, body: { account: "me", provider: "Gmail", needsRestart: true } });
     expect(fs.readFileSync(h.envFile, "utf8")).toContain("EMAIL_ME_PASSWORD=app-password");
     expect((await call("POST", "/inboxes", body)).status).toBe(409);
+    expect((await call("POST", "/inboxes", { ...body, account: "me" })).status).toBe(409);
     expect((await call("POST", "/inboxes", { address: "x@gmail.com", mailboxes: ["INBOX"] })).status).toBe(400);
+  });
+
+  it("names a second inbox apart from the first when the local part is the same but the address is not", async () => {
+    await call("POST", "/inboxes", body);
+    const second = await call("POST", "/inboxes", { address: "me@outlook.com", password: "pw2", mailboxes: ["INBOX"] });
+    expect(second).toMatchObject({ status: 201, body: { account: "me-2", provider: "Email" } });
+    const third = await call("POST", "/inboxes", { address: "me@yahoo.com", password: "pw3", mailboxes: ["INBOX"] });
+    expect(third.body.account).toBe("me-3");
+    expect(fs.readFileSync(h.envFile, "utf8")).toContain("EMAIL_ME_2_PASSWORD=pw2");
   });
 
   it("edits one in place: the password stays when it is left out, and changes when it is given", async () => {
@@ -209,6 +219,15 @@ describe("inboxes", () => {
     await call("PUT", `/integrations/jobs/${created.body.jobId}/key`, { value: "phx_value" });
     const tool = (await call("GET", "/integrations")).body.tools[0];
     expect(tool).toMatchObject({ id: "posthog:shared", audience: "team", selfIsUser: true, events: expect.any(Boolean) });
+  });
+
+  it("puts the old password back when an edit with a new one is refused", async () => {
+    await call("POST", "/inboxes", body);
+    const res = await call("PUT", "/inboxes/me", { address: "me@gmail.com", mailboxes: ["INBOX"], password: "changed-password", clot: "nobody" });
+    expect(res.status).toBe(400);
+    const env = fs.readFileSync(h.envFile, "utf8");
+    expect(env).toContain("EMAIL_ME_PASSWORD=app-password");
+    expect(env).not.toContain("changed-password");
   });
 
   it("refuses an edit the configuration will not take, and changes nothing", async () => {

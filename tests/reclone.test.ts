@@ -65,6 +65,26 @@ describe("moving a Clot to another repository", () => {
   });
 });
 
+describe("the old container waits for what follows the swap", () => {
+  const o = { clot: "Graphite", image: "clots-clot:dev", repoUrl: "https://github.com/o/new.git", githubToken: "t", at: 1_800_000_000_000 };
+
+  it("keeps the old container until the follow-up step has worked, then removes it", async () => {
+    let seen: string[] = [];
+    await recloneWorkspace({ ...o, after: async () => void (seen = verbs()) });
+    expect(seen).toEqual(["volume create", "run --rm", "stop clot-graphite", "rename clot-graphite", "run -d"]);
+    expect(verbs().at(-1)).toBe("rm -f");
+  });
+
+  it("puts the old container back and drops the new volume when the follow-up step fails", async () => {
+    await expect(recloneWorkspace({ ...o, after: async () => Promise.reject(new Error("its entry could not be saved")) })).rejects.toThrow(/entry could not be saved/);
+    expect(calls.slice(5).map((c) => c.args[0])).toEqual(["rm", "rename", "start", "volume"]);
+    // The container removed is the new one, by the Clot's name; the old one was renamed back, never removed.
+    expect(calls[5]!.args).toEqual(["rm", "-f", "clot-graphite"]);
+    expect(calls[6]!.args[2]).toBe("clot-graphite");
+    expect(calls.filter((c) => c.args[0] === "rm" && c.args[2] !== "clot-graphite")).toEqual([]);
+  });
+});
+
 describe("a container made again uses the newest workspace", () => {
   it("mounts the volume the Clot was moved to, not the first one", async () => {
     volumes = ["clot-graphite-home", "clot-graphite-work", `clot-graphite-work-${(1_800_000_000_000).toString(36)}`];

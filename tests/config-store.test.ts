@@ -45,6 +45,26 @@ describe("the config store", () => {
     expect(fs.existsSync(`${file}.tmp`)).toBe(false);
   });
 
+  it("runs overlapping saves one after the other, each through its handler", async () => {
+    const log: string[] = [];
+    let releaseFirst!: () => void;
+    store.onChange(["maxWorkers"], async (next) => {
+      log.push(`start ${next.maxWorkers}`);
+      if (next.maxWorkers === 2) await new Promise<void>((resolve) => (releaseFirst = resolve));
+      log.push(`end ${next.maxWorkers}`);
+    });
+    const first = store.save({ maxWorkers: 2 });
+    const second = store.save({ maxWorkers: 3 });
+    await settle(50);
+    // The second waits while the first's handler is still going.
+    expect(log).toEqual(["start 2"]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(log).toEqual(["start 2", "end 2", "start 3", "end 3"]);
+    expect(store.current.maxWorkers).toBe(3);
+    expect(JSON.parse(fs.readFileSync(file, "utf8")).maxWorkers).toBe(3);
+  });
+
   it("carries a file's choiceTimeoutMinutes over as askTimeoutMinutes, and renames it in the file when it saves", async () => {
     store.close();
     write({ ...base, choiceTimeoutMinutes: 7 });

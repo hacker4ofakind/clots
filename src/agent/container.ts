@@ -167,10 +167,11 @@ export const newWorkspaceName = (clot: string, at: number): string => `${contain
  * Moves a Clot to another repository: the new one is cloned into a fresh workspace volume by a throwaway container, so the running
  * Clot is not touched until the clone has worked; then its container is replaced by one on the new volume, with the same home volume.
  * The old workspace volume stays (the user may want something out of it); the old container is removed. A clone that fails leaves the
- * Clot exactly as it was, and so does a container that will not start: the old one is put back.
+ * Clot exactly as it was, and so does a container that will not start, or an `after` step (the Clot started on the new workspace, its
+ * entry saved) that throws: the old one is put back.
  * Everything goes to docker as an argument list; the token travels as an environment variable, never in an argument.
  */
-export async function recloneWorkspace(o: { clot: string; image: string; repoUrl: string; githubToken: string; at?: number }): Promise<{ volume: string }> {
+export async function recloneWorkspace(o: { clot: string; image: string; repoUrl: string; githubToken: string; at?: number; after?: () => Promise<void> }): Promise<{ volume: string }> {
   const name = containerName(o.clot);
   const volume = newWorkspaceName(o.clot, o.at ?? Date.now());
   const env = { ...process.env, GH_TOKEN: o.githubToken, REPO_URL: o.repoUrl };
@@ -185,14 +186,25 @@ export async function recloneWorkspace(o: { clot: string; image: string; repoUrl
   const old = `${name}-before-${volume.slice(-8)}`;
   await run("docker", ["stop", name]).catch(() => undefined);
   await run("docker", ["rename", name, old]);
-  try {
-    await run("docker", ["run", "-d", "--name", name, "--restart", "unless-stopped", "-v", `${name}-home:/home/clot`, "-v", `${volume}:/workspace`, o.image]);
-  } catch (error) {
+  // The old container is put back, and the new volume goes, when what follows the swap fails.
+  const putBack = async () => {
     await run("docker", ["rm", "-f", name]).catch(() => undefined);
     await run("docker", ["rename", old, name]).catch(() => undefined);
     await run("docker", ["start", name]).catch(() => undefined);
     await run("docker", ["volume", "rm", volume]).catch(() => undefined);
+  };
+  try {
+    await run("docker", ["run", "-d", "--name", name, "--restart", "unless-stopped", "-v", `${name}-home:/home/clot`, "-v", `${volume}:/workspace`, o.image]);
+  } catch (error) {
+    await putBack();
     throw new Error(`the new container could not start: ${(error as { stderr?: string }).stderr || (error as Error).message}`);
+  }
+  // The old container stays until the caller has started the Clot on the new one and saved its new repository: a failure in either puts it back.
+  try {
+    await o.after?.();
+  } catch (error) {
+    await putBack();
+    throw error;
   }
   await run("docker", ["rm", "-f", old]).catch(() => undefined);
   return { volume };

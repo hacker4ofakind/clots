@@ -79,7 +79,11 @@ export class ConfigStore {
    * Reads the configuration again with the `.env` as it is now, and applies what that changed: an entry that was left out for a key
    * that was not there yet loads, an account whose password changed reconnects. Nothing is written.
    */
-  async reapply(): Promise<void> {
+  reapply(): Promise<void> {
+    return this.serial(() => this.doReapply());
+  }
+
+  private async doReapply(): Promise<void> {
     this.d.env.reload();
     this.envSnapshot = readEnvFile(this.d.envFile);
     try {
@@ -113,7 +117,11 @@ export class ConfigStore {
   }
 
   /** Reads both files again, as after a hand edit. A file that does not load changes nothing. */
-  async reload(): Promise<void> {
+  reload(): Promise<void> {
+    return this.serial(() => this.doReload());
+  }
+
+  private async doReload(): Promise<void> {
     let text: string;
     try {
       text = fs.readFileSync(this.d.file, "utf8");
@@ -137,6 +145,17 @@ export class ConfigStore {
     }
   }
   private envSnapshot: Record<string, string> = {};
+
+  /**
+   * Saves, reloads and re-reads run one at a time, each through its apply handlers: a second one that began while the first waited on a
+   * handler (a mailbox stopping, say) would otherwise be applied first, and the first would then start what the file no longer holds.
+   */
+  private queue: Promise<unknown> = Promise.resolve();
+  private serial<T>(job: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(job, job);
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
 
   private async adopt(raw: Json, next: Config, skipped: SkippedAccount[], fromFile: boolean): Promise<{ applied: string[]; needsRestart: string[] }> {
     const prevRaw = this.raw;
@@ -179,7 +198,11 @@ export class ConfigStore {
    * Changes top-level keys of the file. The result is validated as a whole first; nothing is written when it does not load.
    * Written atomically with the old file kept as `.bak`. Returns what applied at once and what waits for a restart.
    */
-  async save(patch: Json): Promise<SaveResult> {
+  save(patch: Json): Promise<SaveResult> {
+    return this.serial(() => this.doSave(patch));
+  }
+
+  private async doSave(patch: Json): Promise<SaveResult> {
     const candidate: Json = { ...this.raw, ...patch };
     for (const [key, value] of Object.entries(patch)) if (value === undefined) delete candidate[key];
     // The old name of the ask timeout goes from the file once it is written again, its value kept under the new name.
@@ -233,6 +256,17 @@ export class ConfigStore {
     this.d.env.reload();
     this.envSnapshot = readEnvFile(this.d.envFile);
     return { ok: true };
+  }
+
+  /** What puts a key back as it is now (its value, or its absence) when a change that wrote it is refused. */
+  keyUndo(name: string): () => void {
+    const before = readEnvFile(this.d.envFile)[name];
+    return () => {
+      if (before === undefined) removeEnvKey(this.d.envFile, name);
+      else setEnvKey(this.d.envFile, name, before);
+      this.d.env.reload();
+      this.envSnapshot = readEnvFile(this.d.envFile);
+    };
   }
 
   removeKey(name: string): { ok: true } | { ok: false; error: string } {

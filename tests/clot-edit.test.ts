@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type net from "node:net";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { newestWorkspace, newWorkspaceName } from "../src/agent/container.js";
 import { ConfigStore } from "../src/config-store.js";
 import { LiveEnv } from "../src/live-env.js";
@@ -53,12 +53,13 @@ beforeEach(async () => {
     emit: (e) => void steps.push(e),
     onReady: async () => undefined,
     busy: () => busy,
-    reclone: async (def, step) => {
+    reclone: async (def, step, commit) => {
       step("cloning");
       if (release === undefined) await Promise.resolve();
       else await new Promise<void>((resolve) => (release = resolve));
       if (moveFails) throw new Error(moveFails);
       step("starting");
+      await commit();
       moved.push(def);
     },
   });
@@ -99,6 +100,15 @@ describe("Edit: a Clot's icon and repository", () => {
     expect((await call("/clots/graphite/retry", { method: "POST" })).status).toBe(202);
     await waitFor(() => steps.some((s) => s.step === "done"));
     expect(config.current.clots[0]!.repoUrl).toBe("https://github.com/o/new.git");
+  });
+
+  it("undoes the move, and leaves the entry as it was, when the new entry cannot be saved", async () => {
+    vi.spyOn(config, "save").mockResolvedValue({ ok: false, errors: { clots: "refused" } });
+    await call("/clots/graphite", { method: "PUT", body: JSON.stringify({ repo: "o/new" }) });
+    await waitFor(() => steps.some((s) => s.step === "failed"));
+    expect(steps.at(-1)!.log).toContain("its entry could not be saved: refused");
+    expect(moved).toEqual([]);
+    expect(config.current.clots[0]!.repoUrl).toBe("https://github.com/o/old.git");
   });
 
   it("refuses a name change (there is none), a bad or unreachable repository, a Clot that is busy and one that is already moving", async () => {

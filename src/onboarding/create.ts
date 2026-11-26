@@ -47,7 +47,7 @@ export interface CreatorDeps {
    * Moves a running Clot to another repository: clones into a fresh workspace volume, swaps its container onto it and starts the Clot again,
    * calling `step` as it goes. Rejects with the log of what failed, leaving the Clot on its old workspace.
    */
-  reclone?: (def: { name: string; repoUrl: string }, step: (s: "cloning" | "building" | "starting") => void) => Promise<void>;
+  reclone?: (def: { name: string; repoUrl: string }, step: (s: "cloning" | "building" | "starting") => void, commit: () => Promise<void>) => Promise<void>;
   /** Why a Clot cannot be moved right now (a turn or a worker is running), or undefined when it can. */
   busy?: (name: string) => string | undefined;
 }
@@ -159,14 +159,17 @@ export class ClotCreator {
     };
     set("cloning");
     try {
-      await this.d.reclone!({ name, repoUrl: `https://github.com/${repo}.git` }, (s) => set(s));
-      const entry = this.d.config.current.clots.find((c) => c.name === name)!;
-      const currentAbout = `the project in the repository ${repoSlug(entry.repoUrl)}`;
-      const clots = (this.d.config.json().clots as { name: string; about?: string }[]).map((c) =>
-        c.name !== name ? c : { ...c, repoUrl: `https://github.com/${repo}.git`, ...(c.about === currentAbout ? { about: `the project in the repository ${repo}` } : {}), ...(state.icon === undefined ? {} : { icon: state.icon }) },
-      );
-      const saved = await this.d.config.save({ clots });
-      if (!saved.ok) throw new Error(`the Clot moved, but its entry could not be saved: ${Object.values(saved.errors)[0]}`);
+      // The entry is saved by `commit`, which the move calls once the Clot runs on its new workspace: a save that fails undoes the move.
+      const commit = async () => {
+        const entry = this.d.config.current.clots.find((c) => c.name === name)!;
+        const currentAbout = `the project in the repository ${repoSlug(entry.repoUrl)}`;
+        const clots = (this.d.config.json().clots as { name: string; about?: string }[]).map((c) =>
+          c.name !== name ? c : { ...c, repoUrl: `https://github.com/${repo}.git`, ...(c.about === currentAbout ? { about: `the project in the repository ${repo}` } : {}), ...(state.icon === undefined ? {} : { icon: state.icon }) },
+        );
+        const saved = await this.d.config.save({ clots });
+        if (!saved.ok) throw new Error(`its entry could not be saved: ${Object.values(saved.errors)[0]}`);
+      };
+      await this.d.reclone!({ name, repoUrl: `https://github.com/${repo}.git` }, (s) => set(s), commit);
       set("done");
       this.building.delete(name);
     } catch (error) {

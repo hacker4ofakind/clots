@@ -613,16 +613,39 @@ const creator: ClotCreator = new ClotCreator({
     if (store.listedWorkers(name).length > 0) return `${name} has workers on branches in its current workspace. Try again when they are done.`;
     return undefined;
   },
-  reclone: async (def, step) => {
+  reclone: async (def, step, commit) => {
     const definition = definitions.find((c) => c.name === def.name);
     if (definition === undefined) throw new Error(`${def.name} is not running`);
     step("cloning");
-    await recloneWorkspace({ clot: def.name, image: config.image, repoUrl: def.repoUrl, githubToken: config.githubToken });
-    step("starting");
-    for (const [slug, clot] of repoToClot) if (clot === def.name) repoToClot.delete(slug);
-    definition.repoUrl = def.repoUrl;
-    repoOf.set(def.name, repoSlug(def.repoUrl) ?? null);
-    await startClot(definition);
+    await recloneWorkspace({
+      clot: def.name,
+      image: config.image,
+      repoUrl: def.repoUrl,
+      githubToken: config.githubToken,
+      // After the container is swapped. The old container waits until this has worked; a failure puts it back, so the runtime state goes back too.
+      after: async () => {
+        step("starting");
+        const prior = { clot: clots.get(def.name), runner: runners.get(def.name), repo: repoOf.get(def.name), slugs: [...repoToClot].filter(([, clot]) => clot === def.name).map(([slug]) => slug) };
+        for (const slug of prior.slugs) repoToClot.delete(slug);
+        repoOf.set(def.name, repoSlug(def.repoUrl) ?? null);
+        try {
+          // The definition (the object the configuration holds too) keeps its old repository until the new one is saved.
+          await startClot({ ...definition, repoUrl: def.repoUrl });
+          await commit();
+        } catch (error) {
+          for (const [slug, clot] of repoToClot) if (clot === def.name) repoToClot.delete(slug);
+          for (const slug of prior.slugs) repoToClot.set(slug, def.name);
+          if (prior.repo === undefined) repoOf.delete(def.name);
+          else repoOf.set(def.name, prior.repo);
+          if (prior.clot === undefined) clots.delete(def.name);
+          else clots.set(def.name, prior.clot);
+          if (prior.runner === undefined) runners.delete(def.name);
+          else runners.set(def.name, prior.runner);
+          throw error;
+        }
+        definition.repoUrl = def.repoUrl;
+      },
+    });
   },
   onReady: async (name, repo) => {
     const { text, data } = onboardingMessage({ name, repo, webhookUrl: `${config.publicUrl}/webhooks/github` });
