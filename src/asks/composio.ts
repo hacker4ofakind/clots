@@ -57,7 +57,7 @@ export function composioKind(d: { actions: Pick<ComposioActions, "executeWrite">
     async onAnswer(ask, answer, io) {
       const p = ask.payload;
       if (answer.action === "block") {
-        await io.close(`The user declined ${p.toolName} in ${p.account}; nothing was changed. Do not ask again unless the user asks.`, `Declined: ${p.toolName} in ${p.account}.`);
+        await io.close("declined", `The user declined ${p.toolName} in ${p.account}; nothing was changed. Do not ask again unless the user asks.`, `Declined: ${p.toolName} in ${p.account}.`);
         return;
       }
       if (answer.action !== "allow" || !io.setBusy()) return;
@@ -65,28 +65,28 @@ export function composioKind(d: { actions: Pick<ComposioActions, "executeWrite">
       const account = d.composio.account(p.account);
       const tool = account && (await d.composio.tool(p.slug).catch(() => undefined));
       if (!account || account.audience !== p.audience || !tool || tool.toolkit !== account.toolkit) {
-        await io.close(`The ask to run ${p.toolName} in ${p.account} was withdrawn: the account changed since it was shown. Nothing was changed.`, `Withdrawn: ${p.account} changed since ${p.toolName} was asked about.`);
+        await io.close("withdrawn", `The ask to run ${p.toolName} in ${p.account} was withdrawn: the account changed since it was shown. Nothing was changed.`, `Withdrawn: ${p.account} changed since ${p.toolName} was asked about.`);
         return;
       }
       const done = await d.actions.executeWrite({ clot: ask.clot, account, tool, args: p.args, reviewed: false });
-      if (done.ok) await io.close(`The user approved ${p.toolName} in ${p.account}, and it ran.\n${done.text}`, null);
-      else await io.close(`The user approved ${p.toolName} in ${p.account}, but it did not run: ${done.text}`, done.text);
+      if (done.ok) await io.close("approved", `The user approved ${p.toolName} in ${p.account}, and it ran.\n${done.text}`, null);
+      else await io.close("failed", `The user approved ${p.toolName} in ${p.account}, but it did not run: ${done.text}`, done.text);
     },
 
     async onFeedback(ask, text, io) {
       const p = ask.payload;
       const message = `[The user's reply to your ask to run ${p.toolName} in ${p.account}. It was not run, and the ask is closed:]\n${text}`;
-      await io.close(null, `Your reply about ${p.toolName} in ${p.account} was passed on; it was not run.`, { inbox: { id: `composio-feedback:${ask.id}`, text: message, kind: "message", outsider: p.outsider } }, "You answered in chat.");
+      await io.close("feedback", null, `Your reply about ${p.toolName} in ${p.account} was passed on; it was not run.`, { inbox: { id: `composio-feedback:${ask.id}`, text: message, kind: "message", outsider: p.outsider } }, "You answered in chat.");
     },
 
     async onDeadline(ask, io) {
       const p = ask.payload;
-      await io.close(`The user did not answer your ask to run ${p.toolName} in ${p.account} within ${minutes(waitedMinutes(ask))}, so it was not run. Do not ask again unless the user asks.`, blockedLine(ask));
+      await io.close("timed_out", `The user did not answer your ask to run ${p.toolName} in ${p.account} within ${minutes(waitedMinutes(ask))}, so it was not run. Do not ask again unless the user asks.`, blockedLine(ask));
     },
 
     async interrupted(ask, io) {
       const p = ask.payload;
-      await io.close(`The daemon stopped while ${p.toolName} in ${p.account} was being run, so whether it ran is not known. Check ${p.account.split(":")[0]} before asking again.`, `Whether ${p.toolName} in ${p.account} ran is not known; check the service.`);
+      await io.close("failed", `The daemon stopped while ${p.toolName} in ${p.account} was being run, so whether it ran is not known. Check ${p.account.split(":")[0]} before asking again.`, `Whether ${p.toolName} in ${p.account} ran is not known; check the service.`);
     },
   };
 }

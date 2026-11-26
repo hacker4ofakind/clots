@@ -54,6 +54,35 @@ test("a choice shows its two options with the Clot's pick marked, and a pick set
   await expect(page.locator("[data-ask-outcome]").last()).toContainText("You picked 2");
 });
 
+test("an ended ask's icon says how it ended: approved, declined, timed out", async ({ page, request }) => {
+  await gotoLive(page, "/c/home");
+  const ended = (result: string) => page.locator(`[data-ask-outcome][data-ask-result="${result}"]`);
+  const approved = await ended("approved").count();
+  const declined = await ended("declined").count();
+  const timedOut = await ended("timed_out").count();
+
+  await openAsk(request, { kind: "email", clot: "home", text: "One." });
+  await page.getByRole("region", { name: "Send an email from Home?" }).getByRole("button", { name: "Send", exact: true }).click();
+  await expect(ended("approved")).toHaveCount(approved + 1);
+  await expect(ended("approved").last().locator("svg")).toBeVisible();
+
+  await openAsk(request, { kind: "email", clot: "home", text: "Two." });
+  await page.getByRole("region", { name: "Send an email from Home?" }).getByRole("button", { name: "Don't send" }).click();
+  await expect(ended("declined")).toHaveCount(declined + 1);
+
+  await control(request, "/timeout", { minutes: 0.03 });
+  try {
+    await openAsk(request, { kind: "email", clot: "home", text: "Three." });
+    await expect(ended("timed_out")).toHaveCount(timedOut + 1, { timeout: 15_000 });
+  } finally {
+    await control(request, "/timeout", { minutes: 10 });
+  }
+
+  // Each result draws its own icon.
+  const drawn = await Promise.all(["approved", "declined", "timed_out"].map((r) => ended(r).last().locator("svg").innerHTML()));
+  expect(new Set(drawn).size).toBe(3);
+});
+
 test("an ask that closed in another tab shows how it ended in a toast", async ({ page, request }) => {
   await page.goto("/waiting");
   await openAsk(request, { kind: "email", clot: "home" });

@@ -214,7 +214,7 @@ bus.subscribe((event) => {
   const d = event.data as any;
   if (event.type === "ask.opened") void push.askOpened(d).catch(() => undefined);
   else if (event.type === "ask.updated" && d.timer === "urgent") void push.askUrgent(d).catch(() => undefined);
-  else if (event.type === "ask.closed" && d.kind === "choice" && String(d.outcome).startsWith("No answer within")) void push.choiceDecided(d.clot, d.id, d.outcome).catch(() => undefined);
+  else if (event.type === "ask.closed" && d.kind === "choice" && d.result === "timed_out") void push.choiceDecided(d.clot, d.id, d.outcome).catch(() => undefined);
   else if (event.type === "clot.state" && (d.state === "paused" || d.state === "failed")) void push.clotStopped(d.clot, d.state, d.reason).catch(() => undefined);
 });
 /** What the router, triage and the routing call cost, booked to the Clot they were for; the routing call belongs to the daemon. */

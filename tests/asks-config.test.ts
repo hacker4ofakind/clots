@@ -59,6 +59,7 @@ describe("the config ask", () => {
     const row = store.nextPending("home")!;
     expect(row.text).toContain("X_KEY");
     expect(open("config")).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("changes nothing on Block, and passes text typed in the chat to the Clot", async () => {
@@ -79,6 +80,7 @@ describe("the config ask", () => {
     expect(open("config")).toEqual([]);
     expect(applied).toEqual([]);
     expect(conv.texts().at(-1)).toBe("Blocked: no answer within 10 minutes.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
   });
 
   it("reports a save that failed on Allow", async () => {
@@ -87,6 +89,7 @@ describe("the config ask", () => {
     await asks.answer(open("config")[0]!.id, { action: "allow" });
     expect(conv.texts().at(-1)).toBe("Not changed: x");
     expect(store.notes("home")[0]!.text).toContain("was not saved");
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 });
 
@@ -112,7 +115,7 @@ describe("the restart ask", () => {
     asks = new Asks({ store, conv, now: () => now, kick: () => undefined, after: () => () => undefined, emit: () => undefined, timeoutMs: () => 10 * 60_000, kinds: [config, restart] });
     await file();
     const result = await asks.answer(open("restart")[0]!.id, { action: "allow" });
-    expect(result).toEqual({ status: "answered", outcome: null });
+    expect(result).toEqual({ status: "answered", outcome: null, result: null });
     expect(open("restart")[0]!.state).toBe("busy");
     release();
   });
@@ -131,5 +134,6 @@ describe("the restart ask", () => {
     await settle();
     expect(conv.texts().at(-1)).toContain("Restart not made");
     expect(store.notes("home")[0]!.text).toContain("not made");
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 });

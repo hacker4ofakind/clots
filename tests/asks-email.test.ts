@@ -106,6 +106,7 @@ describe("the email ask", () => {
     expect(conv.texts()[0]).toBe("Sent an email · you allowed it");
     expect(notes()[0]).toContain("the daemon sent it");
     expect(store.conversation.askOutcome(id)!.outcome).toBe("Sent an email · you allowed it");
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("sends the edited body, and tells the Clot which lines the user changed", async () => {
@@ -120,6 +121,7 @@ describe("the email ask", () => {
     expect(note).toContain("- We will refund you.");
     expect(note).toContain("+ We will refund you today.");
     expect(conv.texts()[0]).toBe("Sent an email · you allowed it (with your changes)");
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("sends an unchanged body as it was, with no note about changes", async () => {
@@ -150,6 +152,7 @@ describe("the email ask", () => {
     expect(texts.some((text) => text.includes("whether it finished is not known") || text.includes("whether it went out is not known"))).toBe(true);
     expect(emails()).toHaveLength(1);
     expect(sent).toEqual([]);
+    expect(store.conversation.askOutcome(2)?.result).toBe("failed");
   });
 
   it("says when an approved email was refused, and when it may or may not have gone", async () => {
@@ -169,6 +172,7 @@ describe("the email ask", () => {
     await allow();
     expect(sent).toEqual([]);
     expect(notes()[0]).toContain("is not configured any more");
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 
   it("drops it on Block", async () => {
@@ -177,6 +181,7 @@ describe("the email ask", () => {
     expect(sent).toEqual([]);
     expect(notes()[0]).toContain("declined your email");
     expect(emails()).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("declined");
   });
 
   it("hands text typed in the chat to the Clot as feedback, with the email, in the same step as the close", async () => {
@@ -191,6 +196,7 @@ describe("the email ask", () => {
     expect(kicked).toEqual(["graphite"]);
     expect(conv.texts()[0]).toContain("Feedback on the email");
     expect(emails()).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("feedback");
   });
 
   it("taints the feedback turn when the email was asked for in an outsider's turn", async () => {
@@ -209,6 +215,7 @@ describe("the email ask", () => {
     expect(conv.texts()).toEqual(["Blocked: no answer within 10 minutes."]);
     expect(notes()[0]).toContain("so it was not sent");
     expect(store.conversation.askOutcome(id)!.outcome).toBe("Blocked: no answer within 10 minutes.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
   });
 
   it("takes the same text answering another email as an ask of its own", async () => {

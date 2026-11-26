@@ -29,15 +29,15 @@ const kind: AskKind<{ what: string }> = {
   texts: { filed: "FILED", already: "ALREADY", full: () => "FULL", notAsked: () => "NO" },
   async onAnswer(ask, answer, io) {
     answers.push(answer.action);
-    if (answer.action === "block") return void (await io.close(null, "Declined."));
+    if (answer.action === "block") return void (await io.close("declined", null, "Declined."));
     io.setBusy();
   },
   async onFeedback(_ask, text, io) {
     answers.push(`feedback:${text}`);
-    await io.close(null, null, undefined, "You answered in chat.");
+    await io.close("feedback", null, null, undefined, "You answered in chat.");
   },
   async onDeadline(_ask, io) {
-    await io.close(null, "Blocked.");
+    await io.close("timed_out", null, "Blocked.");
   },
 };
 
@@ -148,7 +148,7 @@ describe("messages", () => {
     await asks.answer(store.openAsks()[0]!.id, { action: "block" });
     const page = (await (await call("/clots/graphite/messages")).json()) as { messages: any[] };
     const card = page.messages.find((m) => m.kind === "ask").ask;
-    expect(card).toMatchObject({ state: "closed", outcome: "Declined.", summary: "About x", view: { heading: "Allow graphite about x?" } });
+    expect(card).toMatchObject({ state: "closed", outcome: "Declined.", result: "declined", summary: "About x", view: { heading: "Allow graphite about x?" } });
   });
 
   it("hands text typed while an ask is open to the ask as feedback, not to the Clot, but not a command or an image", async () => {
@@ -179,10 +179,10 @@ describe("asks", () => {
     expect(list[0].messageId).toBeTruthy();
     const answered = await call(`/asks/${list[0].id}/answer`, { method: "POST", body: JSON.stringify({ answer: { action: "block" } }) });
     expect(answered.status).toBe(200);
-    expect(await answered.json()).toEqual({ outcome: "Declined." });
+    expect(await answered.json()).toEqual({ outcome: "Declined.", result: "declined" });
     const late = await call(`/asks/${list[0].id}/answer`, { method: "POST", body: JSON.stringify({ answer: { action: "allow" } }) });
     expect(late.status).toBe(409);
-    expect(await late.json()).toEqual({ outcome: "Declined." });
+    expect(await late.json()).toEqual({ outcome: "Declined.", result: "declined" });
     expect(answers).toEqual(["block"]);
   });
 

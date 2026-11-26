@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import type { AskResult } from "@clots/ui-api-schemas";
 import { ComposioStore } from "./composio/store.js";
 import { ConversationStore } from "./conversation/store.js";
 import { PushStore } from "./push.js";
@@ -951,13 +952,13 @@ export class Store {
    * transaction. Returns false when it was closed already, or (with onlyOpen) is not open, or the
    * inbox row already exists: then nothing is written. Only the caller that gets true carries on.
    */
-  closeAsk(id: number, clot: string, note: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean; also?: () => void; history?: { view: unknown; outcome: string; closedAt: number; answerKey: string | null } } = {}): boolean {
+  closeAsk(id: number, clot: string, note: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean; also?: () => void; history?: { view: unknown; outcome: string; result: AskResult; closedAt: number; answerKey: string | null } } = {}): boolean {
     try {
       return this.db.transaction(() => {
         const before = o.history === undefined ? undefined : this.askById(id);
         const deleted = o.onlyOpen ? this.db.prepare("DELETE FROM user_asks WHERE id = ? AND state = 'open'").run(id) : this.db.prepare("DELETE FROM user_asks WHERE id = ?").run(id);
         if (deleted.changes !== 1) return false;
-        if (before !== undefined && o.history !== undefined) this.conversation.recordAskOutcome({ id, clot, kind: before.kind, summary: before.summary, view: o.history.view, outcome: o.history.outcome, closedAt: o.history.closedAt, answerKey: o.history.answerKey });
+        if (before !== undefined && o.history !== undefined) this.conversation.recordAskOutcome({ id, clot, kind: before.kind, summary: before.summary, view: o.history.view, outcome: o.history.outcome, result: o.history.result, closedAt: o.history.closedAt, answerKey: o.history.answerKey });
         if (note !== null) this.addNote(clot, note);
         if (o.inbox !== undefined && !this.enqueue(o.inbox)) throw new RowExists();
         o.also?.();

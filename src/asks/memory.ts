@@ -47,14 +47,14 @@ export function memoryKind(d: {
       if (answer.action !== "allow" && answer.action !== "block") return;
       if (!io.setBusy()) return;
       const { note, line } = await d.resolve(ask.payload, answer.action === "allow" ? "yes" : "no");
-      await io.close(note, line);
+      await io.close(answer.action === "allow" ? "approved" : "declined", note, line);
     },
 
     // Silence never approves: an unanswered memory is answered no, so the home Clot's copy is put back.
     async onDeadline(ask, io) {
       if (!io.setBusy()) return;
       const { note, line } = await d.resolve(ask.payload, "no");
-      await io.close(note, `${blockedLine(ask)} ${line}`);
+      await io.close("timed_out", note, `${blockedLine(ask)} ${line}`);
     },
 
     // An outsider's text never goes in force without a yes: a question that ends any other way puts
@@ -62,11 +62,12 @@ export function memoryKind(d: {
     async interrupted(ask, io) {
       // A yes carried out before the stop stands, and is said so.
       if (d.inForce(ask.payload)) {
-        await io.close(`The user approved the global memory ${ask.payload.file}. It is now in every Clot's memory.`, `Approved. Global memory \`${ask.payload.file}\` is in force for every Clot.`);
+        await io.close("approved", `The user approved the global memory ${ask.payload.file}. It is now in every Clot's memory.`, `Approved. Global memory \`${ask.payload.file}\` is in force for every Clot.`);
         return;
       }
       d.restore(ask.payload);
       await io.close(
+        "failed",
         `The daemon stopped while carrying out the user's answer about the global memory ${ask.payload.file}. It is not in force, and your copy was put back. Write it again only if the user asks.`,
         `The daemon stopped while carrying out your answer, so global memory \`${ask.payload.file}\` is not in force and the home Clot's copy was put back.`,
       );

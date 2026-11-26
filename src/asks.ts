@@ -1,8 +1,10 @@
 import type { Conversation } from "./conversation/conversation.js";
 import type { AskRow, InboxInsert, Store } from "./store.js";
+import type { AskResult } from "@clots/ui-api-schemas";
 import type { UiEventType } from "./ui-api/events.js";
 
 export type { AskRow } from "./store.js";
+export type { AskResult } from "@clots/ui-api-schemas";
 
 export type AskKindName = "rule" | "email" | "merge" | "choice" | "memory" | "composio" | "config" | "restart";
 
@@ -45,12 +47,12 @@ export interface AskView {
 /** What a kind can do with its ask. Every close goes through `close`, which closes it exactly once. */
 export interface AskIo<P> {
   /**
-   * Closes the ask with the note for its Clot (and the inbox row, in the same transaction), shows the
+   * Closes the ask, saying how it `result`ed (the card's icon follows it, never the words), with the note for its Clot (and the inbox row, in the same transaction), shows the
    * outcome `line` in the chat and on the card, tells the UI, and kicks the Clot when a row was handed
    * over. `outcome` is what the card says when it differs from the line (or there is no line). Returns false
    * when the ask was closed already: then nothing was done.
    */
-  close(note: string | null, line: string | null, then?: { inbox: HandOver }, outcome?: string): Promise<boolean>;
+  close(result: AskResult, note: string | null, line: string | null, then?: { inbox: HandOver }, outcome?: string): Promise<boolean>;
   /** Says something in the Clot's chat, as a note. */
   say(text: string): Promise<void>;
   /** Moves the ask from open to busy, with a new payload if given. False when it was not open. */
@@ -129,9 +131,9 @@ const INTERRUPTED = "This was being carried out when the daemon stopped; whether
 /** What answering an ask told the caller. */
 export type AnswerResult =
   /** The answer was carried out, or is being: `outcome` is how it ended (null when it is still going). */
-  | { status: "answered"; outcome: string | null }
+  | { status: "answered"; outcome: string | null; result: AskResult | null }
   /** It had closed before: how it ended. */
-  | { status: "closed"; outcome: string }
+  | { status: "closed"; outcome: string; result: AskResult | null }
   /** It is being carried out for an answer already given. */
   | { status: "busy"; outcome: "in progress" }
   /** No such ask. */
@@ -240,8 +242,8 @@ export class Asks {
     if (!ask) {
       const past = store.conversation.askOutcome(id);
       if (!past) return { status: "missing" };
-      if (key !== undefined && past.answerKey === key) return { status: "answered", outcome: past.outcome };
-      return { status: "closed", outcome: past.outcome };
+      if (key !== undefined && past.answerKey === key) return { status: "answered", outcome: past.outcome, result: past.result };
+      return { status: "closed", outcome: past.outcome, result: past.result };
     }
     if (ask.state !== "open") return { status: "busy", outcome: "in progress" };
     const kind = this.kinds.get(ask.kind);
@@ -250,7 +252,8 @@ export class Asks {
     const reason = kind.stale?.(ask, this.d.now());
     if (reason !== undefined) {
       await this.withdraw(ask.id, reason);
-      return { status: "closed", outcome: store.conversation.askOutcome(id)?.outcome ?? `Withdrawn: ${reason}` };
+      const past = store.conversation.askOutcome(id);
+      return { status: "closed", outcome: past?.outcome ?? `Withdrawn: ${reason}`, result: past?.result ?? "withdrawn" };
     }
     if (key !== undefined) this.keys.set(id, key);
     try {
@@ -258,7 +261,8 @@ export class Asks {
     } finally {
       this.keys.delete(id);
     }
-    return { status: "answered", outcome: store.conversation.askOutcome(id)?.outcome ?? null };
+    const done = store.conversation.askOutcome(id);
+    return { status: "answered", outcome: done?.outcome ?? null, result: done?.result ?? null };
   }
 
   /** Withdraws an open ask: what it would act on changed, or it can no longer be answered. A busy one is never withdrawn. */
@@ -266,7 +270,7 @@ export class Asks {
     const ask = this.d.store.askById(id);
     if (!ask || ask.state !== "open") return false;
     const kind = this.kinds.get(ask.kind);
-    return this.finish(ask, `Withdrawn: ${ask.summary} (${reason}). Ask again if it still makes sense.`, `Withdrawn: ${ask.summary} (${reason})`, { onlyOpen: true, also: () => kind?.withdrawn?.(ask, reason) });
+    return this.finish(ask, "withdrawn", `Withdrawn: ${ask.summary} (${reason}). Ask again if it still makes sense.`, `Withdrawn: ${ask.summary} (${reason})`, { onlyOpen: true, also: () => kind?.withdrawn?.(ask, reason) });
   }
 
   /** Withdraws every open ask of a kind whose payload matches. */
@@ -288,7 +292,7 @@ export class Asks {
         if (ask.state !== "busy") continue;
         const kind = this.kinds.get(ask.kind);
         if (kind?.interrupted) await kind.interrupted(ask, this.io(ask));
-        else await this.finish(ask, `${ask.summary}: ${INTERRUPTED}`, `The daemon stopped while carrying this out, so whether it finished is not known: ${ask.summary}`, {});
+        else await this.finish(ask, "failed", `${ask.summary}: ${INTERRUPTED}`, `The daemon stopped while carrying this out, so whether it finished is not known: ${ask.summary}`, {});
       }
     }
     for (const ask of store.openAsks()) {
@@ -353,11 +357,11 @@ export class Asks {
   private io<P>(ask: AskRow<P>): AskIo<P> {
     const { store } = this.d;
     return {
-      close: (note, line, then, outcome) => {
+      close: (result, note, line, then, outcome) => {
         const session = store.activeSession(ask.clot);
         // With no session to hand it to, the Clot still learns it from a note.
         const inbox: InboxInsert | undefined = then === undefined || session === undefined ? undefined : { ...then.inbox, clot: ask.clot, receivedAt: this.d.now() };
-        return this.finish(ask, inbox === undefined && then !== undefined ? (note ?? then.inbox.text) : note, line, { inbox, outcome });
+        return this.finish(ask, result, inbox === undefined && then !== undefined ? (note ?? then.inbox.text) : note, line, { inbox, outcome });
       },
       say: async (text) => {
         await this.d.conv.post(ask.clot, text, { kind: "note" }).catch(() => undefined);
@@ -379,7 +383,7 @@ export class Asks {
   }
 
   /** Closes an ask, then shows the outcome, tells the UI and kicks the Clot. False when it was closed already. */
-  private async finish(ask: AskRow, note: string | null, line: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean; also?: () => void; outcome?: string }): Promise<boolean> {
+  private async finish(ask: AskRow, result: AskResult, note: string | null, line: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean; also?: () => void; outcome?: string }): Promise<boolean> {
     const outcome = o.outcome ?? line ?? "Closed";
     const snapshot = this.snapshot(ask);
     const closedAt = this.d.now();
@@ -387,11 +391,11 @@ export class Asks {
     // However it ended, the Clot's session learns how: an ask that closes with no note and no row handed over still leaves one,
     // so that no outcome is only in the chat.
     if (note === null && o.inbox === undefined && line !== null) note = `Your question to the user (${ask.summary}) ended: ${line}`;
-    if (!this.d.store.closeAsk(ask.id, ask.clot, note, { inbox: o.inbox, onlyOpen: o.onlyOpen, also: o.also, history: { view: snapshot?.view ?? null, outcome, closedAt, answerKey } })) return false;
+    if (!this.d.store.closeAsk(ask.id, ask.clot, note, { inbox: o.inbox, onlyOpen: o.onlyOpen, also: o.also, history: { view: snapshot?.view ?? null, outcome, result, closedAt, answerKey } })) return false;
     for (const cancel of this.timers.get(ask.id) ?? []) cancel();
     this.timers.delete(ask.id);
     if (line !== null) await this.d.conv.post(ask.clot, line, { kind: "note" }).catch(() => undefined);
-    this.d.emit("ask.closed", { id: ask.id, clot: ask.clot, kind: ask.kind, outcome });
+    this.d.emit("ask.closed", { id: ask.id, clot: ask.clot, kind: ask.kind, outcome, result });
     this.changed();
     if (o.inbox !== undefined) this.d.kick(ask.clot);
     return true;

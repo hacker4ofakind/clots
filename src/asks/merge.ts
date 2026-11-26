@@ -1,5 +1,5 @@
 import { labelOf } from "../clot-name.js";
-import type { AskKind, AskRow, Asks } from "../asks.js";
+import type { AskKind, AskResult, AskRow, Asks } from "../asks.js";
 import { blockedLine, minutes, waitedMinutes } from "./common.js";
 import { checkSummary, getDefaultBranch, getPullRequest, isNumber, isRepo, isSha, mergePullRequest, type CheckCounts } from "../github-api.js";
 
@@ -43,10 +43,10 @@ function checksLine(checks: CheckCounts | null): string {
 export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
   /** Whether GitHub says it is merged; undefined when it cannot be read, so the outcome stays unknown. */
   const readMerged = async (p: MergePayload): Promise<boolean | undefined> => (await getPullRequest(d.token, p.repo, p.number, d.fetchFn).catch(() => undefined))?.merged;
-  const unknown = (p: MergePayload): [string, string] => [`Whether ${name(p)} was merged is not known: GitHub did not answer clearly, and the pull request could not be read afterwards. Check it on GitHub before asking again.`, `Whether ${name(p)} was merged is not known; check it on GitHub.`];
-  const merged = (p: MergePayload): [string, string] => [`The user approved merging ${name(p)}, and it was squash-merged. Its worker closes when GitHub reports the pull request closed.`, `Merged ${name(p)}.`];
-  const unclear = (p: MergePayload): [string, string] => [`GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`, `GitHub did not answer clearly about merging ${name(p)}; it is not merged.`];
-  const stopped = (p: MergePayload): [string, string] => [`The daemon stopped while merging ${name(p)}; it is not merged. Ask again if it should be.`, `The daemon stopped while merging ${name(p)}; it is not merged.`];
+  const unknown = (p: MergePayload): [AskResult, string, string] => ["failed", `Whether ${name(p)} was merged is not known: GitHub did not answer clearly, and the pull request could not be read afterwards. Check it on GitHub before asking again.`, `Whether ${name(p)} was merged is not known; check it on GitHub.`];
+  const merged = (p: MergePayload): [AskResult, string, string] => ["approved", `The user approved merging ${name(p)}, and it was squash-merged. Its worker closes when GitHub reports the pull request closed.`, `Merged ${name(p)}.`];
+  const unclear = (p: MergePayload): [AskResult, string, string] => ["failed", `GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`, `GitHub did not answer clearly about merging ${name(p)}; it is not merged.`];
+  const stopped = (p: MergePayload): [AskResult, string, string] => ["failed", `The daemon stopped while merging ${name(p)}; it is not merged. Ask again if it should be.`, `The daemon stopped while merging ${name(p)}; it is not merged.`];
 
   return {
     kind: "merge",
@@ -74,7 +74,7 @@ export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
     async onAnswer(ask, answer, io) {
       const p = ask.payload;
       if (answer.action === "block") {
-        await io.close(`The user declined merging ${name(p)}; it stays open. Do not ask again unless the user asks.`, `Not merged: ${name(p)} stays open.`);
+        await io.close("declined", `The user declined merging ${name(p)}; it stays open. Do not ask again unless the user asks.`, `Not merged: ${name(p)} stays open.`);
         return;
       }
       if (answer.action !== "allow") return;
@@ -87,7 +87,7 @@ export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
         const state = await readMerged(p);
         await io.close(...(state === undefined ? unknown(p) : state ? merged(p) : unclear(p)));
       } else {
-        await io.close(`GitHub refused the merge: ${done.message.replace(/\.$/, "")}.`, `GitHub refused to merge ${name(p)}: ${done.message}`);
+        await io.close("failed", `GitHub refused the merge: ${done.message.replace(/\.$/, "")}.`, `GitHub refused to merge ${name(p)}: ${done.message}`);
       }
     },
 
@@ -95,12 +95,12 @@ export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
       const p = ask.payload;
       const message = `[The user's reply to your ask to merge ${name(p)}, "${p.title}". It was not merged, and the ask is closed:]
 ${text}`;
-      await io.close(null, `Your reply about merging ${name(p)} was passed on; it is not merged.`, { inbox: { id: `merge-feedback:${ask.id}`, text: message, kind: "message", outsider: p.outsider } }, "You answered in chat.");
+      await io.close("feedback", null, `Your reply about merging ${name(p)} was passed on; it is not merged.`, { inbox: { id: `merge-feedback:${ask.id}`, text: message, kind: "message", outsider: p.outsider } }, "You answered in chat.");
     },
 
     async onDeadline(ask, io) {
       const p = ask.payload;
-      await io.close(`The user did not answer your ask to merge ${name(p)} within ${minutes(waitedMinutes(ask))}, so it was not merged. Do not ask again unless the user asks.`, blockedLine(ask));
+      await io.close("timed_out", `The user did not answer your ask to merge ${name(p)} within ${minutes(waitedMinutes(ask))}, so it was not merged. Do not ask again unless the user asks.`, blockedLine(ask));
     },
 
     async interrupted(ask: AskRow<MergePayload>, io) {

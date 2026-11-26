@@ -54,7 +54,7 @@ export function ruleKind(d: RuleKindDeps): AskKind<RulePayload> {
     async onAnswer(ask, answer, io) {
       const what = headline(ask.payload.text);
       if (answer.action === "block") {
-        await io.close(`The user declined the rule change you asked for: ${what}. Do not ask for it again.`, `Declined: ${what}`);
+        await io.close("declined", `The user declined the rule change you asked for: ${what}. Do not ask for it again.`, `Declined: ${what}`);
         return;
       }
       if (answer.action !== "allow" || !io.setBusy()) return;
@@ -74,15 +74,15 @@ export function ruleKind(d: RuleKindDeps): AskKind<RulePayload> {
         return;
       }
       if (done.ok) {
-        await io.close(`The user approved the rule change you asked for, and it is in force: ${what}`, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`/rules undo\` takes it back.${done.unlogged ? `\n${UNLOGGED_NOTE}` : ""}`);
+        await io.close("approved", `The user approved the rule change you asked for, and it is in force: ${what}`, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`/rules undo\` takes it back.${done.unlogged ? `\n${UNLOGGED_NOTE}` : ""}`);
       } else {
-        await io.close(`The user approved the rule change you asked for, but it could not be applied (${done.reason}): ${what}`, `Approved, but it could not be applied (${done.reason}), so nothing was changed: ${what}`);
+        await io.close("failed", `The user approved the rule change you asked for, but it could not be applied (${done.reason}): ${what}`, `Approved, but it could not be applied (${done.reason}), so nothing was changed: ${what}`);
       }
     },
 
     async onDeadline(ask, io) {
       const what = headline(ask.payload.text);
-      await io.close(`The user did not answer the rule change you asked for within ${minutes(waitedMinutes(ask))}, so it was not applied: ${what}. Do not ask for it again unless the user asks.`, blockedLine(ask));
+      await io.close("timed_out", `The user did not answer the rule change you asked for within ${minutes(waitedMinutes(ask))}, so it was not applied: ${what}. Do not ask for it again unless the user asks.`, blockedLine(ask));
     },
   };
 }

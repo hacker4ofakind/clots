@@ -113,8 +113,13 @@ describe("the conversation", () => {
   });
 
   it("remembers how a closed ask ended, and only the newest 500", () => {
-    for (let id = 1; id <= 503; id += 1) store.conversation.recordAskOutcome({ id, clot: "graphite", kind: "rule", summary: "s", view: { heading: "h" }, outcome: `o${id}`, closedAt: id, answerKey: null });
+    for (let id = 1; id <= 503; id += 1) store.conversation.recordAskOutcome({ id, clot: "graphite", kind: "rule", summary: "s", view: { heading: "h" }, outcome: `o${id}`, result: "approved", closedAt: id, answerKey: null });
     expect(store.conversation.askOutcome(1)).toBeUndefined();
     expect(store.conversation.askOutcome(503)).toMatchObject({ outcome: "o503", view: { heading: "h" } });
+  });
+
+  it("reads a row closed before results were kept with no result", () => {
+    (store.conversation as any).db.prepare("INSERT INTO ask_history (id, clot, kind, summary, view, outcome, closed_at) VALUES (7, 'graphite', 'rule', 's', '{}', 'old', 1)").run();
+    expect(store.conversation.askOutcome(7)).toMatchObject({ outcome: "old", result: null });
   });
 });

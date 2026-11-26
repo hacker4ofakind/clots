@@ -1,4 +1,4 @@
-import type { AskCard as AskCardData, MessagePage, MessageView, WorkerView } from "@clots/ui-api-schemas";
+import type { AskCard as AskCardData, AskResult, MessagePage, MessageView, WorkerView } from "@clots/ui-api-schemas";
 
 /** One thing in a chat: a message from the daemon, with the ask or workers it carries and what the browser knows about it. */
 export interface Item {
@@ -43,14 +43,22 @@ export function stampedIds(items: Item[]): Set<string> {
   return stamped;
 }
 
+/** How an ask ended: what it says, and the typed result the icon follows (absent on rows from before it was kept). */
+export interface Ended {
+  text: string;
+  result?: AskResult;
+}
+
 /** How the asks that have ended ended, as the chat knows it: from the stream's `ask.closed`, or from the ask the page carried. */
-export function endedOutcomes(items: Item[], fromStream: Record<number, string>): Map<number, string> {
-  const ended = new Map<number, string>();
+export function endedOutcomes(items: Item[], fromStream: Record<number, Ended>): Map<number, Ended> {
+  const ended = new Map<number, Ended>();
   for (const item of items) {
     if (item.message.kind !== "ask") continue;
     const id = Number(item.message.ref);
-    const text = fromStream[id] ?? (item.ask?.state === "closed" ? item.ask.outcome : undefined);
-    if (text !== undefined) ended.set(id, text);
+    const streamed = fromStream[id];
+    const text = item.ask?.state === "closed" ? item.ask.outcome : undefined;
+    if (streamed !== undefined) ended.set(id, streamed);
+    else if (text !== undefined) ended.set(id, { text, result: item.ask?.result });
   }
   return ended;
 }

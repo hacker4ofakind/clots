@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import type { AskResult } from "@clots/ui-api-schemas";
 
 /**
  * What each row of a Clot's chat is. `user` and `clot` are the two sides of the conversation; `activity`
@@ -39,6 +40,8 @@ export interface AskHistoryRow {
   /** What the card showed, as JSON. */
   view: unknown;
   outcome: string;
+  /** How it ended; null for a row closed before this was kept. */
+  result: AskResult | null;
   closedAt: number;
   /** The idempotency key of the answer that closed it, if it had one. */
   answerKey: string | null;
@@ -72,6 +75,7 @@ CREATE TABLE IF NOT EXISTS ask_history (
   summary TEXT NOT NULL,
   view TEXT NOT NULL,
   outcome TEXT NOT NULL,
+  result TEXT,
   closed_at INTEGER NOT NULL,
   answer_key TEXT
 );
@@ -109,6 +113,8 @@ const SELECT = "SELECT messages.*, (SELECT COUNT(*) FROM message_images WHERE me
 export class ConversationStore {
   constructor(private db: Database.Database) {
     db.exec(SCHEMA);
+    // A database from before an ask's result was kept.
+    if (!(db.prepare("PRAGMA table_info(ask_history)").all() as { name: string }[]).some((c) => c.name === "result")) db.exec("ALTER TABLE ask_history ADD COLUMN result TEXT");
   }
 
   /**
@@ -178,14 +184,14 @@ export class ConversationStore {
   }
 
   /** Remembers how an ask ended. Only the newest are kept. */
-  recordAskOutcome(a: Omit<AskHistoryRow, "closedAt"> & { closedAt: number }): void {
-    this.db.prepare("INSERT OR REPLACE INTO ask_history (id, clot, kind, summary, view, outcome, closed_at, answer_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(a.id, a.clot, a.kind, a.summary, JSON.stringify(a.view), a.outcome, a.closedAt, a.answerKey);
+  recordAskOutcome(a: Omit<AskHistoryRow, "result"> & { result: AskResult }): void {
+    this.db.prepare("INSERT OR REPLACE INTO ask_history (id, clot, kind, summary, view, outcome, result, closed_at, answer_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(a.id, a.clot, a.kind, a.summary, JSON.stringify(a.view), a.outcome, a.result, a.closedAt, a.answerKey);
     this.db.prepare("DELETE FROM ask_history WHERE id <= (SELECT id FROM ask_history ORDER BY id DESC LIMIT 1 OFFSET ?)").run(ASK_HISTORY_LIMIT);
   }
 
   askOutcome(id: number): AskHistoryRow | undefined {
     const r: any = this.db.prepare("SELECT * FROM ask_history WHERE id = ?").get(id);
-    return r && { id: r.id, clot: r.clot, kind: r.kind, summary: r.summary, view: JSON.parse(r.view), outcome: r.outcome, closedAt: r.closed_at, answerKey: r.answer_key };
+    return r && { id: r.id, clot: r.clot, kind: r.kind, summary: r.summary, view: JSON.parse(r.view), outcome: r.outcome, result: r.result ?? null, closedAt: r.closed_at, answerKey: r.answer_key };
   }
 
   /** The UI's preferences, one JSON value by key. */

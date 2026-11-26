@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { MessagePage, MessageView, WorkersResponse } from "@clots/ui-api-schemas";
 import { api } from "@/lib/api-client";
 import { useAppState } from "./app-state";
-import { toItems, type Item } from "./chat-items";
+import { toItems, type Ended, type Item } from "./chat-items";
 
 /**
  * A chat's messages, kept live: what the page came with, then what the stream brings (new messages, text growing, activity, workers),
@@ -15,7 +15,7 @@ export function useChatStream(clot: string, initial: MessagePage) {
   const [items, setItems] = useState<Item[]>(() => toItems(initial));
   const [hasMore, setHasMore] = useState(initial.hasMore);
   /** How asks ended, from the stream: a card folds to this line the moment it arrives. */
-  const [outcomes, setOutcomes] = useState<Record<number, string>>({});
+  const [outcomes, setOutcomes] = useState<Record<number, Ended>>({});
 
   const refetch = useCallback(async () => {
     try {
@@ -48,7 +48,7 @@ export function useChatStream(clot: string, initial: MessagePage) {
     () =>
       subscribe((event) => {
         const d = event.data;
-        if (event.type === "ask.closed" && d.clot === clot) setOutcomes((o) => ({ ...o, [d.id]: d.outcome }));
+        if (event.type === "ask.closed" && d.clot === clot) setOutcomes((o) => ({ ...o, [d.id]: { text: d.outcome, result: d.result } }));
         if (event.type === "workers.updated" && d.clot === clot) void refetchWorkers(d.turnId);
         if (d?.clot !== clot) return;
         // An ask's card is its message: if the page connected a moment before it, the message may have been missed; look again.

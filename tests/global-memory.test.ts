@@ -164,6 +164,7 @@ describe("a global memory written in a turn an outsider's text started", () => {
     expect(said().at(-1)!.text).toBe("Approved. Global memory added for every Clot: Deploy days (`global-clot-deploy-days.md`).");
     expect(notes("home")).toEqual(["The user approved the global memory Deploy days (global-clot-deploy-days.md). It is now in every Clot's memory."]);
     expect(notes("graphite")).toEqual(["A global memory was added: Deploy days (global-clot-deploy-days.md). It is listed in your MEMORY.md."]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("on Block, puts the home Clot's copy back and tells it not to write it again", async () => {
@@ -179,6 +180,7 @@ describe("a global memory written in a turn an outsider's text started", () => {
     await asks.answer(questions()[0]!.id, { action: "block" });
     expect(folders.file("home", DEPLOY)).toBe(deployV1);
     expect(notes("home").at(-1)).toContain("Your copy was put back to the text in force.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("declined");
   });
 
   it("is withdrawn when the home Clot removes the file or puts it back", async () => {
@@ -210,6 +212,7 @@ describe("a global memory written in a turn an outsider's text started", () => {
     expect(store.approvedMemories().size).toBe(0);
     expect(folders.file("home", DEPLOY)).toBeUndefined();
     expect(said().at(-1)!.text).toContain("Blocked: no answer within 10 minutes.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
   });
 
   it("is not applied by a later check when a stop caught the answer half-way: the copy is put back", async () => {
@@ -221,6 +224,7 @@ describe("a global memory written in a turn an outsider's text started", () => {
     expect(store.approvedMemories().size).toBe(0);
     expect(folders.file("home", DEPLOY)).toBeUndefined();
     expect(notes("home").at(-1)).toContain("It is not in force, and your copy was put back.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 
   it("says a yes carried out before a stop stands", async () => {
@@ -231,6 +235,7 @@ describe("a global memory written in a turn an outsider's text started", () => {
     await asks.sweep(true);
     expect(store.approvedMemories().get(DEPLOY)).toBe(deployV1);
     expect(said().at(-1)!.text).toContain("is in force for every Clot");
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("puts the copy back when a question about it cannot be asked, so no later check applies it", async () => {

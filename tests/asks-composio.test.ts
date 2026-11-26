@@ -100,6 +100,7 @@ describe("the composio ask", () => {
     // A second answer finds the ask closed and runs nothing again.
     expect(await asks.answer(1, { action: "allow" })).toMatchObject({ status: "closed" });
     expect(writes()).toHaveLength(1);
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("declines on Block, runs nothing, and tells the Clot not to ask again", async () => {
@@ -109,6 +110,7 @@ describe("the composio ask", () => {
     expect(open()).toEqual([]);
     expect(conv.texts().at(-1)).toBe("Declined: Create Linear issue in linear:proton.");
     expect(store.notes("graphite")[0].text).toContain("The user declined Create Linear issue in linear:proton; nothing was changed.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("declined");
   });
 
   it("passes any other reply to the main session as the user's feedback and closes the ask", async () => {
@@ -118,6 +120,7 @@ describe("the composio ask", () => {
     expect(open()).toEqual([]);
     expect(pending()!.text).toBe("[The user's reply to your ask to run Create Linear issue in linear:proton. It was not run, and the ask is closed:]\nmake the title shorter first");
     expect(kicked).toEqual(["graphite"]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("feedback");
   });
 
   it("refuses the same write while it is already with the user, and any more than five at once", async () => {
@@ -153,6 +156,7 @@ describe("the composio ask", () => {
     await answer({ action: "allow" });
     expect(conv.texts().at(-1)).toContain("Entity not found");
     expect(open()).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 
   it("is blocked at its deadline: nothing runs, and the Clot is told", async () => {
@@ -163,13 +167,14 @@ describe("the composio ask", () => {
     expect(writes()).toEqual([]);
     expect(conv.texts().at(-1)).toBe("Blocked: no answer within 10 minutes.");
     expect(store.notes("graphite")[0]!.text).toContain("so it was not run");
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
   });
 
   it("closes one the daemon stopped in the middle of, saying that whether it ran is not known", async () => {
     await ask();
     const [row] = open();
     expect(row.state).toBe("open");
-    await kind.interrupted!({ ...row, payload: row.payload as ComposioPayload } as any, { close: async (note: string | null) => void (await conv.post("graphite", String(note), { kind: "note" }), true) } as any);
+    await kind.interrupted!({ ...row, payload: row.payload as ComposioPayload } as any, { close: async (_result: string, note: string | null) => void (await conv.post("graphite", String(note), { kind: "note" }), true) } as any);
     expect(conv.texts().at(-1)).toContain("whether it ran is not known");
   });
 });

@@ -10,6 +10,11 @@ test.beforeEach(async ({ request }) => {
 });
 
 const save = (page: Page) => page.getByRole("button", { name: "Save", exact: true });
+const time = (page: Page, label: string, nth = 0) => page.getByRole("combobox", { name: label }).nth(nth);
+const setTime = async (page: Page, label: string, value: string, nth = 0) => {
+  await time(page, label, nth).click();
+  await page.getByRole("option", { name: value, exact: true }).click();
+};
 const field = (page: Page, name: string) => page.getByRole("textbox", { name });
 
 test("General shows the daemon's defaults for the new settings, and each one saves and reads back", async ({ page }) => {
@@ -90,24 +95,24 @@ test("Schedule lists a row per weekday for both gates with the defaults, saves a
   await expect(page.getByRole("heading", { name: "Scarce hours" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Lead-in hours" })).toBeVisible();
   await expect(page.getByRole("switch", { name: "Monday scarce hours" })).toBeChecked();
-  await expect(page.getByLabel("Monday from").first()).toHaveValue("15:00");
-  await expect(page.getByLabel("Monday to").first()).toHaveValue("18:00");
+  await expect(time(page, "Monday from")).toHaveText("15:00");
+  await expect(time(page, "Monday to")).toHaveText("18:00");
   await expect(page.getByRole("switch", { name: "Saturday scarce hours" })).not.toBeChecked();
-  await expect(page.getByLabel("Monday from").nth(1)).toHaveValue("10:00");
+  await expect(time(page, "Monday from", 1)).toHaveText("10:00");
   await expect(field(page, "Hold when usage reaches")).toHaveValue("50");
 
   await page.getByRole("switch", { name: "Monday scarce hours" }).click();
   await page.getByRole("switch", { name: "Saturday scarce hours" }).click();
-  await page.getByLabel("Saturday from").first().fill("09:00");
-  await page.getByLabel("Saturday to").first().fill("12:30");
+  await setTime(page, "Saturday from", "09:00");
+  await setTime(page, "Saturday to", "12:30");
   await field(page, "Hold when usage reaches").fill("70");
   await save(page).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
 
   await page.reload();
   await expect(page.getByRole("switch", { name: "Monday scarce hours" })).not.toBeChecked();
-  await expect(page.getByLabel("Saturday from").first()).toHaveValue("09:00");
-  await expect(page.getByLabel("Saturday to").first()).toHaveValue("12:30");
+  await expect(time(page, "Saturday from")).toHaveText("09:00");
+  await expect(time(page, "Saturday to")).toHaveText("12:30");
   await expect(field(page, "Hold when usage reaches")).toHaveValue("70");
   // Restore defaults puts the weekdays back, and still has to be saved.
   await page.getByRole("button", { name: "Restore defaults" }).first().click();
@@ -117,14 +122,33 @@ test("Schedule lists a row per weekday for both gates with the defaults, saves a
 
 test("a window that ends before it starts is refused naming the day, and Schedule keeps its edits to fix", async ({ page }) => {
   await page.goto("/settings/schedule");
-  await page.getByLabel("Wednesday from").first().fill("18:00");
-  await page.getByLabel("Wednesday to").first().fill("09:00");
+  await setTime(page, "Wednesday from", "18:00");
+  await setTime(page, "Wednesday to", "09:00");
   await save(page).click();
   await expect(page.getByRole("alert").filter({ hasText: "Wednesday: the window must start before it ends." })).toBeVisible();
-  await expect(page.getByLabel("Wednesday from").first()).toHaveValue("18:00");
-  await page.getByLabel("Wednesday from").first().fill("08:00");
+  await expect(time(page, "Wednesday from")).toHaveText("18:00");
+  await setTime(page, "Wednesday from", "08:00");
   await save(page).click();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+});
+
+test("the time pickers are shadcn selects that show the whole time at the widest and the narrowest width the page has", async ({ page, request }) => {
+  await control(request, "/config-write", { patch: { gates: { scarce: { mon: "09:10-23:45" }, leadIn: {}, leadInPercent: 50 } } });
+  for (const width of [1280, 768]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/settings/schedule");
+    const from = time(page, "Monday from");
+    // A time between the quarter-hours is kept and shown.
+    await expect(from).toHaveText("09:10");
+    await expect(time(page, "Monday to")).toHaveText("23:45");
+    const clipped = await from.evaluate((el) => el.scrollWidth > el.clientWidth);
+    expect(clipped).toBe(false);
+    await expect(page.locator('input[type="time"]')).toHaveCount(0);
+    const box = await time(page, "Monday to").boundingBox();
+    expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+  }
+  await setTime(page, "Monday from", "08:15");
+  await expect(time(page, "Monday from")).toHaveText("08:15");
 });
 
 test("leaving Schedule with unsaved edits asks first", async ({ page }) => {
@@ -142,7 +166,7 @@ test("a hand edit of the gates in clots.config.json shows on the Schedule page",
   await expect(page.getByRole("switch", { name: "Tuesday scarce hours" })).toBeChecked();
   await control(request, "/config-write", { patch: { gates: { scarce: { tue: "13:00-14:00" }, leadIn: {}, leadInPercent: 40 } } });
   await expect(page.getByRole("switch", { name: "Monday scarce hours" })).not.toBeChecked({ timeout: 10_000 });
-  await expect(page.getByLabel("Tuesday from").first()).toHaveValue("13:00");
+  await expect(time(page, "Tuesday from")).toHaveText("13:00");
   await expect(field(page, "Hold when usage reaches")).toHaveValue("40");
 });
 

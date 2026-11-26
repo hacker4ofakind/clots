@@ -22,17 +22,17 @@ const testKind: AskKind<{ what: string }> = {
   texts: { filed: "FILED", already: "ALREADY", full: (count) => `FULL ${count}`, notAsked: (reason) => `NOT ASKED${reason ? ` (${reason})` : ""}` },
   async onAnswer(ask, answer, io) {
     answers.push(answer);
-    if (answer.action === "allow") await io.close("NOTE", "LINE", { inbox: { id: `t:${ask.id}`, text: "HANDED", kind: "message", outsider: false } });
+    if (answer.action === "allow") await io.close("approved", "NOTE", "LINE", { inbox: { id: `t:${ask.id}`, text: "HANDED", kind: "message", outsider: false } });
     if (answer.action === "block") {
       io.setBusy();
     }
   },
   async onFeedback(ask, text, io) {
     feedback.push(text);
-    await io.close(null, null, { inbox: { id: `f:${ask.id}`, text, kind: "message", outsider: false } }, "You answered in chat.");
+    await io.close("feedback", null, null, { inbox: { id: `f:${ask.id}`, text, kind: "message", outsider: false } }, "You answered in chat.");
   },
   async onDeadline(ask, io) {
-    await io.close("BLOCKED NOTE", "Blocked: no answer.");
+    await io.close("timed_out", "BLOCKED NOTE", "Blocked: no answer.");
   },
 };
 
@@ -101,13 +101,13 @@ describe("Asks", () => {
     await open("x");
     const [ask] = store.openAsks();
     const result = await asks.answer(ask.id, { action: "allow" });
-    expect(result).toEqual({ status: "answered", outcome: "LINE" });
+    expect(result).toEqual({ status: "answered", outcome: "LINE", result: "approved" });
     expect(store.openAsks()).toEqual([]);
     expect(store.notes("graphite").map((note) => note.text)).toEqual(["NOTE"]);
     expect(store.nextPending("graphite")).toMatchObject({ id: `t:${ask.id}`, text: "HANDED" });
     expect(conv.postsFor("graphite")).toEqual(["LINE"]);
     expect(kicked).toEqual(["graphite"]);
-    expect(events.at(-1)).toMatchObject({ type: "ask.closed", data: { id: ask.id, outcome: "LINE" } });
+    expect(events.at(-1)).toMatchObject({ type: "ask.closed", data: { id: ask.id, outcome: "LINE", result: "approved" } });
     expect(store.closeAsk(ask.id, "graphite", "AGAIN")).toBe(false);
     expect(store.notes("graphite")).toHaveLength(1);
   });
@@ -116,9 +116,9 @@ describe("Asks", () => {
     await open("x");
     const [ask] = store.openAsks();
     await asks.answer(ask.id, { action: "allow" }, "k1");
-    expect(await asks.answer(ask.id, { action: "block" })).toEqual({ status: "closed", outcome: "LINE" });
+    expect(await asks.answer(ask.id, { action: "block" })).toEqual({ status: "closed", outcome: "LINE", result: "approved" });
     // The same answer retried with its key is the first one, not a conflict.
-    expect(await asks.answer(ask.id, { action: "allow" }, "k1")).toEqual({ status: "answered", outcome: "LINE" });
+    expect(await asks.answer(ask.id, { action: "allow" }, "k1")).toEqual({ status: "answered", outcome: "LINE", result: "approved" });
     expect(answers).toHaveLength(1);
     expect(await asks.answer(999, { action: "allow" })).toEqual({ status: "missing" });
   });
@@ -187,7 +187,7 @@ describe("Asks", () => {
   });
 
   it("leaves the Clot a note for every way an ask ends, even when its kind gave none", async () => {
-    const terse: AskKind<{ what: string }> = { ...testKind, onDeadline: async (_ask, io) => void (await io.close(null, "Blocked: no answer within 10 minutes.")) };
+    const terse: AskKind<{ what: string }> = { ...testKind, onDeadline: async (_ask, io) => void (await io.close("timed_out", null, "Blocked: no answer within 10 minutes.")) };
     asks = new Asks({ store, conv, now: () => now, kick: () => undefined, after: () => () => undefined, kinds: [terse], emit: () => undefined, timeoutMs: () => 60_000 });
     await asks.open(terse, "graphite", { what: "x" }, { summary: "About x", dedupe: "x", max: 3 });
     await asks.sweep(false);

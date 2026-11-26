@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircleIcon, SpinnerIcon } from "@phosphor-icons/react";
-import type { AskCard as AskCardData, AskSnapshot } from "@clots/ui-api-schemas";
+import { ArrowBendUpLeftIcon, ChatCircleIcon, CheckCircleIcon, ClockCountdownIcon, SpinnerIcon, WarningCircleIcon, XCircleIcon, type Icon } from "@phosphor-icons/react";
+import type { AskCard as AskCardData, AskResult, AskSnapshot } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
@@ -15,11 +15,22 @@ import { timerView } from "@/lib/timer";
 import { CodeBlock } from "./code-block";
 import { useAnswer } from "./use-answer";
 
+/** The icon for how an ask ended. A row closed before results were kept has none, and reads as approved. */
+const RESULT_ICONS: Record<AskResult, Icon> = {
+  approved: CheckCircleIcon,
+  declined: XCircleIcon,
+  timed_out: ClockCountdownIcon,
+  failed: WarningCircleIcon,
+  feedback: ChatCircleIcon,
+  withdrawn: ArrowBendUpLeftIcon,
+};
+
 /** What a card that has ended shows: one quiet line, as the activity lines do. */
-export function AskOutcome({ text }: { text: string }) {
+export function AskOutcome({ text, result }: { text: string; result?: AskResult }) {
+  const ResultIcon = RESULT_ICONS[result ?? "approved"];
   return (
-    <p className="flex items-center gap-2 text-label leading-normal font-normal text-muted-foreground" data-ask-outcome>
-      <CheckCircleIcon size={16} aria-hidden />
+    <p className="flex items-center gap-2 text-label leading-normal font-normal text-muted-foreground" data-ask-outcome data-ask-result={result ?? "approved"}>
+      <ResultIcon size={16} aria-hidden />
       {text}
     </p>
   );
@@ -56,7 +67,7 @@ function Details({ view }: { view: AskSnapshot["view"] }) {
  * card, with Retry; an edited email that finds the ask closed keeps its text and shows how it ended.
  */
 export function AskCard({ card, focus }: { card: AskCardData; focus?: boolean }) {
-  if (card.state === "closed") return <AskOutcome text={card.outcome ?? "Closed"} />;
+  if (card.state === "closed") return <AskOutcome text={card.outcome ?? "Closed"} result={card.result} />;
   if (!card.snapshot) return null;
   return <OpenAsk snapshot={card.snapshot} focus={focus} />;
 }

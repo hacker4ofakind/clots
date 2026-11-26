@@ -116,7 +116,7 @@ export function emailKind(d: EmailKindDeps): AskKind<EmailPayload> {
     async onAnswer(ask, answer: AskAnswer, io) {
       const what = headlineOf(ask);
       if (answer.action === "block") {
-        await io.close(`The user declined your email ${what}; it was not sent. Do not ask to send it again unless the user asks.`, `Dropped, not sent: the email ${what}`);
+        await io.close("declined", `The user declined your email ${what}; it was not sent. Do not ask to send it again unless the user asks.`, `Dropped, not sent: the email ${what}`);
         return;
       }
       if (answer.action === "allow" || answer.action === "edit") {
@@ -133,17 +133,17 @@ export function emailKind(d: EmailKindDeps): AskKind<EmailPayload> {
       const what = headlineOf(ask);
       const answers = ask.payload.event === undefined ? "" : ` It answered the email ${ask.payload.event}.`;
       const message = `[Feedback on the email you asked to send ${what}. It was not sent, and its review is closed.${answers} The email was:]\n${quote(ask.payload.mail.text)}\n\n[The user's feedback, from your chat:]\n${text}`;
-      await io.close(null, `Feedback on the email ${what}, passed on:\n${quote(text)}`, { inbox: { id: `email-feedback:${ask.id}`, text: message, kind: "message", outsider: ask.payload.outsider } }, "You answered in chat.");
+      await io.close("feedback", null, `Feedback on the email ${what}, passed on:\n${quote(text)}`, { inbox: { id: `email-feedback:${ask.id}`, text: message, kind: "message", outsider: ask.payload.outsider } }, "You answered in chat.");
     },
 
     async onDeadline(ask, io) {
       const what = headlineOf(ask);
-      await io.close(`The user did not answer your email ${what} within ${minutes(waitedMinutes(ask))}, so it was not sent. Do not ask to send it again unless the user asks.`, blockedLine(ask));
+      await io.close("timed_out", `The user did not answer your email ${what} within ${minutes(waitedMinutes(ask))}, so it was not sent. Do not ask to send it again unless the user asks.`, blockedLine(ask));
     },
 
     async interrupted(ask, io) {
       const what = headlineOf(ask);
-      await io.close(`The user approved your email ${what}, but the daemon stopped while sending it: whether it went out is not known. It will not be tried again. Tell the user.`, `Approved, but the daemon stopped while sending it, so it may or may not have gone: the email ${what}`);
+      await io.close("failed", `The user approved your email ${what}, but the daemon stopped while sending it: whether it went out is not known. It will not be tried again. Tell the user.`, `Approved, but the daemon stopped while sending it, so it may or may not have gone: the email ${what}`);
     },
   };
 
@@ -160,12 +160,12 @@ export function emailKind(d: EmailKindDeps): AskKind<EmailPayload> {
         ...(sent.noCopy === undefined ? [] : [`no copy could be put in Sent: ${sent.noCopy}`]),
       ];
       const caveat = caveats.length === 0 ? "" : ` (${caveats.join("; ")})`;
-      await io.close(`The user approved your email ${what}, and the daemon sent it${caveat}.${edit}${sent.rejected === undefined ? "" : " It will not be tried again. Tell the user who did not get it."}`, `Sent an email · you allowed it${edited}${caveat}`);
+      await io.close("approved", `The user approved your email ${what}, and the daemon sent it${caveat}.${edit}${sent.rejected === undefined ? "" : " It will not be tried again. Tell the user who did not get it."}`, `Sent an email · you allowed it${edited}${caveat}`);
     } else if (sent.refused) {
-      await io.close(`The user approved your email ${what}, but it was not sent: ${sent.reason}. Tell the user.`, `Approved, but not sent (${sent.reason}): the email ${what}`);
+      await io.close("failed", `The user approved your email ${what}, but it was not sent: ${sent.reason}. Tell the user.`, `Approved, but not sent (${sent.reason}): the email ${what}`);
     } else {
       // It may have gone, so it is never tried again.
-      await io.close(`The user approved your email ${what}, but whether it went out is not known: ${sent.reason}. It will not be tried again. Tell the user.`, `Approved, but it may or may not have been sent (${sent.reason}); it will not be tried again: the email ${what}`);
+      await io.close("failed", `The user approved your email ${what}, but whether it went out is not known: ${sent.reason}. It will not be tried again. Tell the user.`, `Approved, but it may or may not have been sent (${sent.reason}); it will not be tried again: the email ${what}`);
     }
   }
 }

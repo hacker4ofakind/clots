@@ -103,6 +103,7 @@ describe("ask_choice", () => {
     expect(await asks.onUserMessage("graphite", "go with 1 but add a test")).toBe(true);
     expect(pending()!.text).toBe('[The user answered your choice "Which one?" (1. Retry the token refresh 2. Log the user out and back in; your pick was 1):]\ngo with 1 but add a test');
     expect(choices()).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("feedback");
   });
 
   it("carries an outsider's taint into the answer's turn", async () => {
@@ -125,6 +126,7 @@ describe("ask_choice", () => {
       kind: "choice",
       text: '[The user did not answer your choice "How to fix the login bug?" within 10 minutes and appears to be busy. Go with your pick, 1: Retry the token refresh. Tell the user in one line which you took, and that a reply in this chat switches it. Carry on with the pick; do not start a second worker for the same work.]',
     });
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
   });
 
   it("makes exactly one turn when the answer and the timer race", async () => {

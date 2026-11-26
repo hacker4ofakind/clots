@@ -74,6 +74,7 @@ describe("the rule ask", () => {
     expect(conv.postsFor("graphite")).toEqual(["Approved. Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`\n`/rules undo` takes it back."]);
     expect(store.notes("graphite").map((note) => note.text)).toEqual(["The user approved the rule change you asked for, and it is in force: Drop events where actor is `dependabot[bot]`"]);
     expect(rules()).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("declines on Block, and tells the Clot not to ask again", async () => {
@@ -82,6 +83,7 @@ describe("the rule ask", () => {
     expect(writer.applied).toEqual([]);
     expect(conv.postsFor("graphite")).toEqual(["Declined: Drop events where actor is `dependabot[bot]`"]);
     expect(store.notes("graphite")[0]!.text).toBe("The user declined the rule change you asked for: Drop events where actor is `dependabot[bot]`. Do not ask for it again.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("declined");
   });
 
   it("is blocked at its deadline: nothing is applied and the Clot is told", async () => {
@@ -92,6 +94,7 @@ describe("the rule ask", () => {
     expect(writer.applied).toEqual([]);
     expect(conv.postsFor("graphite")).toEqual(["Blocked: no answer within 10 minutes."]);
     expect(store.notes("graphite")[0]!.text).toContain("so it was not applied");
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
   });
 
   it("leaves a message typed in the chat to the Clot: a rule ask takes no feedback", async () => {
@@ -140,6 +143,7 @@ describe("the rule ask", () => {
     await allow();
     expect(conv.postsFor("graphite")[0]).toBe("Approved, but it could not be applied (that pre-filter is already in the file), so nothing was changed: Drop events where actor is `dependabot[bot]`");
     expect(store.notes("graphite")[0]!.text).toContain("could not be applied");
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 
   it("keeps the question open when an approved edit could not be written, and applies it on the next Allow", async () => {

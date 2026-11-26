@@ -34,12 +34,13 @@ export function choiceKind(): AskKind<ChoicePayload> {
       if (answer.action !== "pick") return;
       const p = ask.payload;
       const n = answer.option === 0 ? 1 : 2;
-      await io.close(null, `You picked ${n} for "${p.question}": ${p.options[n - 1]}`, { inbox: { id: `choice-answer:${ask.id}`, text: `[Your choice "${p.question}": the user picked ${n}: ${p.options[n - 1]}.]`, kind: "message", outsider: p.outsider } });
+      await io.close("approved", null, `You picked ${n} for "${p.question}": ${p.options[n - 1]}`, { inbox: { id: `choice-answer:${ask.id}`, text: `[Your choice "${p.question}": the user picked ${n}: ${p.options[n - 1]}.]`, kind: "message", outsider: p.outsider } });
     },
 
     async onFeedback(ask, text, io) {
       const p = ask.payload;
       await io.close(
+        "feedback",
         null,
         null,
         { inbox: { id: `choice-answer:${ask.id}`, text: `[The user answered your choice "${p.question}" (1. ${p.options[0]} 2. ${p.options[1]}; your pick was ${p.pick}):]\n${text}`, kind: "message", outsider: p.outsider } },
@@ -50,7 +51,7 @@ export function choiceKind(): AskKind<ChoicePayload> {
     async onDeadline(ask, io) {
       const p = ask.payload;
       const wait = minutes(waitedMinutes(ask));
-      await io.close(null, `No answer within ${wait}: going with the Clot's pick, ${p.pick}: ${p.options[p.pick - 1]}`, {
+      await io.close("timed_out", null, `No answer within ${wait}: going with the Clot's pick, ${p.pick}: ${p.options[p.pick - 1]}`, {
         inbox: {
           id: `choice:${ask.id}`,
           text: `[The user did not answer your choice "${p.question}" within ${wait} and appears to be busy. Go with your pick, ${p.pick}: ${p.options[p.pick - 1]}. Tell the user in one line which you took, and that a reply in this chat switches it. Carry on with the pick; do not start a second worker for the same work.]`,

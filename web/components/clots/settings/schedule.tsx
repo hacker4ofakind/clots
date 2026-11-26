@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowCounterClockwiseIcon, FloppyDiskIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { api, ApiFailure } from "@/lib/api-client";
 import { readableError } from "@/lib/readable-error";
@@ -40,6 +40,27 @@ const SCARCE_DEFAULT = defaults("15:00", "18:00");
 const LEAD_IN_DEFAULT = defaults("10:00", "15:00");
 const DEFAULT_PERCENT = 50;
 
+/** The times a window can start or end at: every quarter of an hour, in the 24-hour form the file uses. */
+const TIMES = Array.from({ length: 96 }, (_, i) => `${String(Math.floor(i / 4)).padStart(2, "0")}:${String((i % 4) * 15).padStart(2, "0")}`);
+
+/** A time of day as a select: the quarter-hours, and a time the file has between them (09:10) as well. */
+function TimeSelect({ label, value, invalid, onChange }: { label: string; value: string; invalid: boolean; onChange: (value: string) => void }) {
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger aria-label={label} aria-invalid={invalid} className="w-28 font-mono text-code">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent className="max-h-72">
+        {(TIMES.includes(value) ? TIMES : [...TIMES, value].sort()).map((t) => (
+          <SelectItem key={t} value={t} className="font-mono text-code">
+            {t}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 /** One gate's windows: a row per weekday with a switch and a from and a to time. */
 function Windows({ gate, rows, errors, onChange }: { gate: "scarce" | "leadIn"; rows: Row[]; errors: Record<string, string>; onChange: (rows: Row[]) => void }) {
   const change = (day: Row["day"], patch: Partial<Row>) => onChange(rows.map((r) => (r.day === day ? { ...r, ...patch } : r)));
@@ -54,9 +75,9 @@ function Windows({ gate, rows, errors, onChange }: { gate: "scarce" | "leadIn"; 
               <Switch aria-label={`${DAY_NAMES[r.day]} ${gate === "scarce" ? "scarce hours" : "lead-in hours"}`} checked={r.on} onCheckedChange={(on) => change(r.day, { on })} />
               {r.on ? (
                 <>
-                  <Input type="time" aria-label={`${DAY_NAMES[r.day]} from`} value={r.from} aria-invalid={error !== undefined} onChange={(e) => change(r.day, { from: e.target.value })} className="w-28 font-mono text-code md:text-code" />
+                  <TimeSelect label={`${DAY_NAMES[r.day]} from`} value={r.from} invalid={error !== undefined} onChange={(from) => change(r.day, { from })} />
                   <span className="text-label font-normal text-muted-foreground">to</span>
-                  <Input type="time" aria-label={`${DAY_NAMES[r.day]} to`} value={r.to} aria-invalid={error !== undefined} onChange={(e) => change(r.day, { to: e.target.value })} className="w-28 font-mono text-code md:text-code" />
+                  <TimeSelect label={`${DAY_NAMES[r.day]} to`} value={r.to} invalid={error !== undefined} onChange={(to) => change(r.day, { to })} />
                 </>
               ) : (
                 <span className="text-label font-normal text-muted-foreground">Not active</span>

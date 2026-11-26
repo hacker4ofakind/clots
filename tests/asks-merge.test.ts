@@ -117,6 +117,7 @@ describe("merge_pull_request", () => {
     expect(calls.find((c) => c.method === "PUT")).toEqual({ method: "PUT", url: "/repos/octo/widgets/pulls/7/merge", body: { merge_method: "squash", sha: SHA } });
     expect(conv.texts()).toEqual(["Merged octo/widgets#7."]);
     expect(merges()).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("posts GitHub's refusal as it came, and closes the ask", async () => {
@@ -126,6 +127,7 @@ describe("merge_pull_request", () => {
     expect(conv.texts()).toEqual(["GitHub refused to merge octo/widgets#7: Head branch was modified. Review and try the merge again."]);
     expect(store.notes("graphite")[0].text).toBe("GitHub refused the merge: Head branch was modified. Review and try the merge again.");
     expect(merges()).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 
   it("asks GitHub once after an unclear answer, and reports what it says", async () => {
@@ -165,6 +167,7 @@ describe("merge_pull_request", () => {
     expect(calls.some((c) => c.method === "PUT")).toBe(false);
     expect(conv.texts()).toEqual(["Blocked: no answer within 10 minutes."]);
     expect(store.notes("graphite")[0]!.text).toContain("so it was not merged");
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
   });
 
   it("warns on the card when the ask came from an outsider's turn", async () => {
@@ -189,6 +192,7 @@ describe("merge_pull_request", () => {
     await withdrawMerges(asks, { repo: "octo/widgets", headRepo: "octo/widgets", number: 7, action: "closed", headSha: SHA });
     expect(merges()).toEqual([]);
     expect(conv.texts()[0]).toContain("(the pull request was closed)");
+    expect(store.conversation.askOutcome(1)?.result).toBe("withdrawn");
   });
 
   it("says the outcome is not known when the merge answer is unclear and the pull request cannot be read", async () => {
@@ -197,6 +201,7 @@ describe("merge_pull_request", () => {
     answers["GET /repos/octo/widgets/pulls/7"] = { status: 500, body: {} };
     await allow();
     expect(conv.texts()).toEqual(["Whether octo/widgets#7 was merged is not known; check it on GitHub."]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 
   it("tells, after a stop in the middle, whether it was merged", async () => {

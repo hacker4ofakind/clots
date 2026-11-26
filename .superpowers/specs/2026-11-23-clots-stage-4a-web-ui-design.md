@@ -194,6 +194,18 @@ rule. What changes is how an ask is shown and answered.
   it closed, a restart ask included) through a note that goes in front of its
   very next turn of any kind, so what the user edited or decided reaches it
   without the user saying so.
+- **Result**: every close says how the ask ended as a typed `result`, never read
+  from the outcome's words: `approved` (also with the user's edits, and a choice
+  the user picked), `declined` (the user said no), `timed_out` (nobody answered;
+  a choice goes with the Clot's pick), `failed` (approved but not carried out,
+  GitHub unclear about a merge, or the daemon stopped while it ran), `feedback`
+  (the user's reply was passed on instead of an answer) and `withdrawn` (what it
+  would act on changed). It is stored with the ask history next to the outcome and
+  carried on `ask.closed`, in the answer and 409 responses and on a closed
+  AskCard. The ended card's one line leads with an icon that follows it:
+  `CheckCircleIcon`, `XCircleIcon`, `ClockCountdownIcon`, `WarningCircleIcon`,
+  `ChatCircleIcon` and `ArrowBendUpLeftIcon` in that order. A row from before
+  results were kept has none and shows the check mark.
 - **Feedback**: a message sent in the Clot's chat while its ask is open is
   treated as that kind's "any other reply" (parent section 7), exactly as now.
 - **Deadline**: a timer in the gate ticker closes asks whose deadline passed: a

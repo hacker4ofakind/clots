@@ -113,7 +113,7 @@ export function registerClotRoutes(api: UiApi, d: ClotRouteDeps): void {
       return snapshot && { id, state: ask.state, snapshot: { ...snapshot, messageId: store.conversation.askMessage(id)?.id ?? null } };
     }
     const past = store.conversation.askOutcome(id);
-    return past && { id, state: "closed", view: past.view as AskCard["view"], summary: past.summary, outcome: past.outcome };
+    return past && { id, state: "closed", view: past.view as AskCard["view"], summary: past.summary, outcome: past.outcome, ...(past.result === null ? {} : { result: past.result }) };
   }
 
   api.route(
@@ -166,9 +166,9 @@ export function registerClotRoutes(api: UiApi, d: ClotRouteDeps): void {
     const result = await asks.answer(id, answer, key);
     switch (result.status) {
       case "answered":
-        return { outcome: result.outcome };
+        return { outcome: result.outcome, result: result.result };
       case "closed":
-        return new ApiResult(409, { outcome: result.outcome });
+        return new ApiResult(409, { outcome: result.outcome, result: result.result });
       case "busy":
         return new ApiResult(202, { outcome: result.outcome });
       case "invalid":

@@ -143,7 +143,17 @@ export type AskAnswerBody = z.infer<typeof askAnswerSchema>;
 export const answerRequestSchema = z.object({ answer: askAnswerSchema, key: z.string().min(1).max(64).optional() });
 export type AnswerRequest = z.infer<typeof answerRequestSchema>;
 
-export const answerResponseSchema = z.object({ outcome: z.string().nullable() });
+/**
+ * How an ask ended, as a type of its own so the card's icon never depends on the outcome's words:
+ * approved (also with the user's edits, and a choice the user picked), declined (by the user),
+ * timed_out (nobody answered; a choice goes with the Clot's pick), failed (approved but not carried
+ * out, unclear, or the daemon stopped meanwhile), feedback (the user's reply was passed on instead
+ * of an answer) and withdrawn (what it would act on changed).
+ */
+export const askResultSchema = z.enum(["approved", "declined", "timed_out", "failed", "feedback", "withdrawn"]);
+export type AskResult = z.infer<typeof askResultSchema>;
+
+export const answerResponseSchema = z.object({ outcome: z.string().nullable(), result: askResultSchema.nullable().optional() });
 export type AnswerResponse = z.infer<typeof answerResponseSchema>;
 
 /** What a chat's `ask` message shows: the open ask, or how a closed one ended. */
@@ -155,6 +165,8 @@ export const askCardSchema = z.object({
   view: askViewSchema.optional(),
   summary: z.string().optional(),
   outcome: z.string().optional(),
+  /** How it ended; absent on rows closed before it was kept (shown as approved). */
+  result: askResultSchema.optional(),
 });
 export type AskCard = z.infer<typeof askCardSchema>;
 

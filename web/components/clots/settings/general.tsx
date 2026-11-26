@@ -158,7 +158,7 @@ export function GeneralSettings() {
         <FieldRow label="Open rule asks per Clot" help="Past this, a Clot suggests the rule in its reply instead" htmlFor="proposals" error={errors.maxProposals}>
           <Stepper id="proposals" label="Open rule asks per Clot" value={form.maxProposals} min={1} max={50} onChange={(v) => set("maxProposals", v)} />
         </FieldRow>
-        <FieldRow label="Ask timeout" help="An unanswered ask is blocked after this" htmlFor="timeout" error={errors.askTimeoutMinutes}>
+        <FieldRow label="Ask timeout" htmlFor="timeout" error={errors.askTimeoutMinutes}>
           <TimeInput id="timeout" label="Ask timeout" value={form.askTimeoutMinutes} onChange={(m) => set("askTimeoutMinutes", m)} />
         </FieldRow>
         </div>
@@ -171,12 +171,12 @@ export function GeneralSettings() {
           <FieldRow label="Longest wait" help="A batch goes out after this, even if events keep coming" htmlFor="hold-cap" error={errors["hold.capSeconds"]}>
             <Stepper id="hold-cap" label="Longest wait" value={form.hold.capSeconds} min={0} max={3600} unit="s" digits={4} onChange={(v) => set("hold", { ...form.hold, capSeconds: v })} />
           </FieldRow>
-          <FieldRow label="Look through claude.ai connectors" help="A Clot reads them now and then for what needs you" htmlFor="sweep-on" error={errors["sweep.enabled"]}>
+          <FieldRow label="Look through claude.ai connectors" htmlFor="sweep-on" error={errors["sweep.enabled"]}>
             <Switch id="sweep-on" checked={form.sweep.enabled} onCheckedChange={(on) => set("sweep", { ...form.sweep, enabled: on })} />
           </FieldRow>
           {form.sweep.enabled ? (
             <div className="pl-4">
-              <FieldRow label="Look every" help="At least every 15 minutes" htmlFor="sweep-every" error={errors["sweep.everyMinutes"]}>
+              <FieldRow label="Look every" htmlFor="sweep-every" error={errors["sweep.everyMinutes"]}>
                 <TimeInput id="sweep-every" label="Look every" value={form.sweep.everyMinutes} onChange={(m) => set("sweep", { ...form.sweep, everyMinutes: m })} />
               </FieldRow>
             </div>
@@ -185,12 +185,12 @@ export function GeneralSettings() {
       </Section>
       <Section title="Spending">
         <div>
-          <FieldRow label="Warn about weekly spending" help="You hear once when a Clot spends more than this in a week" htmlFor="spend-on">
+          <FieldRow label="Warn about weekly spending" htmlFor="spend-on">
             <Switch id="spend-on" checked={form.spend.weeklyWarnUsd !== null} onCheckedChange={(on) => set("spend", { weeklyWarnUsd: on ? lastSpend.current : null })} />
           </FieldRow>
           {form.spend.weeklyWarnUsd !== null ? (
             <div className="pl-4">
-              <FieldRow label="Weekly limit" help="In US dollars" htmlFor="spend-usd" error={errors["spend.weeklyWarnUsd"]}>
+              <FieldRow label="Weekly limit" htmlFor="spend-usd" error={errors["spend.weeklyWarnUsd"]}>
                 <Stepper id="spend-usd" label="Weekly limit" value={form.spend.weeklyWarnUsd} min={1} max={100000} unit="USD" digits={6} onChange={(v) => set("spend", { weeklyWarnUsd: v })} />
               </FieldRow>
             </div>
