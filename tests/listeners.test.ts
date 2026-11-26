@@ -87,7 +87,7 @@ describe("Supervisor", () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(await next()).toBe(30_000);
     expect(await next()).toBe(60_000);
-    expect(told).toEqual(["email gmail (Clots) has failed three times in a row (login refused). I keep trying, waiting longer each time, and will say when it works again."]);
+    expect(told).toEqual(["email gmail (Clots) has failed three times in a row (login refused). I'll keep trying, a little less often each time, and tell you when it works again."]);
     expect(TELL_AFTER).toBe(3);
     fail = false;
     expect(await next()).toBe(120_000);

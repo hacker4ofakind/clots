@@ -76,13 +76,13 @@ function instantCommand(command: Command): InstantCommand | undefined {
 
 const HANDOFF_TEXT: Record<SeedReason, { notice: string; failed: string; intro: string }> = {
   context: {
-    notice: "Context limit reached. Writing a handoff for the next session...",
-    failed: "The handoff could not be written. This session stays open; I'll try again after the next message.",
+    notice: "This session is full. Writing a recap for the next one...",
+    failed: "The recap could not be written. This session stays open; I'll try again after the next message.",
     intro: "New session. This is the recap of the previous one. Correct anything that is wrong before I continue.",
   },
   user: {
-    notice: "Closing this session at your request. Writing a handoff...",
-    failed: "The handoff could not be written, so this session stays open. Send `/close` to try again, or `/close nosummary` to start without one.",
+    notice: "Closing this session at your request. Writing a recap...",
+    failed: "The recap could not be written, so this session stays open. Send `/close` to try again, or `/close nosummary` to start without one.",
     intro: "New session, started at your request. This is the recap of the previous one. Correct anything that is wrong before I continue.",
   },
 };
@@ -377,7 +377,7 @@ ${request}`.slice(0, 1900), { kind: "note" }).catch(() => undefined);
       await say(spend === undefined ? "Spend is not tracked here." : await spend.report(name));
     } else if (command.kind === "calendar") {
       const calendar = this.d.calendar;
-      await say(calendar === undefined ? "No calendar can be changed from this daemon." : await calendar.undo(name));
+      await say(calendar === undefined ? "No calendar is set up here." : await calendar.undo(name));
     } else if (command.kind === "composio") {
       const composio = this.d.composio;
       await say(composio === undefined ? "No Composio account is configured." : "reconnect" in command ? await composio.reconnect(command.reconnect) : await composio.undo(name));
@@ -452,18 +452,18 @@ ${request}`.slice(0, 1900), { kind: "note" }).catch(() => undefined);
     store.finishRunning(name);
 
     if (!result.ok && !result.limit) {
-      conv.setState(name, "failed", "The last turn ended with an error. Send a message to try again.");
+      conv.setState(name, "failed", "Something went wrong. Send a message to try again.");
       await conv.post(
         name,
         row.kind === "digest"
-          ? `Looking into these events ended with an error: ${store.digestEvents(row.eventId ?? "").map((event) => event.id).join(", ")}. Ask me about any of them to try again.`
+          ? `Something went wrong while looking into these events: ${store.digestEvents(row.eventId ?? "").map((event) => event.id).join(", ")}. Ask me about any of them to try again.`
           : isEvent
-            ? "Looking into that event ended with an error. Ask me about it to try again."
+            ? "Something went wrong while looking into that event. Ask me about it to try again."
             : row.kind === "worker"
-              ? "Reading a worker's report ended with an error. Ask me about the worker to try again."
+              ? "Something went wrong while reading a worker's report. Ask me about the worker to try again."
               : row.kind === "choice"
-                ? "Going on with my pick ended with an error. Answer the choice here to try again."
-                : "That turn ended with an error. Send your message again to retry.",
+                ? "Something went wrong while going on with my pick. Answer the choice here to try again."
+                : "Something went wrong with that. Send your message again to retry.",
         { kind: "note" },
       );
       return true;
@@ -755,7 +755,7 @@ ${request}`.slice(0, 1900), { kind: "note" }).catch(() => undefined);
       // The recap has them now; a note that arrived while it was written stays for the next session.
       if (recapNotesUpTo > 0) store.clearNotes(name, recapNotesUpTo);
     } else {
-      await conv.post(name, words.notice.replace(/ Writing a handoff.*$/, ""), { kind: "note" }).catch(() => undefined);
+      await conv.post(name, words.notice.replace(/ Writing a recap.*$/, ""), { kind: "note" }).catch(() => undefined);
     }
 
     // Saved before anything is announced: from here the new session is the live one,

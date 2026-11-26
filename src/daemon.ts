@@ -278,7 +278,7 @@ const rulebook = new Rulebook(config.rulebookDir, names, (file, problem) => {
   console.error(`[rulebook] ${file} is not usable: ${problem}`);
   // A Clot's own file is reported in its channel; the global file in every Clot's.
   const affected = file === "global.yaml" ? names : [file.replace(/\.yaml$/, "")];
-  for (const name of affected) void say(name, `\`${file}\` in the rulebook could not be used, so its last good version stays in force.\n${problem}`);
+  for (const name of affected) void say(name, `Your rules file \`${file}\` has a problem, so the last good version stays in force.\n${problem}`);
 });
 // A watch or webhook recipe cannot take the name of a toolkit that sources.composio names: the toolkit is its events' source.
 rulebook.setReserved(config.sources.composio.map((a) => a.toolkit));
@@ -961,7 +961,7 @@ const oauthFor = (name: string): StoredOAuth | undefined => {
       onLink: (url) => {
         if (Date.now() - (lastLink.get(name) ?? 0) < 3_600_000) return;
         lastLink.set(name, Date.now());
-        void tellServer(name, `Log in to the MCP server ${name} so the daemon can use it. The link works once, for ten minutes: ${url}`);
+        void tellServer(name, `Sign in to ${name} so Clots can use it. The link works once and expires in ten minutes: ${url}`);
       },
     });
     oauthLogins.set(name, login);
@@ -1015,7 +1015,7 @@ const syncWatches = () => {
       const key = `${name}|${JSON.stringify(recipe)}`;
       if (!missingWatchAccount.has(key)) {
         missingWatchAccount.add(key);
-        void (file === "global" ? tellHome : (text: string) => say(file, text))(`The watch recipe \`${name}\` names the Composio account ${recipe.account}, which is not in sources.composio, so it does not run.`);
+        void (file === "global" ? tellHome : (text: string) => say(file, text))(`The watch \`${name}\` uses the account ${recipe.account}, which is not connected, so it is not running.`);
       }
       continue;
     }
@@ -1039,7 +1039,7 @@ recipeHandlers = recipeHandler({
   now: () => Date.now(),
   missingSecret: (recipe) => {
     const binding = rulebook.recipeBinding(recipe.name);
-    const text = `The webhook recipe \`${recipe.name}\` is not active yet: put its secret in .env as ${recipe.verify.secret}. Its address is ${config.publicUrl}/webhooks/r/${recipe.name}.`;
+    const text = `The webhook \`${recipe.name}\` is not active yet: add its secret under Keys as ${recipe.verify.secret}. Its address is ${config.publicUrl}/webhooks/r/${recipe.name}.`;
     void (binding !== undefined && binding !== "shared" ? say(binding.clot, text) : tellAccount({})(text));
   },
 });

@@ -216,7 +216,7 @@ export function oauthCallbackHandler(d: { store: Store; now: () => number; finis
     const code = req.query.get("code");
     const state = req.query.get("state");
     const server = state === null ? undefined : consumeLoginState(d.store, state, d.now());
-    if (code === null || server === undefined) return { status: 400, text: page("Clots", "This login link has expired or was already used. The daemon will post a new one."), contentType: "text/html; charset=utf-8" };
+    if (code === null || server === undefined) return { status: 400, text: page("Clots", "This login link has expired or was already used. Clots will post a new one."), contentType: "text/html; charset=utf-8" };
     try {
       await d.finish(server, code);
     } catch (error) {

@@ -31,7 +31,7 @@ export function memoryKind(d: {
     view: (clot, p) => ({
       heading: `Allow ${labelOf(clot)} to give every Clot a memory?`,
       shortHeading: "Allow a global memory?",
-      rows: [{ label: "File", value: p.file }, { label: "Source", value: "A turn an outsider's text started" }],
+      rows: [{ label: "File", value: p.file }, { label: "Source", value: "Started by text from an outsider" }],
       body: p.text,
       ...(p.approved === undefined ? {} : { previous: p.approved }),
       labels: { allow: "Allow", block: "Decline" },
@@ -69,7 +69,7 @@ export function memoryKind(d: {
       await io.close(
         "failed",
         `The daemon stopped while carrying out the user's answer about the global memory ${ask.payload.file}. It is not in force, and your copy was put back. Write it again only if the user asks.`,
-        `The daemon stopped while carrying out your answer, so global memory \`${ask.payload.file}\` is not in force and the home Clot's copy was put back.`,
+        `Clots stopped while carrying out your answer, so global memory \`${ask.payload.file}\` is not in force and the home Clot's copy was put back.`,
       );
     },
 

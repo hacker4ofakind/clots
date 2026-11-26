@@ -23,7 +23,7 @@ export function configKind(d: { apply(key: string, value: unknown): { ok: boolea
     view: (clot, p) => ({
       heading: `Allow ${labelOf(clot)} to change a setting?`,
       shortHeading: "Allow a setting change?",
-      rows: [{ label: "Setting", value: p.key }, { label: "File", value: "clots.config.json" }],
+      rows: [{ label: "Setting", value: p.key }],
       ...(p.current === undefined ? {} : { previous: json(p.current) }),
       body: json(p.value),
       labels: { allow: "Save", block: "Decline" },
@@ -89,7 +89,7 @@ export function restartKind(d: {
       shortHeading: "Allow a restart?",
       rows: [{ label: "Why", value: p.reason }],
       labels: { allow: "Restart", block: "Decline" },
-      warning: "It waits until every turn has finished, then takes a few seconds.",
+      warning: "It waits until every Clot has finished what it is doing, then takes a few seconds.",
     }),
     texts: {
       filed: "Put to the user in your chat. Do not say it was restarted. Allowing it makes it wait for every turn to end, then restart.",
@@ -99,13 +99,13 @@ export function restartKind(d: {
     },
     async onAnswer(ask, answer, io) {
       if (answer.action === "block") {
-        await io.close("declined", "The user declined the restart. Do not ask again unless the user asks.", "Declined: the daemon keeps running.");
+        await io.close("declined", "The user declined the restart. Do not ask again unless the user asks.", "Declined: Clots keeps running.");
         return;
       }
       if (answer.action !== "allow" || !io.setBusy()) return;
       // Waiting for the turns to end can take a long while: the answer does not wait for it.
-      void d.restartWhenIdle(() => io.close("approved", "The user approved the restart, and the daemon is restarting now.", "Restarting the daemon now.")).then(async (restarted) => {
-        if (!restarted) await io.close("failed", "The restart was approved, but turns kept running too long, so it was not made. Ask again later.", "Restart not made: turns kept running. Ask again when they are done.");
+      void d.restartWhenIdle(() => io.close("approved", "The user approved the restart, and the daemon is restarting now.", "Restarting Clots now.")).then(async (restarted) => {
+        if (!restarted) await io.close("failed", "The restart was approved, but turns kept running too long, so it was not made. Ask again later.", "Restart not made: Clots stayed busy. Ask again when it is quiet.");
       });
     },
 

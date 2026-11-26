@@ -89,7 +89,7 @@ describe("the rulebook tools", () => {
     const reply = await tools("chat").prefilter({ action: "add", file: "own", rule: { actor: "dependabot[bot]" } });
     expect(reply).toContain("Applied");
     expect(own().prefilters).toEqual([{ actor: "dependabot[bot]" }]);
-    expect(said).toEqual(["Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`\n`/rules undo` takes it back."]);
+    expect(said).toEqual(["Rule change for graphite: Drop events where actor is `dependabot[bot]`\n`/rules undo` takes it back."]);
     expect(opened).toEqual([]);
 
     await tools("chat").guidance({ action: "add", file: "own", line: "Billing is urgent." });

@@ -139,7 +139,7 @@ describe("a global memory written in a turn an outsider's text started", () => {
     await tainted(DEPLOY, deployV1);
 
     const view = asks.snapshot(questions()[0]!)!.view;
-    expect(view).toMatchObject({ heading: "Allow Home to give every Clot a memory?", rows: [{ label: "File", value: DEPLOY }, { label: "Source", value: "A turn an outsider's text started" }], body: deployV1, labels: { allow: "Allow", block: "Decline" } });
+    expect(view).toMatchObject({ heading: "Allow Home to give every Clot a memory?", rows: [{ label: "File", value: DEPLOY }, { label: "Source", value: "Started by text from an outsider" }], body: deployV1, labels: { allow: "Allow", block: "Decline" } });
     expect(view.warning).toBe("Every Clot would trust it from then on.");
     expect(store.approvedMemories().size).toBe(0);
     expect(notes("graphite")).toEqual([]);

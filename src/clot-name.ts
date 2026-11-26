@@ -22,3 +22,8 @@ export function sameClot(a: string, b: string): boolean {
 export function labelOf(name: string): string {
   return name === "home" ? "Home" : name;
 }
+
+/** Whose rules a rule file holds, to the user: "every Clot" for the global file, else the Clot's name. */
+export function rulesOf(file: string): string {
+  return file === "global" ? "every Clot" : labelOf(file);
+}

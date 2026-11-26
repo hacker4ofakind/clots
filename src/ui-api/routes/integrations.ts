@@ -54,7 +54,7 @@ async function answer<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-const NO_COMPOSIO = "Composio is not set up: put COMPOSIO_API_KEY in .env and restart the daemon.";
+const NO_COMPOSIO = "Composio is not set up. Add COMPOSIO_API_KEY under Keys, then restart Clots.";
 
 export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): void {
   const sourcesOf = () => d.config.json().sources as { email?: Record<string, unknown>[]; composio?: Record<string, unknown>[] } | undefined;

@@ -43,12 +43,12 @@ export function checklist(d: ChecklistDeps): ChecklistItem[] {
   const pushed = d.hasPullRequest || (d.repo !== null && d.marks.getState(keyFor("push", d.repo)) !== undefined);
   const waiting = d.tools.filter((t) => !t.active);
   return [
-    { id: "webhook", done: pinged, detail: pinged ? "GitHub's ping arrived." : `Waiting for GitHub's ping from ${d.repo ?? "the repository"}.` },
+    { id: "webhook", done: pinged, detail: pinged ? "GitHub has reached Clots." : `Waiting to hear from GitHub about ${d.repo ?? "the repository"}.` },
     {
       id: "tools",
       done: waiting.length === 0,
       detail: d.tools.length === 0 ? "No tool to connect. Add one in Settings, Integrations when it needs one." : waiting.length === 0 ? `${d.tools.length} connected.` : `Waiting for ${waiting.map((t) => t.id).join(", ")} to connect.`,
     },
-    { id: "push-branch", done: pushed, detail: pushed ? "The Clot has pushed a branch with its own token." : "Done once the Clot has pushed a branch with its own token." },
+    { id: "push-branch", done: pushed, detail: pushed ? "The Clot has pushed a branch." : "Done once the Clot has pushed a branch." },
   ];
 }

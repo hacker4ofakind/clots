@@ -67,7 +67,7 @@ describe("how a toolkit connects", () => {
 
   it("is nothing for a toolkit that needs no connection, and a refusal for one that needs an OAuth app of its own", () => {
     expect(authFor({ slug: "hackernews", name: "Hacker News", managed: [], schemes: [], noAuth: true })).toBe("none");
-    expect(authFor({ slug: "x", name: "X", managed: [], schemes: [{ scheme: "OAUTH2", required: [], optional: [], creationRequired: ["client_id", "client_secret"] }] })).toEqual({ error: expect.stringContaining("needs an OAuth app of your own") });
+    expect(authFor({ slug: "x", name: "X", managed: [], schemes: [{ scheme: "OAUTH2", required: [], optional: [], creationRequired: ["client_id", "client_secret"] }] })).toEqual({ error: expect.stringContaining("needs an app of your own") });
   });
 
   it("leaves a tool that exists the way its entry connects", () => {
@@ -468,7 +468,7 @@ describe("the configurer's proposal", () => {
   it("for a toolkit that needs an OAuth app of its own, says so at once", async () => {
     const h = makeJobs();
     h.api.meta.set("custom", { slug: "custom", name: "Custom", managed: [], schemes: [{ scheme: "OAUTH2", required: [], optional: [], creationRequired: ["client_id", "client_secret"] }] });
-    await expect(h.jobs.configure({ toolkit: "custom", ...OPTIONS })).rejects.toMatchObject({ status: 400, message: expect.stringContaining("OAuth app of your own") });
+    await expect(h.jobs.configure({ toolkit: "custom", ...OPTIONS })).rejects.toMatchObject({ status: 400, message: expect.stringContaining("app of your own") });
   });
 });
 

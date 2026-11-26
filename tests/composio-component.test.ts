@@ -705,7 +705,7 @@ describe("response checks", () => {
     expect(told).toEqual([]);
     await composio.checkDaily();
     await composio.checkDaily();
-    const drift = told.filter((t) => t.text.includes("unexpected shape"));
+    const drift = told.filter((t) => t.text.includes("does not recognise"));
     expect(drift.map((t) => t.account)).toEqual(["linear:proton", "notion:main"]);
     expect(drift[0].text).toContain("LINEAR_GET_LINEAR_ISSUE");
     expect(drift[1].text).toContain("NOTION_RETRIEVE_PAGE");
@@ -925,7 +925,7 @@ describe("any toolkit's auth", () => {
     await composio.checkDaily();
     const said = told.filter((t) => t.account === "supabase:shop");
     expect(said).toHaveLength(1);
-    expect(said[0].text).toContain("Replace SB_URL, SB_KEY in .env");
+    expect(said[0].text).toContain("Replace SB_URL, SB_KEY under Keys");
     expect(api.of("linkManaged")).toEqual([]);
   });
 

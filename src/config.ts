@@ -149,7 +149,7 @@ const FileSchema = z.object({
         name: z
           .string()
           .regex(CLOT_NAME, CLOT_NAME_RULE)
-          .refine((name) => !RESERVED_NAMES.includes(slugOf(name)), "the names home and global are the daemon's own"),
+          .refine((name) => !RESERVED_NAMES.includes(slugOf(name)), "home and global are reserved names"),
         // Events are routed by repository, so the URL must be one a repository can be read from.
         repoUrl: z.string().refine((url) => repoSlug(url) !== undefined, "repoUrl must look like https://github.com/owner/name.git"),
         testCommand: z.string().min(1).optional(),
@@ -318,7 +318,7 @@ function refuseSharedEnvKeys(file: z.infer<typeof FileSchema>, accounts: Composi
   const claim = (key: string | undefined, owner: string, generic: boolean) => {
     if (key === undefined) return;
     if (generic) {
-      if (DAEMON_ENV_KEYS.includes(key)) throw new Error(`${owner}: ${key} is a key the daemon uses for itself`);
+      if (DAEMON_ENV_KEYS.includes(key)) throw new Error(`${owner}: ${key} is reserved for Clots itself`);
       if (key.startsWith("RECIPE_")) throw new Error(`${owner}: ${key} is for a recipe's secret`);
       const other = owners.get(key);
       if (other !== undefined) throw new Error(`${owner}: ${key} is already used by ${other}`);
@@ -503,7 +503,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
 
   const publicUrl = (file.publicUrl ?? "").replace(/\/+$/, "");
   const reachedFromOutside = sources.composio.length > 0 || Object.values(mcpServers).some((server) => server.kind === "http" && server.oauth);
-  if (reachedFromOutside && publicUrl === "") throw new Error("Set the public address under General settings. Webhooks and sign-ins reach the daemon through it (the Tailscale Funnel address).");
+  if (reachedFromOutside && publicUrl === "") throw new Error("Set the public address under General settings. Other services and sign-in links reach Clots through it (the Tailscale Funnel address).");
 
   return {
     timeZone: file.timeZone,

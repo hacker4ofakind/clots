@@ -242,8 +242,8 @@ describe("Clot", () => {
   it("tells the user when a turn fails", async () => {
     runner.script = [{ ok: false, say: [], contextPercent: 0 }];
     await clot.onMessage(msg("do it"));
-    expect(conv.postsFor("graphite").at(-1)).toBe("That turn ended with an error. Send your message again to retry.");
-    expect(conv.stateOf("graphite")).toEqual({ state: "failed", reason: "The last turn ended with an error. Send a message to try again." });
+    expect(conv.postsFor("graphite").at(-1)).toBe("Something went wrong with that. Send your message again to retry.");
+    expect(conv.stateOf("graphite")).toEqual({ state: "failed", reason: "Something went wrong. Send a message to try again." });
     expect(store.activeSession("graphite")!.started).toBe(false);
   });
 
@@ -310,7 +310,7 @@ describe("Clot", () => {
     const fresh = store.activeSession("graphite")!;
     expect(fresh).toMatchObject({ id: "sess-2", started: false, seed: "RECAP: built the footer." });
     const notes = conv.posts.filter((p) => p.kind === "note");
-    expect(notes.map((p) => p.text)).toEqual(["Context limit reached. Writing a handoff for the next session...", expect.stringContaining("RECAP: built the footer.")]);
+    expect(notes.map((p) => p.text)).toEqual(["This session is full. Writing a recap for the next one...", expect.stringContaining("RECAP: built the footer.")]);
     expect(notes[1]).toMatchObject({ recap: true });
     expect(notes[1]!.text).toContain("New session. This is the recap of the previous one.");
 
@@ -340,7 +340,7 @@ describe("Clot", () => {
 
     const turn = clot.onMessage(msg("do the thing"));
     await vi.waitFor(() => expect(runner.release).toBeDefined());
-    expect(conv.postsFor("graphite").at(-1)).toBe("Context limit reached. Writing a handoff for the next session...");
+    expect(conv.postsFor("graphite").at(-1)).toBe("This session is full. Writing a recap for the next one...");
     expect(store.activeSession("graphite")!.id).toBe("sess-1");
     runner.release!();
     await turn;
@@ -351,7 +351,7 @@ describe("Clot", () => {
   it("says so when the handoff could not be written", async () => {
     runner.script = [{ contextPercent: 70 }, { ok: false, say: [] }];
     await clot.onMessage(msg("do the thing"));
-    expect(conv.postsFor("graphite").at(-1)).toBe("The handoff could not be written. This session stays open; I'll try again after the next message.");
+    expect(conv.postsFor("graphite").at(-1)).toBe("The recap could not be written. This session stays open; I'll try again after the next message.");
     expect(store.activeSession("graphite")!.id).toBe("sess-1");
   });
 
@@ -528,7 +528,7 @@ describe("Clot", () => {
 
       expect(runner.calls[1]).toMatchObject({ resume: "sess-1", role: "main" });
       expect(runner.calls[1].prompt).toContain("The user has asked to close this session");
-      expect(conv.postsFor("graphite")).toContain("Closing this session at your request. Writing a handoff...");
+      expect(conv.postsFor("graphite")).toContain("Closing this session at your request. Writing a recap...");
       const fresh = store.activeSession("graphite")!;
       expect(fresh).toMatchObject({ id: "sess-2", seed: "RECAP: built the footer.", seedReason: "user" });
       expect(conv.postsFor("graphite").at(-1)).toContain("started at your request");
@@ -761,7 +761,7 @@ describe("Clot", () => {
     it("says so when looking into an event fails", async () => {
       runner.script = [{ ok: false, say: [], contextPercent: 0 }];
       await clot.queueEvent(event("d-1"), "Login fails.");
-      await vi.waitFor(() => expect(conv.postsFor("graphite").at(-1)).toBe("Looking into that event ended with an error. Ask me about it to try again."));
+      await vi.waitFor(() => expect(conv.postsFor("graphite").at(-1)).toBe("Something went wrong while looking into that event. Ask me about it to try again."));
     });
 
     it("reports that no turn is running: once at startup and after every turn", async () => {

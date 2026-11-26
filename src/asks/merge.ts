@@ -32,7 +32,7 @@ const name = (p: Pick<MergePayload, "repo" | "number">) => `${p.repo}#${p.number
 
 function checksLine(checks: CheckCounts | null): string {
   if (checks === null) return "Checks: unknown.";
-  return `Checks: ${checks.passed} passed, ${checks.failed} failed, ${checks.pending} pending.${checks.more ? " (100+ check runs; these are the first 100.)" : ""}`;
+  return `Checks: ${checks.passed} passed, ${checks.failed} failed, ${checks.pending} pending.${checks.more ? " (More than 100 checks; these are the first 100.)" : ""}`;
 }
 
 /**
@@ -46,7 +46,7 @@ export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
   const unknown = (p: MergePayload): [AskResult, string, string] => ["failed", `Whether ${name(p)} was merged is not known: GitHub did not answer clearly, and the pull request could not be read afterwards. Check it on GitHub before asking again.`, `Whether ${name(p)} was merged is not known; check it on GitHub.`];
   const merged = (p: MergePayload): [AskResult, string, string] => ["approved", `The user approved merging ${name(p)}, and it was squash-merged. Its worker closes when GitHub reports the pull request closed.`, `Merged ${name(p)}.`];
   const unclear = (p: MergePayload): [AskResult, string, string] => ["failed", `GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`, `GitHub did not answer clearly about merging ${name(p)}; it is not merged.`];
-  const stopped = (p: MergePayload): [AskResult, string, string] => ["failed", `The daemon stopped while merging ${name(p)}; it is not merged. Ask again if it should be.`, `The daemon stopped while merging ${name(p)}; it is not merged.`];
+  const stopped = (p: MergePayload): [AskResult, string, string] => ["failed", `The daemon stopped while merging ${name(p)}; it is not merged. Ask again if it should be.`, `Clots stopped while merging ${name(p)}; it is not merged.`];
 
   return {
     kind: "merge",

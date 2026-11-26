@@ -369,7 +369,7 @@ _Execute in two passes with a green test run between them: (a) store, migration,
 
 #### MV-9: Rollover keeps the chat
 - **Steps:** 1. In Home, send `/close`. 2. Scroll up.
-- **Expected:** a note "Context limit reached…" or the close note and a folded recap appear; earlier messages are still there above it.
+- **Expected:** a note "This session is full…" or the close note and a folded recap appear; earlier messages are still there above it.
 - **How the executor runs it:** browser.
 
 #### MV-10: Worker card

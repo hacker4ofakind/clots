@@ -137,7 +137,7 @@ export class UiApi {
     try {
       const secret = this.d.secret();
       const given = req.headers["x-clots-ui-secret"];
-      if (!secretMatches(Array.isArray(given) ? given[0] : given, secret)) return this.send(res, 401, { error: "The Clots daemon did not accept that request." });
+      if (!secretMatches(Array.isArray(given) ? given[0] : given, secret)) return this.send(res, 401, { error: "Clots did not accept that request." });
       const url = new URL(req.url ?? "/", "http://localhost");
       if (url.pathname !== API_BASE && !url.pathname.startsWith(`${API_BASE}/`)) return this.send(res, 404, { error: "That could not be found." });
       const pathname = url.pathname.slice(API_BASE.length) || "/";
@@ -172,7 +172,7 @@ export class UiApi {
       if (error instanceof ApiError) return this.send(res, error.status, { error: error.message, ...(error.details === undefined ? {} : { details: error.details }) });
       if (error instanceof z.ZodError) return this.send(res, 400, { error: "Some of that is not valid. Check it and try again.", details: z.flattenError(error) });
       console.error("[ui-api] a request failed:", error);
-      this.send(res, 500, { error: "Something went wrong in the daemon. Try again in a moment." });
+      this.send(res, 500, { error: "Something went wrong. Try again in a moment." });
     }
   }
 }

@@ -238,8 +238,8 @@ describe("a gate holding", () => {
     gate = FREE;
     runner.script = [{ ok: false, say: [] }];
     clot.kick();
-    await vi.waitFor(() => expect(conv.postsFor("graphite").some((p) => p.startsWith("Looking into these events ended with an error"))).toBe(true));
-    expect(conv.postsFor("graphite").at(-1)).toBe("Looking into these events ended with an error: 1, 2. Ask me about any of them to try again.");
+    await vi.waitFor(() => expect(conv.postsFor("graphite").some((p) => p.startsWith("Something went wrong while looking into these events"))).toBe(true));
+    expect(conv.postsFor("graphite").at(-1)).toBe("Something went wrong while looking into these events: 1, 2. Ask me about any of them to try again.");
   });
 
   it("picks a digest cut off by the usage limit up again with the same events, told to carry on", async () => {
