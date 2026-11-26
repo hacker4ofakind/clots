@@ -13,6 +13,7 @@ import { useAppState } from "./app-state";
 import { Timer, useNow } from "./timer";
 import { timerView } from "@/lib/timer";
 import { CodeBlock } from "./code-block";
+import { InlineCode } from "./inline-code";
 import { useAnswer } from "./use-answer";
 
 /** The icon for how an ask ended. A row closed before results were kept has none, and reads as approved. */
@@ -123,7 +124,7 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
           <CodeBlock>{view.body}</CodeBlock>
         ) : null}
       </div>
-      {outcome !== undefined ? <p className="text-body text-muted-foreground">{outcome}</p> : null}
+      {outcome !== undefined ? <p className="text-body text-muted-foreground"><InlineCode text={outcome} /></p> : null}
       {closing && outcome === undefined ? (
         <p role="status" data-ask-closing className="flex items-center gap-2 text-body text-muted-foreground">
           <SpinnerIcon className="size-4 animate-spin" aria-hidden /> Closing…
@@ -131,7 +132,7 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
       ) : null}
       {error ? (
         <p role="alert" className="flex flex-wrap items-center gap-x-3 text-body text-primary-ink">
-          {error}
+          <span><InlineCode text={error} /></span>
           <Button type="button" variant="link" size="xs" disabled={connection === "down" || working} onClick={() => void retry()} className="h-auto p-0 text-primary-ink">
             Retry
           </Button>
@@ -140,8 +141,8 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
       {view.options ? (
         <div className="flex flex-col gap-2 md:flex-row md:justify-between">
           {view.options.map((option, i) => (
-            <Button key={option} variant="outline" size="lg" disabled={off} onClick={() => void send({ action: "pick", option: i as 0 | 1 })} className={cn("md:h-9", view.pick === i && "border-primary")}>
-              {option}
+            <Button key={option} variant="outline" size="lg" disabled={off} onClick={() => void send({ action: "pick", option: i as 0 | 1 })} className={cn("h-auto min-h-11 whitespace-normal py-2 text-balance md:min-h-9", view.pick === i && "border-primary")}>
+              <span className="min-w-0 [overflow-wrap:anywhere]">{option}</span>
               {view.pick === i ? <span className="text-muted-foreground">· the Clot&apos;s pick</span> : null}
             </Button>
           ))}

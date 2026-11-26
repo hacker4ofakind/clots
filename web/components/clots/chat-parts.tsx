@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { AttachmentThumb } from "./attachment-thumb";
 import type { Item } from "./chat-items";
 import { NamedIcon } from "./clot-icon";
+import { InlineCode } from "./inline-code";
 import { Markdown } from "./markdown";
 
 /** A line of what the Clot did between its messages, or the summary of a turn's files and commands. */
@@ -42,7 +43,7 @@ export function Activity({ message }: { message: MessageView }) {
   return (
     <p className="flex items-center gap-2 text-label leading-normal font-normal text-muted-foreground">
       {data?.icon ? <NamedIcon name={data.icon} size={16} className="shrink-0" /> : null}
-      {message.text}
+      <span><InlineCode text={message.text} /></span>
     </p>
   );
 }
@@ -54,7 +55,7 @@ export function Note({ message }: { message: MessageView }) {
     return (
       <p className="flex items-center gap-1.5 self-center py-1 text-center text-caption leading-normal font-normal text-muted-foreground">
         <InfoIcon size={16} className="shrink-0" aria-hidden />
-        {message.text}
+        <span><InlineCode text={message.text} /></span>
       </p>
     );
   }

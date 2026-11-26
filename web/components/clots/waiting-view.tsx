@@ -112,7 +112,7 @@ export function WaitingView() {
   return (
     <div tabIndex={0} aria-label="Waiting for you" role="region" className="flex h-full flex-col overflow-y-auto pb-28 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:pb-0">
       <div className="content-width flex flex-1 flex-col md:gap-7 md:p-10">
-        <div className="flex items-baseline justify-between gap-3 max-md:px-5 max-md:pb-3 max-md:pt-[max(calc(env(safe-area-inset-top)+12px),62px)]">
+        <div className="flex items-baseline justify-between gap-3 max-md:px-5 max-md:pb-3 max-md:pt-[max(env(safe-area-inset-top),48px)]">
           <h1 className="text-title-mobile leading-normal md:text-title">Waiting for you</h1>
           {asks.length > 0 ? (
             <p suppressHydrationWarning className="text-label font-normal text-muted-foreground md:text-body" aria-live="polite">

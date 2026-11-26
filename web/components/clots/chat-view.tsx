@@ -51,7 +51,7 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="grid h-14 shrink-0 grid-cols-[1fr_auto_1fr] items-center px-4 max-md:h-auto max-md:px-2 max-md:pt-[max(calc(env(safe-area-inset-top)+4px),54px)] max-md:pb-1.5">
+      <header className="grid h-14 shrink-0 grid-cols-[1fr_auto_1fr] items-center px-4 max-md:h-auto max-md:px-2 max-md:pt-[max(calc(env(safe-area-inset-top)-6px),42px)] max-md:pb-1.5">
         <Button asChild variant="ghost" size="lg" className="justify-self-start px-2 text-base font-medium md:hidden">
           <Link href="/clots">
             <CaretLeftIcon size={20} aria-hidden /> Clots
