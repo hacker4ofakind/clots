@@ -4,16 +4,16 @@
 
 **Goal:** Clots write Claritee: inline widgets in replies, linted before the user sees them, and live-edited Clapboards in the side pane or full screen.
 **Specs:** `.superpowers/specs/2026-11-23-clots-stage-4b-claritee-clapboards-design.md` (this stage); `.superpowers/specs/2026-11-23-clots-stage-4a-web-ui-design.md` (built first); parent `.superpowers/specs/2026-10-10-clots-design.md`.
-**Architecture:** A dependency-free workspace package `packages/claritee` holds the lexer, parser, inference, linter, catalog schema and interpreter, used by both the daemon (linting, hooks) and the web app (rendering). The web app's renderer turns the AST into the shadcn-based catalog with a per-widget state store. The daemon adds a Stop hook on main-session turns, a PostToolUse hook and `clapboard_*` tools for Clapboards, a Clapboard store, and an image proxy.
+**Architecture:** A dependency-free workspace package `packages/claritee` (`@clots/claritee`) holds the lexer, parser, inference, linter, catalog schema and interpreter, used by both the daemon (linting, hooks) and the web app (rendering). The web app's renderer turns the AST into the shadcn-based catalog with a per-widget state store. The daemon adds a Stop hook on main-session turns, a PostToolUse hook and `clapboard_*` tools for Clapboards, a Clapboard store, and an image proxy.
 **Tech Stack:** TypeScript (no runtime deps in the package), React, shadcn/ui, Evil Charts (ECharts engine) via the shadcn registry, TanStack Table, Shiki, `@phosphor-icons/react`, Sonner, `react-markdown`, vitest, Playwright.
 
 ## Global Constraints
 
 - Fence language `claritee` renders; `claritee-source` shows source.
 - Limits: 64 KB per inline block, 256 KB per Clapboard; 10,000 interpreter steps per render; 50 versions kept per Clapboard.
-- Slugs: `^[a-z0-9-]{1,48}$`; files at `~/clapboards/<slug>.clap`; assets at `~/clapboards/assets/`.
+- Slugs: `^[a-z0-9-]{1,48}$`; files at `~/clapboards/<slug>.clap` (`/home/clot/clapboards/` in the container, on the `<container>-home` volume, so they survive a container rebuild); assets at `~/clapboards/assets/`.
 - Daemon tools: `clapboard_publish(slug)`, `clapboard_list()`, `clapboard_unpublish(slug)`, `clapboard_state(slug)`, `clapboard_versions(slug)`.
-- Web route: `/c/<clot>/<slug>`. API: `/api/v1/clapboards…`, image proxy `/api/v1/img?url=`.
+- Web route: `/c/<clot>/<slug>` (`<clot>` is the Clot's name as in 4a's `/c/[clot]`, URL-encoded, capitals kept; anything on disk uses `slugOf(clot)`). Daemon API: `/api/v1/clapboards…`, image proxy `/api/v1/img?url=`. The browser reaches them only as `/api/d/clapboards…` and `/api/d/img?url=` through 4a's catch-all proxy.
 - Image proxy: https only, `image/*` only, ≤ 10 MB, private, loopback and link-local addresses refused (after DNS resolution, connecting to the resolved address).
 - Radii: root 12 px up to 480 px wide, 16 px above; nested = parent radius − parent padding, min 4 px; flat components pass through.
 - Stop hook: at most 2 rewrites per turn, then "This widget couldn't be shown" with the source folded.
@@ -24,18 +24,25 @@
 
 ## File Map
 
-- `packages/claritee/package.json`, `src/{lexer,parser,ast,infer,lint,catalog,interpreter,index}.ts`, `tests/**` (create): the language.
+- `packages/claritee/package.json` (`@clots/claritee`, `"exports": { ".": "./src/index.ts" }`, no build step, like `@clots/ui-api-schemas`), `src/{lexer,parser,ast,infer,lint,catalog,interpreter,index}.ts`, `tests/**` (create): the language. `web/next.config.ts` (modify): add it to `transpilePackages`.
 - `packages/claritee/src/catalog.ts`: every component's name, scope (`base` | `clapboard`), attributes (type, variant groups), children rule, whether it takes no children, whether it is an input (for submit).
+- `packages/claritee/src/icon-names.ts` (generated): the Phosphor names in kebab case, written by `web/scripts/gen-phosphor-names.mjs` (modify) from the same list as 4a's `web/lib/phosphor-names.ts`, so the package stays dependency-free.
+- `packages/ui-api-schemas/src/index.ts` (modify): `UI_EVENT_TYPES` gains `widget.status`, `message.updated`, `clapboard.updated`; `sendMessageSchema` gains optional `widget: { messageId, block }` and `clapboard: slug`; message views gain `blocks`; Clapboard list, source and state schemas.
 - `web/components/claritee/{render,store,radius,attrs,widget,error-placeholder}.tsx` (create): renderer core.
 - `web/components/claritee/catalog/*.tsx` (create): one file per component family.
-- `web/components/chat/markdown.tsx` (modify from 4a): the `code` override for `claritee` fences.
-- `web/app/(app)/c/[clot]/[slug]/page.tsx`, `web/components/clots/side-pane.tsx` (modify), `web/components/clots/clapboard-link.tsx`, `web/components/clots/clapboard-icon.tsx` (create).
-- `web/app/globals.css` (modify): `@theme static` so all Tailwind colour and spacing variables exist at runtime.
+- `web/components/ui/*` (add with `npx shadcn@latest add` in `web/`, then restyle to the tokens): 4a added only part of its planned list, so 4b adds checkbox, radio-group, slider, accordion, tabs, progress, kbd, calendar, popover, badge, alert, table, sheet, menubar, breadcrumb, pagination (button, input, textarea, select, switch, label, toggle-group, card, skeleton, sonner, spinner, tooltip, resizable, dialog and empty exist).
+- `web/components/clots/markdown.tsx` (modify from 4a): the `code`/`pre` override for `claritee` fences; only `clot` messages pass a `blocks` prop that turns it on.
+- `web/app/(app)/c/[clot]/[slug]/page.tsx`, `web/components/clots/chat-view.tsx` (modify: the Clapboards button beside the Info button), `web/components/clots/clapboard-link.tsx`, `web/components/clots/clapboard-icon.tsx` (create). `side-pane.tsx` needs no change: `useSidePane().open({ clot, label, render, width })` already takes a width.
+- `web/app/globals.css` (modify): `@import "tailwindcss" theme(static);` so every Tailwind colour and spacing variable exists at runtime; 4a's `@theme inline` token mapping stays as it is.
+- `web/app/api/d/[...path]/route.ts` (modify): `clapboards` and `img` join `AREAS`; for those two, non-JSON responses keep the daemon's `cache-control` instead of `no-store` (the sandbox CSP and `nosniff` stay).
 - `src/claritee/{lint-turn,prompt-section}.ts` (create): the Stop hook logic and the system prompt section.
 - `src/clapboards/{store,tools,hook,img-proxy}.ts` (create), `src/ui-api/routes/clapboards.ts` (create).
-- `src/agent/runner.ts`, `src/agent/prompts.ts`, `src/agent/tool-server.ts`, `src/conversation/*` (modify).
+- `src/agent/runner.ts` (modify: the Stop hook on main turns, the PostToolUse hook on main and worker turns), `src/agent/prompts.ts`, `src/agent/tool-server.ts` (modify: the `clapboard_*` tools on both `toolServer` and `workerToolServer`), `src/agent/command-check.ts` (modify: the lock lets Write and Edit reach `~/clapboards/`).
+- `src/conversation/conversation.ts` (modify: lint on `post`, the splice, `widget.status`), `src/conversation/store.ts` (modify: tables `widget_blocks`, `widget_submissions`), `src/conversation/activity-lines.ts` (modify: a line per `clapboard_*` tool), `src/ui-api/routes/clots.ts` (modify: submissions), `src/workers.ts` (modify: Claritee in reports).
+- `src/clapboards/store.ts` owns the tables `clapboards`, `clapboard_versions`, `clapboard_state` in the same database (4a's rule: new tables get their own module, not more of `src/store.ts`).
+- `deploy/backup.sh` (modify): copy `data/clapboards` like `data/icons`; `data/img-cache` is not backed up.
+- `web/e2e/fake-daemon.mts` (modify): Clapboard routes, block statuses, the new events.
 - `plugin/skills/clapboards/{SKILL.md,components.md,landing-pages.md}` (create).
-- `src/store.ts` (modify): tables `clapboards`, `clapboard_versions`, `clapboard_state`, `widget_blocks`.
 
 ## Key Decisions & Gotchas
 
@@ -43,35 +50,38 @@
 - **Parsing order**: first pass collects `comp` names, so a component may be used before its definition. Text versus markup follows the spec section 3.2 rules exactly (catalog or `comp` name + same-line `{`/attributes). Children whitespace collapses like HTML; newlines inside text become spaces.
 - **Script versus markup at top level**: a statement is anything up to `;` that does not start with a component name followed by attributes or `{`; `fn`, `comp`, `const` always start script.
 - **Attribute parsing depends on the attribute's type in the catalog**: style attributes (`b=2+red-700`, `bg=primary/10`) are split on `+` and parsed as tokens; event attributes are parsed as script statements; value attributes infer type (spec 3.4) or take `[expr]`. Unknown attribute → lint error with the closest name suggested.
-- **Runtime styling without Tailwind JIT**: Claritee attributes arrive at runtime, so the renderer cannot rely on generated classes. Map attributes to inline style through CSS variables: spacing `calc(var(--spacing) * n)`, colours `var(--color-red-600)` or theme tokens `var(--primary)`, opacity `color-mix(in oklch, <colour> 60%, transparent)`. Tailwind v4 only emits theme variables it sees used, so `globals.css` must use `@theme static` (or import the full theme variables) to have every colour and spacing variable at runtime. `hoverStyle`/`activeStyle` become a scoped `<style>` with a generated class per widget node.
+- **Runtime styling without Tailwind JIT**: Claritee attributes arrive at runtime, so the renderer cannot rely on generated classes. Map attributes to inline style through CSS variables: spacing `calc(var(--spacing) * n)`, colours `var(--color-red-600)` or theme tokens `var(--primary)`, opacity `color-mix(in oklch, <colour> 60%, transparent)`. Tailwind v4 only emits theme variables it sees used, so `globals.css` imports Tailwind with `theme(static)` to have every colour and spacing variable at runtime. 4a's tokens are shadcn's names on `:root` and `.dark` (`--primary`, `--muted-foreground`, plus extras such as `--highlight`), so theme-token attributes read those directly. `hoverStyle`/`activeStyle` become a scoped `<style>` with a generated class per widget node.
 - **Radius pass** runs after layout: a `ResizeObserver` on the widget root sets `--cl-radius` on the root; each node with its own background computes `max(4px, parent − parent padding)` in CSS (`calc()` from variables passed down), so no second React render is needed.
-- **State**: one store per widget instance holding `reactful`/`stored` variables; a change bumps a version and re-renders the widget tree (widgets are small; Clapboards ≤ 256 KB). `useSyncExternalStore`. `stored` writes are debounced 500 ms to `PUT /clapboards/:clot/:slug/state`.
+- **State**: one store per widget instance holding `reactful`/`stored` variables; a change bumps a version and re-renders the widget tree (widgets are small; Clapboards ≤ 256 KB). `useSyncExternalStore`. `stored` writes are debounced 500 ms to `PUT /clapboards/:clot/:slug/state`, sent with 4a's `api()` (`web/lib/api-client.ts`) as `/api/d/clapboards/…`.
 - **Live Clapboard updates** keep `reactful` values whose names still exist; others reset to their new initial value.
-- **Lint status reaches the UI per block.** When a `clot` message is stored, the daemon lints each `claritee` block and stores `{ messageId, index, status: "ok" | "retrying" | "failed", errors }` in `widget_blocks`. The web renders `ok` blocks, a skeleton for `retrying` (and for a fence still streaming), and the "couldn't be shown" placeholder for `failed`. The client never renders a block the daemon has not marked `ok` (it also parses, but only to render).
-- **Stop hook** (main sessions): lint every block in the turn's assistant text (collect it in the runner as the turn streams; `last_assistant_message` alone misses earlier messages of the turn). Errors and attempts < 2 → return `{ decision: "block", reason }` listing errors with line numbers and asking for the corrected block only; mark those blocks `retrying`. The rewritten block arrives as a new message: mark the old one superseded (hidden) and the new one linted. Attempts exhausted → `failed`. Warnings → `store.addNote` for the next turn, never block. Reset the attempt counter per turn; respect `stop_hook_active` so a hook-started continuation is still counted.
-- **Worker reports with a `claritee` block**: stored as `claritee-source` rendering and a note to the main session (no hook in worker sessions).
-- **PostToolUse hook** for Write, Edit and MultiEdit whose `file_path` is under `~/clapboards/` and whose slug is published: read the file with `docker exec <container> cat`, lint with the Clapboard catalog, store a version or return `hookSpecificOutput.additionalContext` with the errors. Unpublished slugs: no-op. Hooks run in the daemon process, so they reach Docker and the store directly.
+- **Lint status reaches the UI per block.** When `Conversation.post` stores a main session's `clot` message, the daemon lints each `claritee` block and stores `{ messageId, index, status: "ok" | "retrying" | "failed", errors }` in `widget_blocks` (`src/conversation/store.ts`), returns them as the message's `blocks` and sends `widget.status` when one changes. Main replies stream (4a's `TextStreams` sends `message.delta` under the message's id, then the final text under the same id), so the renderer must take a half-written body until the message is stored. The web renders `ok` blocks, a skeleton for `retrying` (and for a fence still streaming), and the "couldn't be shown" placeholder for `failed`. The client never renders a block the daemon has not marked `ok` (it also parses, but only to render).
+- **Stop hook** (main sessions): `turnOptions` in `runner.ts` gives main turns a `Stop` hook next to the lock's `PreToolUse` one (workers get none). Lint every block in the turn's assistant text, collected from the turn's `onText(text, key)` calls (`last_assistant_message` alone misses earlier messages of the turn). Errors and attempts < 2 → return `{ decision: "block", reason }` listing errors with line numbers and asking for the corrected block only; mark those blocks `retrying`. The corrected block is spliced into the original message (see "Rewrites keep the prose"): while a hook-started continuation runs, its text deltas are not streamed and its `onText` goes to the splice, never to `Conversation.post`, so no new message appears. Attempts exhausted → `failed`. Warnings → `store.addNote(clot, text)` for the next turn, never block. Reset the attempt counter per turn; respect `stop_hook_active` so a hook-started continuation is still counted.
+- **Worker reports with a `claritee` block**: a report never reaches the chat; `workers.ts` hands it to the main session as a turn (`[Report from worker …]`). Before that, the daemon rewrites its `claritee` fences to `claritee-source` and adds a line to that turn saying widgets are for the user and the main session may write its own. Worker sessions have no Stop hook and no Claritee prompt section.
+- **Main sessions are locked**: 4a's lock (`lockDecision` in `command-check.ts`) lets a main session Write or Edit only its memory folder, and removes NotebookEdit. Extend it the way `isMemoryFile` works: an absolute path, no `..`, normalised, under `/home/clot/clapboards/`, either `<slug>.clap` or a file in `assets/`. Bash stays read-only for main sessions, so Clapboard edits through Bash come only from workers.
+- **PostToolUse hook** on main and worker turns, for Write, Edit and MultiEdit (and NotebookEdit, workers only) whose `file_path` is under `~/clapboards/` and whose slug is published: read the file with `docker exec <containerName(clot)> cat`, lint with the Clapboard catalog, store a version or return `hookSpecificOutput.additionalContext` with the errors. Unpublished slugs: no-op. Hooks run in the daemon process, so they reach Docker and the store directly. Workers' hooks already hold the worker guard's `PreToolUse`; add `PostToolUse` beside it.
 - **Clapboard address on publish**: the tool returns `/c/<clot>/<slug>` and the ClapboardLink markup to paste into the reply.
-- **Image proxy SSRF**: resolve once, refuse private ranges (10/8, 172.16/12, 192.168/16, 127/8, ::1, fc00::/7, 169.254/16, 100.64/10 tailnet), then connect to that IP with the original Host and SNI; follow at most 3 redirects, re-checking each. Cache by URL for a day in `data/img-cache/`. `next/image` uses a custom loader pointing at the proxy route.
+- **Image proxy SSRF**: built on 4a's `safeFetch(url, { maxBytes, timeoutMs, maxRedirects, headers })` (`src/net/safe-fetch.ts`), which already resolves once, refuses private, loopback, link-local and tailnet ranges (`isPrivateAddress`, including IPv4-mapped and NAT64 forms), connects to the checked address with the original Host and SNI, and re-checks each redirect, throwing `BlockedError`. It allows http, so add an `httpsOnly` option that refuses an http URL or redirect; use `maxRedirects: 3`, `maxBytes: 10 MB`. Cache by URL for a day in `data/img-cache/`. `Image` renders `next/image` with `unoptimized` and `src="/api/d/img?url=…"`; no custom loader.
 - **Charts and tables** load lazily (`next/dynamic`, `ssr: false`) so a chat without them does not pay for ECharts.
 - **Evil Charts**: `npx shadcn@latest add @evilcharts/echarts-<chart>` per chart type used (line, bar, area, pie, radar); install their `echarts` dependency through npm in `web/`.
 - **System prompt section** is built from `catalog.ts` (component names, attributes, one example each) so the prompt and the linter never drift; keep it compact (aim ≤ 2,500 tokens) and place it in the cached static part of the main-session prompt.
 ### From the stress test (apply all)
-- **Images and assets go through Next.js**: the browser never calls the daemon, so add route handlers `web/app/api/img/route.ts` and `web/app/api/clapboards/[clot]/assets/[file]/route.ts` that forward with the secret; render `Image` with `unoptimized` (no Next optimizer, so the proxy's checks are the only fetch path). The proxy serves only raster types (PNG, JPEG, GIF, WebP, AVIF; magic bytes checked, never SVG) with `nosniff` and `Content-Security-Policy: sandbox`.
-- **Proxy ranges** add `0.0.0.0/8`, IPv4-mapped IPv6, numeric/octal/hex IP forms (normalise before checking), and refuse any redirect to non-https. Shared with 4a's `src/net/safe-fetch.ts`. Cache evicts LRU at 200 MB.
+- **Images and assets go through Next.js**: the browser never calls the daemon. 4a's catch-all `web/app/api/d/[...path]/route.ts` already forwards with the secret through `guard` (owner re-check, no cross-site `GET`), and already answers any non-JSON response with `nosniff` and `Content-Security-Policy: default-src 'none'; sandbox`; add `img` and `clapboards` to its `AREAS` and let those keep the daemon's `cache-control`. No new route files. The CSP's `img-src 'self'` (`web/proxy.ts`) already covers `/api/d/…`. Render `Image` with `unoptimized` (no Next optimizer, so the proxy's checks are the only fetch path). The proxy serves only raster types (PNG, JPEG, GIF, WebP, AVIF; magic bytes checked, never SVG).
+- **Proxy ranges**: check that `isPrivateAddress` covers `0.0.0.0/8` and numeric, octal and hex IP forms (normalise before checking), adding any it lacks with a test in `tests/safe-fetch.test.ts`, since the configurer's `web_fetch` shares it. Cache evicts LRU at 200 MB.
 - **CSS injection**: style attribute values are parsed against a strict grammar (token names, Tailwind colour names, numbers, `/opacity`), never interpolated raw into CSS variables or the generated `hoverStyle` `<style>`.
 - **Resource caps** beyond steps: nesting depth 64, string 64 KB, array 10,000 items, recursion depth 256; the daemon lints in a worker thread with a 500 ms timeout so a pathological block can never stall a Clot.
 - **Where widgets render**: only in `clot` messages from main sessions with block status `ok`; never in notes, asks, user messages or quoted outsider text (those show fences as code).
-- **Rewrites keep the prose**: the Stop hook asks for the corrected block only, and the daemon **splices** it into the original message at the same block index (no superseded message, no lost text).
+- **Rewrites keep the prose**: the Stop hook asks for the corrected block only, and the daemon **splices** it into the original message at the same block index (no superseded message, no lost text) and sends `message.updated` with the new text and blocks. 4a stores a message once and has no update path, so `ConversationStore` gains one.
 - **Unclosed fences**: when a turn ends (or the stream drops) with a fence still open, that block resolves to the error placeholder, never an endless skeleton.
-- **Submissions persist**: the daemon stores each submit (`messageId`, block index, values, at); a widget with a stored submission renders frozen on every device and reload; a second submit is refused.
+- **Submissions persist**: a submit is an ordinary `POST /clots/:clot/messages` (4a: the client makes the message id and reuses it on Retry, `INSERT OR IGNORE`) with `widget: { messageId, block }`, or `clapboard: slug` from a Clapboard. The daemon stores it in `widget_submissions` (`messageId`, block index, values, at); a widget with a stored submission renders frozen on every device and reload; a second submit with a new message id is refused with 409. 4a's route already keeps images and `/commands` from counting as feedback to an open ask; a submit joins them (a widget submit is never feedback).
 - **Dates**: Calendar values are local calendar dates (`YYYY-MM-DD` from local parts), never `toISOString()`.
-- **`stored()` robustness**: flush on `visibilitychange`/`pagehide` (`navigator.sendBeacon` to the Next proxy) besides the 500 ms debounce; each write carries the version it was based on and the daemon keeps last-write-wins per variable with a timestamp; values whose variable disappears in a new version are **kept** (not dropped), and the linter warns the Clot when a new version drops a variable that has a saved value, naming it.
-- **Edits outside Write/Edit**: the hook also covers MultiEdit and NotebookEdit; for Bash, a PostToolUse hook re-checks the mtime of published files under `~/clapboards/` after any Bash call in that container and ingests changes.
+- **`stored()` robustness**: flush on `visibilitychange`/`pagehide` (`fetch` with `keepalive: true` to `/api/d/clapboards/…/state`, not `sendBeacon`: 4a's `guard` refuses a mutating request without a same-origin `Origin` and a JSON content type) besides the 500 ms debounce; each write carries the version it was based on and the daemon keeps last-write-wins per variable with a timestamp; values whose variable disappears in a new version are **kept** (not dropped), and the linter warns the Clot when a new version drops a variable that has a saved value, naming it.
+- **Edits outside Write/Edit**: the hook also covers MultiEdit and, for workers, NotebookEdit; for Bash (workers only, since main sessions are locked), a PostToolUse hook re-checks the mtime of published files under `~/clapboards/` after any Bash call in that container and ingests changes.
 - **Hook paths**: canonicalise the path (`realpath` inside the container), refuse symlinks and anything outside `~/clapboards/`; the Clot comes from the calling session, never from a tool argument or URL.
-- **Push text**: a reply push strips `claritee` blocks and shows "Sent you a widget" in their place.
-- **Code layout**: split `catalog.ts` by component family under `src/catalog/`; the `stored` debounce takes an injected scheduler; icon lookup uses a generated name list (for the linter and prompt) and dynamic import per icon in the renderer, never the whole Phosphor package in the bundle.
-- **Skill copy**: `plugin/` is already copied to `/opt/clots/plugin` in every container; adding the folder is enough.
+- **Push text**: 4a's `push.ts` already replaces each `claritee` block of a reply push with "Sent you a widget"; keep it, and add a test that a block is never in the body.
+- **Code layout**: split `catalog.ts` by component family under `src/catalog/`; the `stored` debounce takes an injected scheduler; icon lookup uses the generated `icon-names.ts` (for the linter and prompt) and, in the renderer, kebab name to Phosphor component name with a dynamic import per icon, the way 4a loads a Clot's icon by name, never the whole Phosphor package in the bundle.
+- **Skill copy**: the daemon copies `plugin/` to `/opt/clots/plugin` in every container when it starts the Clot (`installPlugin` in `daemon.ts`); adding the folder is enough.
+- **Live updates in the web app**: subscribe with `useAppState().subscribe(fn)` and `onResync(fn)` (4a runs `useStream` once in `AppStateProvider`); on `resync` or a reconnect, refetch the open Clapboard and the blocks of the visible messages.
+- **E2E**: Playwright runs against 4a's fake daemon (`web/e2e/fake-daemon.mts`, control server on its port + 1); open pages with `gotoLive` from `helpers.ts`, and use your own `E2E_WEB_PORT`/`E2E_DAEMON_PORT` and `--output` so parallel runs do not collide. The gallery page follows 4a's `web/app/e2e/error/page.tsx`: a 404 unless `CLOTS_E2E_HARNESS=1`.
 
 ## Tasks
 
@@ -91,7 +101,7 @@
 - [ ] Task 1 complete
 
 ### Task 2: Inference, catalog and linter
-**Files:** `src/{infer,catalog,lint}.ts`, `tests/lint.test.ts`
+**Files:** `src/{infer,catalog,lint}.ts`, `src/icon-names.ts` (generated), `web/scripts/gen-phosphor-names.mjs` (modify), `tests/lint.test.ts`
 **Interfaces:**
 - Produces: `lint(source: string, scope: "inline" | "clapboard"): Diagnostic[]` (includes parse errors).
 - Produces: `catalog: Record<string, ComponentSpec>`; `ComponentSpec = { scope: "base" | "clapboard"; attrs: Record<string, AttrSpec>; variantGroups: string[][]; children: "any" | "none" | "items" | "text"; input?: boolean }`; `AttrSpec = { kind: "value" | "style" | "event" | "flag"; type?: "string" | "number" | "boolean" | "color" | "spacing" | "data" }`.
@@ -118,13 +128,13 @@
 - [ ] Task 3 complete
 
 ### Task 4: Renderer core and base catalog
-**Files:** `web/components/claritee/**`, `web/app/globals.css`, `web/e2e/claritee-catalog.spec.ts`, a dev-only gallery route `web/app/dev/claritee/page.tsx` (404 in production)
+**Files:** `web/components/claritee/**`, `web/components/ui/*` (the shadcn parts listed in the File Map), `web/app/globals.css`, `web/next.config.ts`, `web/app/api/d/[...path]/route.ts`, `web/e2e/claritee-catalog.spec.ts`, a test-only gallery route `web/app/e2e/claritee/page.tsx` (404 unless `CLOTS_E2E_HARNESS=1`)
 **Interfaces:**
 - Consumes: `parse`, `createRuntime`, `catalog`.
 - Produces: `<ClariteeWidget source scope="inline" | "clapboard" onSubmit?={(lines: string) => void} storedKey?={{clot, slug}} />`.
 **Build:**
 - AST → React, attribute mapping (Key Decisions), radius pass, `hoverStyle`/`activeStyle`, events, `for`, ternary/`&&` markup.
-- Every base component from spec 4.1 with its attributes, skeleton states for `Chart`, `Table`, `Image`; icons from `@phosphor-icons/react` by kebab name to component; `Code` with Shiki (and `diff`); `Image` through the proxy loader.
+- Every base component from spec 4.1 with its attributes, skeleton states for `Chart`, `Table`, `Image`; icons from `@phosphor-icons/react` by kebab name to component; `Code` with Shiki (and `diff`; 4a has no highlighter, its `CodeBlock` and markdown `pre` are plain); `Image` through `/api/d/img`.
 - Submit: collect named inputs (name, else Label text), call `onSubmit`, freeze inputs showing submitted values.
 - Runtime errors replace only the failing node with the error placeholder and are reported through a callback.
 **Tests (behaviours):**
@@ -137,31 +147,35 @@
 - [ ] Task 4 complete
 
 ### Task 5: Widgets in chat, lint before showing
-**Files:** `src/claritee/{lint-turn,prompt-section}.ts`, `src/agent/{runner,prompts}.ts`, `src/conversation/*`, `src/store.ts` (`widget_blocks`), `web/components/chat/markdown.tsx`, tests
+**Files:** `src/claritee/{lint-turn,prompt-section}.ts`, `src/agent/{runner,prompts}.ts`, `src/conversation/{conversation,store}.ts` (`widget_blocks`, `widget_submissions`, message update), `src/ui-api/routes/clots.ts`, `src/workers.ts`, `packages/ui-api-schemas/src/index.ts`, `web/components/clots/{markdown,message-list}.tsx`, `web/e2e/fake-daemon.mts`, `web/e2e/chat-widget.spec.ts`, tests
 **Interfaces:**
-- Produces: message payload gains `blocks: { index: number; status: "ok" | "retrying" | "failed"; errors?: Diagnostic[] }[]` and a `superseded` flag; event `widget.status`.
+- Produces: `MessageView` gains `blocks: { index: number; status: "ok" | "retrying" | "failed"; errors?: Diagnostic[]; submitted?: Record<string, string> }[]`; events `widget.status` and `message.updated` (added to `UI_EVENT_TYPES`).
+- Produces: `sendMessageSchema` gains optional `widget: { messageId, block }`.
 - Produces: `clariteePromptSection(): string` built from the catalog (spec 5 and 8 rules).
 **Build:**
-- Lint on store; Stop hook with two rewrites; warnings as notes; superseding the broken message.
-- Main-session system prompt gets the section; worker prompts do not; worker blocks shown as source with a note.
-- Markdown `code` override: `claritee` → `ClariteeWidget` (status-driven), `claritee-source` → code block; open fence while streaming → skeleton.
-- Submit posts through the 4a message API.
+- Lint in `Conversation.post`; Stop hook with two rewrites; warnings as notes; the corrected block spliced into the original message.
+- Main-session system prompt gets the section (in `CLOT_SYSTEM_PROMPT` and `HOME_SYSTEM_PROMPT`, the cached `append`); worker prompts do not; worker reports' blocks turned into `claritee-source` with a line for the main session.
+- Markdown `code`/`pre` override: `claritee` → `ClariteeWidget` (status-driven), `claritee-source` → code block; open fence while streaming → skeleton. Only `clot` messages turn it on.
+- Submit posts through the 4a message API (`api()`, client-made id) with `widget`; stored, frozen, never feedback to an ask.
 **Tests (behaviours):**
-- a turn ending with a broken block is blocked once with the errors in the reason; a fixed rewrite marks the new block `ok` and hides the old message.
+- a turn ending with a broken block is blocked once with the errors in the reason; a fixed rewrite is spliced into the same message at the same index, the prose unchanged, and the block is `ok`; no second message is posted or streamed.
 - two failed rewrites → `failed` and the turn ends.
 - a warning-only block renders and adds a note to the next turn.
 - the main-session prompt contains the section; a worker's does not.
+- a worker report with a `claritee` block reaches the main session as `claritee-source`.
 - streaming: until the closing fence arrives the UI shows a skeleton, never raw source.
-**Done when:** `npm test` and the chat-widget e2e spec pass (fake runner emitting scripted turns).
+- a second submit of the same widget is refused; reloading shows the frozen values.
+**Done when:** `npm test` (a fake runner emitting scripted turns for the hook) and the chat-widget e2e spec (the fake daemon posting scripted messages, deltas and `widget.status`) pass.
 - [ ] Task 5 complete
 
 ### Task 6: Clapboard store, tools, hook and image proxy
-**Files:** `src/clapboards/{store,tools,hook,img-proxy}.ts`, `src/agent/{tool-server,runner}.ts`, `src/ui-api/routes/clapboards.ts`, `src/store.ts`, tests
+**Files:** `src/clapboards/{store,tools,hook,img-proxy}.ts`, `src/agent/{tool-server,runner,command-check}.ts`, `src/conversation/activity-lines.ts`, `src/net/safe-fetch.ts`, `src/ui-api/routes/clapboards.ts` (registered with `UiApi` like 4a's route modules), `src/daemon.ts`, `packages/ui-api-schemas/src/index.ts`, `deploy/backup.sh`, tests
 **Interfaces:**
-- Produces routes: `GET /clapboards/:clot` (list: slug, title, updatedAt), `GET /clapboards/:clot/:slug` (latest source, version, title), `GET/PUT /clapboards/:clot/:slug/state`, `GET /clapboards/:clot/assets/:file`, `GET /img?url=`; event `clapboard.updated { clot, slug, version }`.
-- Produces tools with the names in Global Constraints, each returning plain text for the Clot.
-**Build:** publish (lint with `clapboard` scope, version 1, return address and ClapboardLink markup), PostToolUse hook (Key Decisions), unpublish, versions (keep 50), state read, assets served from the container, image proxy with cache.
+- Produces routes: `GET /clapboards/:clot` (list: slug, title, updatedAt), `GET /clapboards/:clot/:slug` (latest source, version, title), `GET/PUT /clapboards/:clot/:slug/state`, `GET /clapboards/:clot/assets/:file`, `GET /img?url=`; event `clapboard.updated { clot, slug, version }` on the `EventBus`.
+- Produces tools with the names in Global Constraints, each returning plain text for the Clot, on the main session's `clots` server and the worker's `clots_worker` server; each gets a line in `activityLine()`.
+**Build:** publish (lint with `clapboard` scope, version 1, return address and ClapboardLink markup), the lock's Write/Edit allowance for `~/clapboards/`, PostToolUse hook (Key Decisions), unpublish, versions (keep 50), state read, assets served from the container, image proxy with cache.
 **Tests (behaviours):**
+- a locked main session may Write `~/clapboards/a.clap` and `~/clapboards/assets/x.png`; `~/clapboards/../x`, `~/notes.txt` and a symlinked path are refused.
 - publishing a broken file returns its errors and creates nothing.
 - an Edit producing a broken file returns errors as additional context and the latest version is unchanged; a good Edit creates version n+1 and emits the event.
 - an Edit outside `~/clapboards/` or to an unpublished slug does nothing.
@@ -171,11 +185,11 @@
 - [ ] Task 6 complete
 
 ### Task 7: Clapboards in the UI
-**Files:** `web/app/(app)/c/[clot]/[slug]/page.tsx`, `web/components/clots/{side-pane,clapboard-link,clapboard-icon,clapboard-list}.tsx`, Clapboard-only catalog components, `web/e2e/clapboard.spec.ts`
+**Files:** `web/app/(app)/c/[clot]/[slug]/page.tsx`, `web/components/clots/{chat-view,clapboard-link,clapboard-icon,clapboard-list}.tsx`, Clapboard-only catalog components, `web/e2e/fake-daemon.mts`, `web/e2e/clapboard.spec.ts`
 **Build:**
-- The Clapboard-only components of spec 4.2 (Title, Menu, Crumb, Drawer, Dialog, Toast, Tooltip, Paginate, Spinner, Resizable, Empty).
-- ClapboardLink (opens the side pane on desktop, the full-screen route on phones), the chat header's Clapboards button (hidden until the Clot has one) with the list, the custom Clapboard icon as a React component from the design system's SVG.
-- Live updates on `clapboard.updated` with `reactful` carry-over; `stored` sync; submit to the owning Clot naming the Clapboard.
+- The Clapboard-only components of spec 4.2 (Title, Menu, Crumb, Drawer, Dialog, Toast, Tooltip, Paginate, Spinner, Resizable, Empty), on the shadcn parts (Sheet, Menubar, Breadcrumb, Pagination added in Task 4; Dialog, Sonner, Tooltip, Spinner, Resizable, Empty from 4a).
+- ClapboardLink (opens the side pane on desktop with `useSidePane().open({ clot, label: title, render, width })`, the full-screen route on phones), the chat header's Clapboards button beside the Info button in `chat-view.tsx` (hidden until the Clot has one) with the list, the custom Clapboard icon as a React component from the design system's SVG. The pane keeps 4a's behaviour: no close or full-screen buttons; dragging it to the left edge gives the full width.
+- Live updates on `clapboard.updated` with `reactful` carry-over; `stored` sync; submit to the owning Clot naming the Clapboard (`clapboard: slug` on the message).
 **Tests (behaviours):**
 - clicking a ClapboardLink at 1280 px opens the pane; at 390 px navigates to `/c/<clot>/<slug>` with a back button.
 - a new version arrives while open: the content changes without reload and a `reactful` counter keeps its value.
@@ -196,7 +210,7 @@
 
 ## Manual Verification Checklist
 
-**Shared setup:** 4a's shared setup (daemon, web app, `tailscale serve`). Rebuild the Clot image or restart containers so the plugin copy includes the new skill. `/close` each test Clot (Home, encryptify) so their sessions get the new system prompt.
+**Shared setup:** 4a's shared setup (daemon, web app, `tailscale serve`). Restart the daemon so it copies the new skill into every container (it installs `plugin/` when it starts each Clot). `/close` each test Clot (Home, encryptify) so their sessions get the new system prompt.
 
 #### MV-1: An ordinary reply uses a widget
 - **Steps:** In Home, send "Compare three mini PCs for a home server: price, RAM, power draw."
@@ -250,12 +264,12 @@
 
 #### MV-11: Workers don't send widgets
 - **Steps:** Ask encryptify for a worker task whose report would naturally include a table.
-- **Expected:** the worker's report reaches the main session as markdown; if a `claritee` block appears it shows as source, never rendered.
+- **Expected:** the worker's report reaches the main session as markdown (the session log shows the report turn); if it held a `claritee` block, that turn has it as `claritee-source` with the line that widgets are for the user. The chat shows only the main session's own reply.
 - **How the executor runs it:** browser + session log.
 
 #### MV-12: Design rules followed without asking
 - **Steps:** Ask Home "Make me a Clapboard dashboard for my week."
-- **Expected:** no eyebrow labels, no unicode arrows or checkmarks, no em dashes in copy, no one-sided borders, no cards in cards, headings in order, skeletons not spinners for loading data.
+- **Expected:** no eyebrow labels, no unicode arrows or checkmarks, no unicode dots between words, no arrow on every button, no sparkle icons, no em dashes in copy, no one-sided borders, no cards in cards and not everything in a card, no stray "quiet", "real", "actual" or "actually", no closing lines of short fragments, headings in order, skeletons not spinners for loading data.
 - **How the executor runs it:** browser, reviewing the result against spec section 8.
 
 #### MV-13: Both themes, both widths

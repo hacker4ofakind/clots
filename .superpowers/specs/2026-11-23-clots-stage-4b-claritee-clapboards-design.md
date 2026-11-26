@@ -246,8 +246,9 @@ loads data.
 - **Runtime errors** (a missing variable, a failed function) replace only the
   failing component with a small error placeholder, and are reported the same
   way as warnings.
-- Workers that write a `claritee` block in a report get a note that widgets are
-  for the user; their block is shown as source.
+- A worker's report goes to the main session, never to the chat. A `claritee`
+  block in it reaches the main session as `claritee-source`, with a line saying
+  widgets are for the user; the main session writes its own if one helps.
 
 ## 6. Clapboards
 
@@ -255,7 +256,9 @@ loads data.
 
 - A Clot (main session or worker) writes `~/clapboards/<slug>.clap` in its
   container with its ordinary Write and Edit tools. `<slug>` is lowercase
-  letters, digits and `-`.
+  letters, digits and `-`. A main session is locked to reading; the lock lets
+  it write files under `~/clapboards/` and nowhere else, as it does for its
+  memory folder.
 - It publishes once with the daemon tool `clapboard_publish(slug)`. The daemon
   reads the file from the container, lints it with the full (base and
   Clapboard) catalog, and on success stores it as version 1 and returns the
@@ -289,8 +292,8 @@ loads data.
 
 - Address in the web app: `/c/<clot>/<slug>`.
 - Desktop: a ClapboardLink in a reply opens it in the side pane (4a section 7);
-  the chat header's Clapboard button lists the Clot's Clapboards and appears
-  once it has one. A Clapboard can also be opened full width by dragging the
+  the chat header's Clapboard button, beside the Info button, lists the Clot's
+  Clapboards and appears once it has one. A Clapboard can also be opened full width by dragging the
   pane to the left edge.
 - Phone: a ClapboardLink opens it full screen with a back button.
 - The `Title` component sets the page title and the ClapboardLink's label;
@@ -303,7 +306,7 @@ loads data.
   from emails or issues that a Clot puts in a widget cannot run code.
 - Markdown in widgets and replies renders no raw HTML.
 - External links open in a new tab with `rel="noopener noreferrer"`.
-- `Image` loads through the image proxy (the web app forwards `/api/img` to the daemon's `/api/v1/img?url=`; images are not run through Next's optimizer, and only raster images are served): https
+- `Image` loads through the image proxy (the browser loads `/api/d/img?url=`, which the web app's daemon proxy forwards to the daemon's `/api/v1/img?url=`; images are not run through Next's optimizer, and only raster images are served): https
   only, `image/*` responses only, at most 10 MB, private and loopback addresses
   refused, results cached. A Clot's own file can be shown from
   `~/clapboards/assets/`, served by the daemon.
@@ -332,6 +335,9 @@ Claritee section):
 
 - No eyebrows, labels or chips above headings that say nothing.
 - No unicode symbols as icons (→, ✓); use the icon library.
+- No unicode dots (·) to separate words.
+- No arrow, icon or unicode, on every button.
+- No sparkle icons scattered around.
 - Never skip a heading level.
 - Descriptions only where meaning is not obvious.
 - No top bars on dashboards that do nothing.
@@ -339,7 +345,12 @@ Claritee section):
 - At most two things change on hover.
 - No em dashes in copy.
 - No "it's not (just) X, it's Y" or "stop X-ing, start Y-ing".
+- No "quiet", "real", "actual" or "actually" without a reason.
+- No closing lines, calls to action or notes made of two or three fragments of
+  two to four words ("Your servers. Your hardware. Our dashboard.", "One
+  gateway. Every model.").
 - No cards in cards; use `Card flat` to group inside a card.
+- Not everything in its own card.
 - `Badge` only for status, and rarely.
 - Skeletons for loading data, spinners only for running actions.
 - If another skill suggests Claude Design or an HTML file, consider a widget or a
@@ -351,6 +362,8 @@ Claritee section):
 - No made-up testimonials.
 - No italicised random words in headlines.
 - Not every section fades in.
+- No numbered sections for everything.
+- No three identical cards in a row.
 - One or two calls to action on the page, never the same one repeated in a
   section.
 
