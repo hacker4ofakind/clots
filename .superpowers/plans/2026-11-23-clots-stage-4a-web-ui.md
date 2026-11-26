@@ -432,7 +432,7 @@ Claritee, inline widgets, Clapboards and the Clapboard header button (4b). Daily
 
 ## Implementation Notes
 
-All eleven tasks are built and ticked. The daemon's suite is `npm test` (111 files, 1,843 tests passed, 1 skipped); the web app has vitest (`npm test -w web`) and Playwright against the fake daemon, in both themes and at desktop and phone sizes, with axe. What has not run against the real services is listed under "Not live-verified". The builders' and fixers' working notes are in `.superpowers/handoffs/` (not committed).
+All eleven tasks are built and ticked. The daemon's suite is `npm test` (111 files, 1,860 tests passed, 1 skipped); the web app has vitest (`npm test -w web`) and Playwright against the fake daemon, in both themes and at desktop and phone sizes, with axe. What has not run against the real services is listed under "Not live-verified". The builders' and fixers' working notes are in `.superpowers/handoffs/` (not committed).
 
 ### Deviations, and why
 - **Rail**: lists every Clot and scrolls when they do not fit; there is no "…" menu after three (the user's fix list and the canvas show none). Order: Home, each Clot, New Clot, spacer, Waiting, Settings; no logo.
