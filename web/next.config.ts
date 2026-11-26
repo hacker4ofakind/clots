@@ -1,5 +1,9 @@
 import path from "node:path";
 import type { NextConfig } from "next";
+import { loadRootEnv } from "./root-env";
+
+// The repository's `.env` (the daemon's) also holds the web app's own settings; only those keys are taken, and the environment wins.
+loadRootEnv(path.join(__dirname, "..", ".env"));
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
