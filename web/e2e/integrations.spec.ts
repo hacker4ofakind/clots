@@ -61,7 +61,7 @@ test("the pick step searches Composio's toolkits and marks the ones already adde
 
 test("an OAuth tool: skeletons while it works, no close button, Done off for five seconds and until the sign-in is active, then it is in the list", async ({ page, request }) => {
   const dialog = await pick(page, "Granola");
-  // Only a webhook-less toolkit asks how often to check; with no Clot the tool is shared, so there is no "every Clot" switch.
+  // With events on, every toolkit offers how often to check (a fallback for triggers Composio can only poll); with no Clot the tool is shared, so there is no "every Clot" switch.
   await expect(dialog.getByText("Check every")).toBeVisible();
   await expect(dialog.getByLabel("Share with every Clot")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Finish" }).click();
@@ -132,6 +132,13 @@ test("an API key tool: the key field with an eye toggle and the configurer's ins
   await done.click();
   await expect(dialog).toHaveCount(0);
   await expect(row(page, "ElevenLabs")).toBeVisible();
+});
+
+test("a toolkit with webhooks still offers how often to check, as a fallback, and hides it when events are off", async ({ page }) => {
+  const dialog = await pick(page, "Notion");
+  await expect(dialog.getByText("Check every")).toBeVisible();
+  await dialog.getByRole("switch", { name: "Events" }).click();
+  await expect(dialog.getByText("Check every")).toHaveCount(0);
 });
 
 test("long key instructions scroll inside the dialog while the buttons stay in view", async ({ page }) => {

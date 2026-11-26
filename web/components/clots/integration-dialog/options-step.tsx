@@ -41,7 +41,7 @@ export function OptionsStep({
   editing: boolean;
 }) {
   const set = <K extends keyof ToolOptions>(key: K, value: ToolOptions[K]) => onChange({ ...options, [key]: value });
-  const polls = options.events && toolkit.webhooks !== true;
+  const polls = options.events;
   const calendar = toolkit.slug === "googlecalendar";
   const leadError = calendar && parseLeadTimes(options.leadTimes) === undefined ? "Use a number and m, h or d, like 24h or 90m. Separate several with commas." : undefined;
   return (

@@ -8,7 +8,7 @@ import { useAppState } from "@/components/clots/app-state";
 
 export type Audience = "private" | "team" | "public";
 
-/** One toolkit in Composio's list. `webhooks` says whether it can push events (the polling time is then not needed); absent means unknown. */
+/** One toolkit in Composio's list. `webhooks` says whether it has a webhook trigger type; absent means unknown. The polling time is asked either way, as a fallback. */
 export interface Toolkit {
   slug: string;
   name: string;

@@ -46,7 +46,8 @@ export function SettingsFrame({ children }: { children: ReactNode }) {
             </Link>
           ))}
         </nav>
-        <div className="min-w-0 flex-1 overflow-y-auto px-12 py-8">
+        {/* `relative`: the switches' hidden form inputs are absolutely positioned, and without a positioned ancestor they escape this scroll area and make the whole page scroll past the last setting. */}
+        <div className="relative min-w-0 flex-1 overflow-y-auto px-12 py-8">
           <div className={cn("flex w-full flex-col gap-5", pathname === "/settings/general" ? "max-w-170" : "max-w-180")}>{children}</div>
         </div>
       </div>

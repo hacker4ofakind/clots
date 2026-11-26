@@ -216,7 +216,7 @@ function Flow({ clot: given, edit, resume, added = [], retool, onAdded, onOpenCh
     kindRef.current = undefined;
     setKind(undefined);
     go("working");
-    const polls = options.events && toolkit.webhooks !== true;
+    const polls = options.events;
     try {
       const res = await api<{ jobId: string }>("/integrations/configure", {
         method: "POST",

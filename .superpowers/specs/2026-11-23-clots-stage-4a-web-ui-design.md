@@ -494,8 +494,9 @@ or a worker is running). Changing only the icon saves at once.
    ones show "added" with a remove button.
 2. **Options**: audience (a select: private, team, public, with their icons),
    whether it is the user's own account, shared with every Clot or only this
-   one, events on or off, and a polling time (the time input; shown when events
-   are on and the toolkit has no webhook trigger). Two toolkits add one row each
+   one, events on or off, and a polling time (the time input; shown whenever events
+   are on, and used only for a trigger Composio can only poll, so a toolkit with
+   webhooks shows it too). Two toolkits add one row each
    under those: Google Calendar's "Remind me before events" (`leadTimes`, a text
    field of lead times such as `24h, 90m`, default `24h`; a wrong one is refused
    in words and Finish stays off) and Stripe's "Include completed checkouts"
