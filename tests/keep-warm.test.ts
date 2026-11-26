@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunner, TurnHandle, TurnRequest, TurnResult } from "../src/agent/runner.js";
-import { FakeChat } from "../src/chat/fake.js";
+import { FakeConversation } from "./helpers/conversation.js";
 import { Clot } from "../src/clot.js";
 import { CacheKeeper, KEEP_WARM_AFTER_MS, KEEP_WARM_PROMPT, KEEP_WARM_RETRY_MS } from "../src/keep-warm.js";
 import { Store } from "../src/store.js";
@@ -107,7 +107,7 @@ describe("Clot.keepWarm", () => {
   }
 
   let store: Store;
-  let chat: FakeChat;
+  let conv: FakeConversation;
   let runner: FakeRunner;
   let clot: Clot;
   let now: Date;
@@ -116,7 +116,7 @@ describe("Clot.keepWarm", () => {
 
   beforeEach(async () => {
     store = new Store(":memory:");
-    chat = new FakeChat();
+    conv = new FakeConversation();
     runner = new FakeRunner();
     now = new Date("2026-10-10T12:00:00Z");
     log = [];
@@ -124,11 +124,10 @@ describe("Clot.keepWarm", () => {
     clot = new Clot({
       name: "graphite",
       store,
-      chat,
+      conv,
       router,
       runner,
       timeZone: "UTC",
-      userId: "user-1",
       rolloverPercent: 65,
       now: () => now,
       newId: () => `sess-${++ids}`,
@@ -138,8 +137,7 @@ describe("Clot.keepWarm", () => {
     await clot.init();
   });
 
-  const channel = () => store.activeSession("graphite")!.channelId;
-  const say = (text: string, id = text) => clot.onMessage({ id, channelId: channel(), authorId: "user-1", text, at: now });
+    const say = (text: string, id = text) => clot.onMessage({ id, text, at: now });
 
   it("does nothing before the session has had a turn", async () => {
     await clot.keepWarm();
@@ -154,13 +152,13 @@ describe("Clot.keepWarm", () => {
 
   it("pings the session with tools refused, and keeps the ping and its reply out of chat and the tail", async () => {
     await say("hello");
-    const posts = chat.postsIn(channel()).length;
+    const posts = conv.postsFor("graphite").length;
     const tail = store.tail("graphite", 10).length;
     now = new Date(now.getTime() + KEEP_WARM_AFTER_MS);
     await clot.keepWarm();
 
     expect(runner.calls[1]).toMatchObject({ resume: "sess-1", prompt: KEEP_WARM_PROMPT, role: "main", noTools: true });
-    expect(chat.postsIn(channel()).length).toBe(posts);
+    expect(conv.postsFor("graphite").length).toBe(posts);
     expect(store.tail("graphite", 10).length).toBe(tail);
     expect(log).toEqual(["graphite: reply: ok"]);
     // The ping is a turn: the clock starts again.

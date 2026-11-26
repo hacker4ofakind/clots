@@ -53,6 +53,12 @@ export class Composio implements ToolkitHost {
   private signingIn = new Set<string>();
   private tools = new Map<string, ToolInfo | undefined>();
   private infos = new Map<string, ToolkitInfo>();
+  /** Stops each account's own job, by user, so an account taken out of the configuration stops being reconciled. */
+  private accountJobs = new Map<string, () => void>();
+  /** Whether `start` has run: accounts added after it start their own jobs at once. */
+  private started = false;
+  /** Whether the webhook and the daily check are running: they start with the first account, whenever it comes. */
+  private sharedJobs = false;
   /** The accounts whose identity is being learned, so a retry chain is never started twice. */
   private learning = new Set<string>();
   /** The identity each toolkit's recipe named when last looked at, to tell a change. */
@@ -196,13 +202,58 @@ export class Composio implements ToolkitHost {
 
   /** Starts the webhook, each account and the daily check as jobs of their own. Nothing here waits for Composio. */
   start(): void {
+    this.started = true;
+    void this.reconcileRemoved().catch((e) => this.log(`removing accounts failed: ${e instanceof Error ? e.message : String(e)}`));
+    this.startShared();
+    for (const a of this.d.accounts) this.startAccount(a);
+  }
+
+  /** The webhook and the daily check, once, when there is an account to serve: with none there is nothing to subscribe for. */
+  private startShared(): void {
+    if (this.sharedJobs || this.d.accounts.length === 0) return;
+    this.sharedJobs = true;
     const { supervisor } = this.d;
     supervisor.start({ name: "Composio's webhook", everyMs: DAY_MS, tell: (t) => this.d.tellHome(t), run: () => this.reconcileWebhook() });
-    void this.reconcileRemoved().catch((e) => this.log(`removing accounts failed: ${e instanceof Error ? e.message : String(e)}`));
-    for (const a of this.d.accounts) {
-      supervisor.start({ name: `Composio ${userOf(a)}`, everyMs: DAY_MS, tell: (t) => this.d.tell(a, t), run: () => this.reconcileAccount(a) });
-    }
     this.d.schedule(FIRST_CHECK_MS, () => supervisor.start({ name: "Composio's daily check", everyMs: DAY_MS, tell: (t) => this.d.tellHome(t), run: () => this.checkDaily() }));
+  }
+
+  private startAccount(a: ComposioAccount): void {
+    this.accountJobs.get(userOf(a))?.();
+    this.accountJobs.set(userOf(a), this.d.supervisor.start({ name: `Composio ${userOf(a)}`, everyMs: DAY_MS, tell: (t) => this.d.tell(a, t), run: () => this.reconcileAccount(a) }));
+  }
+
+  /**
+   * The configuration changed: the account list is replaced, and each account that is new or whose entry changed is brought up
+   * as a job of its own, as at start; one that left has its job stopped and its triggers deleted. Before `start` only the list
+   * is replaced. Returns what changed, as `<toolkit>:<account>`.
+   */
+  setAccounts(accounts: ComposioAccount[], skipped?: string[]): { added: string[]; removed: string[]; changed: string[] } {
+    const before = new Map(this.d.accounts.map((a) => [userOf(a), JSON.stringify(a)]));
+    this.d = { ...this.d, accounts, ...(skipped === undefined ? {} : { skipped }) };
+    const now = new Map(accounts.map((a) => [userOf(a), a]));
+    const added = [...now.keys()].filter((user) => !before.has(user));
+    const removed = [...before.keys()].filter((user) => !now.has(user));
+    const changed = [...now.keys()].filter((user) => before.has(user) && before.get(user) !== JSON.stringify(now.get(user)));
+    if (!this.started) return { added, removed, changed };
+    for (const user of removed) {
+      this.accountJobs.get(user)?.();
+      this.accountJobs.delete(user);
+    }
+    if (removed.length > 0) void this.reconcileRemoved().catch((e) => this.log(`removing accounts failed: ${e instanceof Error ? e.message : String(e)}`));
+    this.startShared();
+    for (const user of [...added, ...changed]) this.startAccount(now.get(user)!);
+    return { added, removed, changed };
+  }
+
+  /** What the tile shows of an account: from the connection the daemon last read. */
+  statusOf(user: string): "active" | "waiting" | "failed" | "unknown" {
+    const status = this.d.store.composio.account(user)?.status;
+    return status === "active" ? "active" : status === "initiating" ? "waiting" : status === "expired" || status === "failed" ? "failed" : "unknown";
+  }
+
+  /** Brings one account up now, outside its daily job: a sign-in the dialog watched has completed, so the account adopts the connection. */
+  async adopt(a: ComposioAccount): Promise<void> {
+    await this.reconcileAccount(a);
   }
 
   /** Sets the project's webhook subscription to this daemon, and keeps its secret. */
@@ -579,7 +630,7 @@ export class Composio implements ToolkitHost {
   }
 
   /**
-   * `&composio reconnect <toolkit>:<account>`: deletes the account's connection at Composio and what the daemon
+   * `/composio reconnect <toolkit>:<account>`: deletes the account's connection at Composio and what the daemon
    * stored of it (its connection, identity and staged marker), then connects again: a new sign-in link for a
    * managed or OAuth-app account, a fresh connection from the `.env` values for a key one. It puts right a sign-in
    * made with the wrong account. The account's triggers are made again on the new connection by the usual sync.
@@ -587,6 +638,18 @@ export class Composio implements ToolkitHost {
   async reconnect(name: string): Promise<string> {
     const a = this.account(name);
     if (a === undefined || !name.includes(":")) return `No Composio account ${name}.`;
+    const problem = await this.forget(a);
+    if (problem !== undefined) return problem;
+    const user = userOf(a);
+    void this.reconcileAccount(a).catch((e) => this.log(`reconnecting ${user} failed: ${e instanceof Error ? e.message : String(e)}`));
+    return `Reconnecting ${user}.`;
+  }
+
+  /**
+   * Deletes the account's connection at Composio and what the daemon stored of it, without connecting again: the first half of
+   * `reconnect`, for the dialog, which makes the new sign-in link itself. Returns why it could not, or undefined when done.
+   */
+  async forget(a: ComposioAccount): Promise<string | undefined> {
     const { api, store } = this.d;
     const user = userOf(a);
     const row = store.composio.account(user);
@@ -612,8 +675,7 @@ export class Composio implements ToolkitHost {
     store.deleteState(this.stagedKey(user));
     this.signingIn.delete(user);
     for (const key of [...this.told]) if (key.includes(user)) this.told.delete(key);
-    void this.reconcileAccount(a).catch((e) => this.log(`reconnecting ${user} failed: ${e instanceof Error ? e.message : String(e)}`));
-    return `Reconnecting ${user}.`;
+    return undefined;
   }
 
   /**

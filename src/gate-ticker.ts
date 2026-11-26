@@ -28,6 +28,13 @@ export class GateTicker {
 
   constructor(private d: GateTickerDeps) {}
 
+  /** The windows and the zone they are read in changed: the gate is looked at again, and what waits is woken if it moved. */
+  configure(o: { gates?: GateConfig; timeZone?: string }): void {
+    if (o.gates !== undefined) this.d.gates = o.gates;
+    if (o.timeZone !== undefined) this.d.timeZone = o.timeZone;
+    this.recheck();
+  }
+
   /** What the scarce and lead-in gates say now. */
   gate(): GateState {
     return gateAt(this.d.now(), this.d.gates, this.d.timeZone, this.d.meter.snapshot());

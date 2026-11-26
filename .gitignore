@@ -6,3 +6,15 @@ clots.config.json.tmp
 data/
 rulebook/
 .spike-2e/
+web/.next/
+web/next-env.d.ts
+web/test-results/
+web/playwright-report/
+web/.next*/
+
+# Notes between sessions
+.superpowers/handoffs/
+web/AGENTS.md
+
+# Hand-drawn UI sketch scans (large PNGs, kept locally only)
+sketches/

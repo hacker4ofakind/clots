@@ -1,0 +1,16 @@
+{
+  "name": "Clots",
+  "short_name": "Clots",
+  "description": "Talk to your Clots and answer what they need from you.",
+  "start_url": "/waiting",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#faf6f6",
+  "theme_color": "#faf6f6",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/mark.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

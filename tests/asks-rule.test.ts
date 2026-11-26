@@ -1,13 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Asks, type AskKind } from "../src/asks.js";
 import { askRule, RULE_FILED, ruleKind, type RulePayload } from "../src/asks/rule.js";
-import type { InboundMessage } from "../src/chat/adapter.js";
-import { FakeChat } from "../src/chat/fake.js";
 import type { WriteResult } from "../src/rule-writer.js";
 import { describeEdit, type RuleEdit, type RuleScope } from "../src/rulebook-edit.js";
 import { Store } from "../src/store.js";
-
-const USER = "user-1";
+import { FakeConversation } from "./helpers/conversation.js";
 
 class FakeWriter {
   refusePreview?: string;
@@ -30,95 +27,89 @@ class FakeWriter {
 }
 
 let store: Store;
-let chat: FakeChat;
+let conv: FakeConversation;
 let writer: FakeWriter;
-let said: { clot: string; text: string }[];
 let asks: Asks;
 let kind: AskKind<RulePayload>;
 let max: number;
-let category: string;
-let n: number;
+let now: number;
 
 const dropDependabot: RuleEdit = { op: "add_prefilter", rule: { actor: "dependabot[bot]" } };
 const guidance = (line: string): RuleEdit => ({ op: "add_guidance", line });
 
-function reply(channelId: string, text: string, authorId = USER): InboundMessage {
-  n += 1;
-  return { id: `r${n}`, channelId, authorId, text, at: new Date(0) };
-}
-
 const open = (scope: RuleScope, edit: RuleEdit, outsider = false) => askRule(asks, kind, { writer, store, max }, "graphite", scope, edit, outsider);
 const rules = () => store.openAsks("graphite").filter((ask) => ask.kind === "rule");
+const allow = () => asks.answer(rules()[0]!.id, { action: "allow" });
+const block = () => asks.answer(rules()[0]!.id, { action: "block" });
 
-beforeEach(async () => {
+beforeEach(() => {
   store = new Store(":memory:");
-  chat = new FakeChat();
+  conv = new FakeConversation();
   writer = new FakeWriter();
-  said = [];
-  n = 0;
   max = 3;
-  category = await chat.ensureCategory("graphite");
-  store.upsertClot("graphite", category);
-  store.createSession({ id: "s1", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1210"), seed: null });
+  now = 1_000_000;
+  store.upsertClot("graphite");
+  store.createSession({ id: "s1", clot: "graphite", seed: null });
   kind = ruleKind({ writer, store });
-  asks = new Asks({ store, chat, userId: USER, now: () => 0, kick: () => undefined, say: async (clot, text) => void said.push({ clot, text }), after: () => () => undefined, kinds: [kind] });
+  asks = new Asks({ store, conv, now: () => now, kick: () => undefined, after: () => () => undefined, emit: () => undefined, timeoutMs: () => 10 * 60_000, kinds: [kind] });
 });
 
 describe("the rule ask", () => {
-  it("asks the user in a temporary channel and tells the Clot not to wait", async () => {
+  it("shows the edit as a card, and tells the Clot not to wait", async () => {
     expect(await open("global", dropDependabot)).toBe(RULE_FILED);
     const [ask] = rules();
-    expect(ask).toMatchObject({ channelName: "graphite-rule", payload: { scope: "global" } });
-    const posted = chat.postsIn(ask.channelId)[0];
-    expect(posted).toContain("<@user-1> graphite asks for a change to `global.yaml`");
-    expect(posted).toContain("Drop events where actor is `dependabot[bot]`");
-    expect(posted).toContain("`yes`, `sure`, `do that` or `yeah`");
+    expect(ask).toMatchObject({ payload: { scope: "global" } });
+    const view = asks.snapshot(ask)!.view;
+    expect(view).toMatchObject({ heading: "Allow graphite to change a rule?", rows: [{ label: "File", value: "global.yaml" }], labels: { allow: "Apply", block: "Decline" } });
+    expect(view.body).toContain("Drop events where actor is `dependabot[bot]`");
     expect(writer.applied).toEqual([]);
-
     await open("own", guidance("Billing is urgent."));
-    expect(rules().map((p) => p.channelName)).toEqual(["graphite-rule", "graphite-rule-2"]);
+    expect(rules()).toHaveLength(2);
   });
 
-  it("applies the edit on a yes, tells the user with the undo and the Clot, and deletes the channel", async () => {
+  it("applies the edit on Allow, and tells the user with the undo and the Clot", async () => {
     await open("own", dropDependabot);
-    const channel = rules()[0].channelId;
-
-    expect(await asks.onReply(reply(channel, "Yeah!"))).toBe(true);
+    await allow();
     expect(writer.applied).toEqual([{ clot: "graphite", scope: "own", edit: dropDependabot }]);
-    expect(said).toEqual([{ clot: "graphite", text: "Approved. Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`\n`&rules undo` takes it back." }]);
+    expect(conv.postsFor("graphite")).toEqual(["Approved. Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`\n`/rules undo` takes it back."]);
     expect(store.notes("graphite").map((note) => note.text)).toEqual(["The user approved the rule change you asked for, and it is in force: Drop events where actor is `dependabot[bot]`"]);
-    expect(chat.deleted).toEqual([channel]);
     expect(rules()).toEqual([]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
-  it("declines on a no, and tells the Clot not to ask again", async () => {
+  it("declines on Block, and tells the Clot not to ask again", async () => {
     await open("own", dropDependabot);
-    const channel = rules()[0].channelId;
-
-    await asks.onReply(reply(channel, "no"));
+    await block();
     expect(writer.applied).toEqual([]);
-    expect(said).toEqual([{ clot: "graphite", text: "Declined: Drop events where actor is `dependabot[bot]`" }]);
-    expect(store.notes("graphite")[0].text).toBe("The user declined the rule change you asked for: Drop events where actor is `dependabot[bot]`. Do not ask for it again.");
-    expect(chat.deleted).toEqual([channel]);
+    expect(conv.postsFor("graphite")).toEqual(["Declined: Drop events where actor is `dependabot[bot]`"]);
+    expect(store.notes("graphite")[0]!.text).toBe("The user declined the rule change you asked for: Drop events where actor is `dependabot[bot]`. Do not ask for it again.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("declined");
   });
 
-  it("repeats the question on any other reply, and ignores anyone but the user", async () => {
+  it("is blocked at its deadline: nothing is applied and the Clot is told", async () => {
     await open("own", dropDependabot);
-    const channel = rules()[0].channelId;
+    now += 10 * 60_000;
+    await asks.sweep(false);
+    expect(rules()).toEqual([]);
+    expect(writer.applied).toEqual([]);
+    expect(conv.postsFor("graphite")).toEqual(["Blocked: no answer within 10 minutes."]);
+    expect(store.notes("graphite")[0]!.text).toContain("so it was not applied");
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
+  });
 
-    expect(await asks.onReply(reply(channel, "yes", "someone-else"))).toBe(true);
-    expect(await asks.onReply(reply(channel, "after"))).toBe(true);
-    expect(chat.postsIn(channel).at(-1)).toContain("I couldn't match that reply.");
+  it("leaves a message typed in the chat to the Clot: a rule ask takes no feedback", async () => {
+    await open("own", dropDependabot);
+    expect(await asks.onUserMessage("graphite", "after")).toBe(false);
     expect(rules()).toHaveLength(1);
     expect(writer.applied).toEqual([]);
   });
 
-  it("lets an answer stand: a second reply does nothing", async () => {
+  it("lets an answer stand: a second answer does nothing", async () => {
     await open("own", dropDependabot);
-    const channel = rules()[0].channelId;
-    await Promise.all([asks.onReply(reply(channel, "yes")), asks.onReply(reply(channel, "no"))]);
+    const id = rules()[0]!.id;
+    await Promise.all([asks.answer(id, { action: "allow" }), asks.answer(id, { action: "block" })]);
     expect(writer.applied).toHaveLength(1);
-    expect(said).toHaveLength(1);
+    expect(conv.postsFor("graphite")).toHaveLength(1);
   });
 
   it("does not ask the same thing twice, and stops at the limit", async () => {
@@ -143,58 +134,47 @@ describe("the rule ask", () => {
     writer.refusePreview = "that pre-filter is already in the file";
     expect(await open("own", dropDependabot)).toBe("Not asked: that pre-filter is already in the file.");
     expect(rules()).toEqual([]);
-    expect(chat.channels).toHaveLength(1);
+    expect(conv.asksPosted).toEqual([]);
   });
 
   it("tells the user and the Clot when an approved edit no longer fits the file", async () => {
     await open("own", dropDependabot);
-    const channel = rules()[0].channelId;
     writer.refuseApply = "that pre-filter is already in the file";
-
-    await asks.onReply(reply(channel, "yes"));
-    expect(said[0].text).toBe("Approved, but it could not be applied (that pre-filter is already in the file), so nothing was changed: Drop events where actor is `dependabot[bot]`");
-    expect(store.notes("graphite")[0].text).toContain("could not be applied");
-    expect(chat.deleted).toEqual([channel]);
+    await allow();
+    expect(conv.postsFor("graphite")[0]).toBe("Approved, but it could not be applied (that pre-filter is already in the file), so nothing was changed: Drop events where actor is `dependabot[bot]`");
+    expect(store.notes("graphite")[0]!.text).toContain("could not be applied");
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 
-  it("keeps the question open when an approved edit could not be written, and applies it on the next yes", async () => {
+  it("keeps the question open when an approved edit could not be written, and applies it on the next Allow", async () => {
     await open("own", dropDependabot);
-    const channel = rules()[0].channelId;
     writer.diskFails = true;
-
-    await asks.onReply(reply(channel, "yes"));
-    expect(chat.postsIn(channel).at(-1)).toContain("could not be applied just now");
-    expect(rules()).toMatchObject([{ channelId: channel, state: "open" }]);
-    expect(chat.deleted).toEqual([]);
-    expect(said).toEqual([]);
+    await allow();
+    expect(conv.postsFor("graphite").at(-1)).toContain("could not be applied just now");
+    expect(rules()).toMatchObject([{ state: "open" }]);
     expect(store.notes("graphite")).toEqual([]);
 
     writer.diskFails = false;
-    await asks.onReply(reply(channel, "yes"));
+    await allow();
     expect(writer.applied).toHaveLength(1);
     expect(rules()).toEqual([]);
-    expect(chat.deleted).toEqual([channel]);
   });
 
   it("tells the user and the Clot, and does not try again, when applying fails in a way it cannot account for", async () => {
     await open("own", dropDependabot);
-    const channel = rules()[0].channelId;
     writer.throws = true;
-
-    await asks.onReply(reply(channel, "yes"));
-    expect(said[0].text).toContain("Approved, but it could not be applied (it failed in an unexpected way (boom); check the file)");
-    expect(store.notes("graphite")[0].text).toContain("could not be applied");
+    await allow();
+    expect(conv.postsFor("graphite")[0]).toContain("Approved, but it could not be applied (it failed in an unexpected way (boom); check the file)");
+    expect(store.notes("graphite")[0]!.text).toContain("could not be applied");
     expect(rules()).toEqual([]);
-    expect(chat.deleted).toEqual([channel]);
   });
 
-  it("stays open across a rollover, and a yes after it still applies", async () => {
+  it("stays open across a rollover, and an Allow after it still applies", async () => {
     await open("own", dropDependabot);
-    const channel = rules()[0].channelId;
-    store.createSession({ id: "s2", clot: "graphite", channelId: await chat.createChannel(category, "graphite-1310"), seed: null });
+    store.createSession({ id: "s2", clot: "graphite", seed: null });
     await asks.sweep(true);
     expect(rules()).toHaveLength(1);
-    await asks.onReply(reply(channel, "yes"));
+    await allow();
     expect(writer.applied).toHaveLength(1);
   });
 });

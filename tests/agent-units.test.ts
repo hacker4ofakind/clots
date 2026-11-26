@@ -154,6 +154,9 @@ describe("container helpers", () => {
 
   it("names the container after the clot", () => {
     expect(containerName("graphite")).toBe("clot-graphite");
+    // Docker names are lowercase: a Clot named Truecast runs in clot-truecast, and a lowercase one keeps the container it had.
+    expect(containerName("Truecast")).toBe("clot-truecast");
+    expect(gitIdentity("Truecast")).toEqual({ name: "truecast-clot", email: "truecast-clot@clots.invalid" });
   });
 
   it("drops the host runtime and script path", () => {
@@ -267,6 +270,14 @@ describe("the runner's worker turns", () => {
     const options = turnOptions({ role: "main", prompt: "x", effort: "low", model: "claude-opus-5-5", onText: () => undefined }, { clot: "graphite", env: {} });
     expect(options).toMatchObject({ permissionMode: "default", model: "claude-opus-5-5", cwd: "/workspace/repo", disallowedTools: ["AskUserQuestion", "NotebookEdit"] });
     expect(options.canUseTool).toBeDefined();
+  });
+
+  it("streams partial messages for a main session turn that has somewhere to send them, and never for a worker", () => {
+    const main = { role: "main" as const, prompt: "x", effort: "low" as const, model: "claude-opus-5-5", onText: () => undefined };
+    expect(turnOptions({ ...main, onTextDelta: () => undefined }, { clot: "graphite", env: {} }).includePartialMessages).toBe(true);
+    expect(turnOptions(main, { clot: "graphite", env: {} }).includePartialMessages).toBeUndefined();
+    const worker = { role: "worker" as const, prompt: "x", effort: "low" as const, model: "claude-opus-5-5", cwd: "/workspace/worktrees/w1", systemPrompt: "W", guard, workerTools: { askMain: async () => "" }, onText: () => undefined, onStep: () => undefined, onTextDelta: () => undefined };
+    expect(turnOptions(worker, { clot: "graphite", env: {} }).includePartialMessages).toBeUndefined();
   });
 });
 

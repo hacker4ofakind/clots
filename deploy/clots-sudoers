@@ -1,1 +1,1 @@
-clots ALL=(root) NOPASSWD: /usr/bin/systemctl restart clots
+clots ALL=(root) NOPASSWD: /usr/bin/systemctl restart clots, /usr/bin/systemctl restart clots-web

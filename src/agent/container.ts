@@ -1,11 +1,12 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
+import { slugOf } from "../clot-name.js";
 
 const run = promisify(execFile);
 
 export function containerName(clot: string): string {
-  return `clot-${clot}`;
+  return `clot-${slugOf(clot)}`;
 }
 
 /** The address GitHub attributes to an account whatever its email privacy settings. */
@@ -19,7 +20,7 @@ export function noreplyEmail(id: number, login: string): string {
  * account. Without it the address is on a reserved domain that matches nobody.
  */
 export function gitIdentity(clot: string, email?: string): { name: string; email: string } {
-  return { name: `${clot}-clot`, email: email ?? `${clot}-clot@clots.invalid` };
+  return { name: `${slugOf(clot)}-clot`, email: email ?? `${slugOf(clot)}-clot@clots.invalid` };
 }
 
 /** The SDK hands us a host command line. Inside the container the binary is always `claude`. */
@@ -100,6 +101,21 @@ export function containerStep(info: string | undefined, currentImage: string | u
   return running === "true" ? "none" : "start";
 }
 
+/** The names a Clot's workspace volume can have: `<container>-work`, and `<container>-work-<stamp>` for each repository change since. */
+const isWorkspace = (container: string, volume: string): boolean => volume === `${container}-work` || new RegExp(`^${container}-work-[0-9a-z]+$`).test(volume);
+
+/** The workspace volume a Clot uses now: the newest of its volumes (a repository change makes a newer one and keeps the old). Container names are letters, digits and hyphens. */
+export function newestWorkspace(container: string, volumes: string[]): string {
+  const mine = volumes.filter((v) => isWorkspace(container, v));
+  const stamp = (v: string) => v.slice(`${container}-work`.length + 1);
+  return mine.sort((a, b) => stamp(a).length - stamp(b).length || stamp(a).localeCompare(stamp(b))).at(-1) ?? `${container}-work`;
+}
+
+async function currentWorkspace(container: string): Promise<string> {
+  const listed = await run("docker", ["volume", "ls", "-q", "--filter", `name=${container}-work`]).then((r) => r.stdout.split(/\s+/).filter(Boolean), () => []);
+  return newestWorkspace(container, listed);
+}
+
 /**
  * Starts the Clot's container if needed, sets up git in it and clones the repository, when the
  * Clot has one: the home Clot does not. Returns the login of the account that owns the token,
@@ -119,7 +135,7 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl?
   if (step === "create" || step === "recreate") {
     await run("docker", [
       "run", "-d", "--name", name, "--restart", "unless-stopped",
-      "-v", `${name}-home:/home/clot`, "-v", `${name}-work:/workspace`, o.image,
+      "-v", `${name}-home:/home/clot`, "-v", `${await currentWorkspace(name)}:/workspace`, o.image,
     ]);
   } else if (step === "start") {
     await run("docker", ["start", name]);
@@ -142,6 +158,56 @@ export async function ensureContainer(o: { clot: string; image: string; repoUrl?
     env: { ...process.env, GH_TOKEN: o.githubToken, REPO_URL: o.repoUrl ?? "", CLOT_GIT_NAME: identity.name, CLOT_GIT_EMAIL: identity.email },
   });
   return typeof account?.login === "string" ? account.login : undefined;
+}
+
+/** What a repository change needs from Docker: the new volume's name for a Clot, from a time stamp. */
+export const newWorkspaceName = (clot: string, at: number): string => `${containerName(clot)}-work-${at.toString(36)}`;
+
+/**
+ * Moves a Clot to another repository: the new one is cloned into a fresh workspace volume by a throwaway container, so the running
+ * Clot is not touched until the clone has worked; then its container is replaced by one on the new volume, with the same home volume.
+ * The old workspace volume stays (the user may want something out of it); the old container is removed. A clone that fails leaves the
+ * Clot exactly as it was, and so does a container that will not start, or an `after` step (the Clot started on the new workspace, its
+ * entry saved) that throws: the old one is put back.
+ * Everything goes to docker as an argument list; the token travels as an environment variable, never in an argument.
+ */
+export async function recloneWorkspace(o: { clot: string; image: string; repoUrl: string; githubToken: string; at?: number; after?: () => Promise<void> }): Promise<{ volume: string }> {
+  const name = containerName(o.clot);
+  const volume = newWorkspaceName(o.clot, o.at ?? Date.now());
+  const env = { ...process.env, GH_TOKEN: o.githubToken, REPO_URL: o.repoUrl };
+  await run("docker", ["volume", "create", volume]);
+  try {
+    const script = [`git config --global credential.helper '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'`, `git clone "$REPO_URL" /workspace/repo`].join(" && ");
+    await run("docker", ["run", "--rm", "-e", "GH_TOKEN", "-e", "REPO_URL", "-v", `${volume}:/workspace`, o.image, "sh", "-c", script], { env });
+  } catch (error) {
+    await run("docker", ["volume", "rm", volume]).catch(() => undefined);
+    throw new Error(`the repository could not be cloned: ${(error as { stderr?: string }).stderr || (error as Error).message}`);
+  }
+  const old = `${name}-before-${volume.slice(-8)}`;
+  await run("docker", ["stop", name]).catch(() => undefined);
+  await run("docker", ["rename", name, old]);
+  // The old container is put back, and the new volume goes, when what follows the swap fails.
+  const putBack = async () => {
+    await run("docker", ["rm", "-f", name]).catch(() => undefined);
+    await run("docker", ["rename", old, name]).catch(() => undefined);
+    await run("docker", ["start", name]).catch(() => undefined);
+    await run("docker", ["volume", "rm", volume]).catch(() => undefined);
+  };
+  try {
+    await run("docker", ["run", "-d", "--name", name, "--restart", "unless-stopped", "-v", `${name}-home:/home/clot`, "-v", `${volume}:/workspace`, o.image]);
+  } catch (error) {
+    await putBack();
+    throw new Error(`the new container could not start: ${(error as { stderr?: string }).stderr || (error as Error).message}`);
+  }
+  // The old container stays until the caller has started the Clot on the new one and saved its new repository: a failure in either puts it back.
+  try {
+    await o.after?.();
+  } catch (error) {
+    await putBack();
+    throw error;
+  }
+  await run("docker", ["rm", "-f", old]).catch(() => undefined);
+  return { volume };
 }
 
 /** Where the daemon's plugin is in every container: outside the home volume, and the root user's. */
@@ -271,6 +337,11 @@ export async function refreshMainCheckout(container: string, githubToken: string
 }
 
 /** Stops every Claude Code process left in the container: a `docker exec` can outlive the daemon that started it. */
+/** Stops a Clot's container. Its volumes stay, so a Clot of the same name later finds them again. */
+export async function stopContainer(container: string): Promise<void> {
+  await run("docker", ["stop", container]).catch(() => undefined);
+}
+
 export async function killStrayClaude(container: string): Promise<void> {
   // pkill exits 1 when there was nothing to stop.
   await docker(workerExec.killStray(container)).catch(() => undefined);

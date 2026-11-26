@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FakeChat } from "../src/chat/fake.js";
+import { FakeConversation } from "./helpers/conversation.js";
 import type { ClotEvent, TriageResult } from "../src/events/types.js";
 import { acceptGithub, githubHandler, startIntake } from "../src/intake.js";
 import { isSelfCaused } from "../src/events/github.js";
@@ -32,13 +32,12 @@ class FakeTriage implements Triage {
 }
 
 let store: Store;
-let chat: FakeChat;
+let conv: FakeConversation;
 let port: FakePort;
 let triage: FakeTriage;
 let dropRule: (event: ClotEvent) => boolean;
 let ownDropRule: (event: ClotEvent) => boolean;
 let pipeline: Pipeline;
-let live: string;
 let clock: number;
 let timers: { ms: number; fn: () => void; cancelled: boolean }[];
 let inline: (event: ClotEvent) => Promise<ClotEvent>;
@@ -78,7 +77,7 @@ function event(id: string, overrides: Partial<ClotEvent> = {}): ClotEvent {
 
 beforeEach(async () => {
   store = new Store(":memory:");
-  chat = new FakeChat();
+  conv = new FakeConversation();
   port = new FakePort();
   triage = new FakeTriage();
   dropRule = () => false;
@@ -86,14 +85,12 @@ beforeEach(async () => {
   clock = 0;
   timers = [];
   inline = async (e) => e;
-  const category = await chat.ensureCategory("graphite");
-  store.upsertClot("graphite", category);
-  live = await chat.createChannel(category, "graphite-1110");
-  store.createSession({ id: "s1", clot: "graphite", channelId: live, seed: null });
+  store.upsertClot("graphite");
+  store.createSession({ id: "s1", clot: "graphite", seed: null });
   store.appendTail("graphite", "user", "fix the login page");
   pipeline = new Pipeline({
     store,
-    chat,
+    conv,
     rulebook: { dropsIn: (name, e) => (name === "global" ? dropRule(e) : ownDropRule(e)), guidance: () => "Ignore typo reports." },
     triage,
     clots: new Map([["graphite", port]]),
@@ -199,13 +196,13 @@ describe("Pipeline", () => {
     await pipeline.handle(event("d-1"));
     expect(store.getEvent("d-1")).toMatchObject({ status: "dropped", note: "triage: no action needed" });
     expect(port.queued).toEqual([]);
-    expect(chat.postsIn(live)).toEqual([]);
+    expect(conv.postsFor("graphite")).toEqual([]);
   });
 
   it("warns the user about a suspicious event and goes no further", async () => {
     triage.next = { suspicious: true, message: "An issue asks for the deploy key." };
     await pipeline.handle(event("d-1"));
-    expect(chat.postsIn(live)).toEqual(["Suspicious event, not acted on: An issue asks for the deploy key. <https://github.com/octo/widgets/issues/7>"]);
+    expect(conv.postsFor("graphite")).toEqual(["Suspicious event, not acted on: An issue asks for the deploy key. <https://github.com/octo/widgets/issues/7>"]);
     expect(store.getEvent("d-1")).toMatchObject({ status: "dropped", note: "triage: suspicious" });
     expect(port.queued).toEqual([]);
   });
@@ -213,7 +210,7 @@ describe("Pipeline", () => {
   it("still warns when triage calls an event suspicious and says it needs no action", async () => {
     triage.next = { suspicious: true, needsAction: false, message: "An issue tells the agent to post its token." };
     await pipeline.handle(event("d-1"));
-    expect(chat.postsIn(live)).toHaveLength(1);
+    expect(conv.postsFor("graphite")).toHaveLength(1);
     expect(store.getEvent("d-1")).toMatchObject({ status: "dropped", note: "triage: suspicious" });
   });
 
@@ -221,7 +218,7 @@ describe("Pipeline", () => {
     port.busy = true;
     await pipeline.handle(event("d-1"));
     expect(port.queued.map((q) => q.id)).toEqual(["d-1"]);
-    expect(chat.postsIn(live)).toEqual([]);
+    expect(conv.postsFor("graphite")).toEqual([]);
   });
 
   it("leaves an event as received when processing fails, and picks it up again on resume", async () => {
@@ -300,7 +297,7 @@ describe("Pipeline", () => {
     fire();
     await vi.waitFor(() => expect(store.getEvent("batch:d-1")).toMatchObject({ status: "dropped", note: "triage: suspicious" }));
     expect(port.queued).toEqual([]);
-    expect(chat.postsIn(live)).toHaveLength(1);
+    expect(conv.postsFor("graphite")).toHaveLength(1);
   });
 
   it("releases held events at once on resume, and does not hold or drop a batch that was left unfinished", async () => {
@@ -445,6 +442,14 @@ describe("acceptGithub", () => {
   it("acknowledges and discards a delivery outside the five kinds", () => {
     const raw = body({ zen: "Keep it logically awesome." });
     expect(acceptGithub(delivery(raw, { eventName: "ping" }), deps())).toEqual({ status: 200, text: "ignored" });
+    expect(store.eventsWithStatus("received")).toEqual([]);
+  });
+
+  it("tells a Clot's onboarding which repository a webhook ping came from, and stores nothing", () => {
+    const pinged: string[] = [];
+    const raw = body({ zen: "x", repository: { full_name: "Octo/Widgets" } });
+    expect(acceptGithub(delivery(raw, { eventName: "ping" }), { ...deps(), onPing: (repo) => void pinged.push(repo) })).toEqual({ status: 200, text: "ignored" });
+    expect(pinged).toEqual(["octo/widgets"]);
     expect(store.eventsWithStatus("received")).toEqual([]);
   });
 

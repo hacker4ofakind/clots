@@ -38,7 +38,7 @@ export interface Opener {
 }
 
 /** The MCP SDK's client: a command started on this machine, or a server reached over HTTP, logging in through OAuth when it is set to. */
-export function sdkOpener(o: { servers: Record<string, McpServer>; auth: (name: string) => StoredOAuth | undefined }): Opener {
+export function sdkOpener(o: { servers: Record<string, McpServer> | (() => Record<string, McpServer>); auth: (name: string) => StoredOAuth | undefined }): Opener {
   // A login is finished on the transport that started it.
   const waiting = new Map<string, StreamableHTTPClientTransport>();
   const session = (client: Client): McpSession => ({
@@ -64,7 +64,7 @@ export function sdkOpener(o: { servers: Record<string, McpServer>; auth: (name: 
   });
   return {
     async open(name) {
-      const server = o.servers[name];
+      const server = (typeof o.servers === "function" ? o.servers() : o.servers)[name];
       if (!server) throw new Error(`there is no MCP server named ${name}`);
       const client = new Client({ name: "clots", version: "1.0.0" });
       if (server.kind === "stdio") {
@@ -102,6 +102,25 @@ export class McpHub {
   private states = new Map<string, Status>();
 
   constructor(private d: { names: string[]; opener: Opener; tell: (server: string, text: string) => Promise<void> }) {}
+
+  /**
+   * The configuration changed: `names` are the servers now, and `changed` those whose definition differs from what was connected.
+   * A removed or changed server's session is closed; a new or changed one connects again (in the background: a login link is handed out
+   * by its connect, as at startup).
+   */
+  setServers(names: string[], changed: string[] = []): void {
+    for (const name of this.d.names) if (!names.includes(name)) this.forget(name);
+    for (const name of changed) this.forget(name);
+    const added = names.filter((name) => !this.d.names.includes(name));
+    this.d = { ...this.d, names: [...names] };
+    for (const name of [...added, ...changed.filter((n) => names.includes(n))]) void this.session(name).catch(() => undefined);
+  }
+
+  private forget(name: string): void {
+    this.drop(name);
+    this.states.delete(name);
+    this.opening.delete(name);
+  }
 
   /** Connects every server once, at startup. A server that needs a login hands out its link here. Never throws. */
   async start(): Promise<void> {

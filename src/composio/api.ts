@@ -13,7 +13,12 @@ export type ExecResult = { ok: true; data: unknown } | { ok: false; error: strin
 /** A trigger instance Composio holds. */
 export type TriggerInstance = { id: string; slug: string; connectionId: string; config: Record<string, unknown>; disabled: boolean };
 
+/** A toolkit as the picker lists it: Composio's own list, trimmed. */
+export type ToolkitSummary = { slug: string; name: string; logo?: string; description?: string; auth: "oauth" | "key" | "none" };
+
 export interface ComposioApi {
+  /** Every toolkit Composio has, most used first, for the dialog's picker. */
+  listToolkits(): Promise<ToolkitSummary[]>;
   /** What Composio says of the toolkit's ways of connecting. */
   toolkitInfo(slug: string): Promise<ToolkitInfo>;
   /**
@@ -111,6 +116,24 @@ const toConnection = (item: any): Connection => {
   return { id: item.id, status: status === "ACTIVE" ? "active" : status === "EXPIRED" ? "expired" : status === "FAILED" || status === "INACTIVE" || status === "DELETED" ? "failed" : "initiating" };
 };
 
+/** The way a toolkit connects, as the picker shows it: Composio's own sign-in, a key, or nothing. */
+export function authKindOf(o: { noAuth?: boolean; managedOAuth: boolean; keySchemes: number }): "oauth" | "key" | "none" {
+  if (o.noAuth === true) return "none";
+  if (o.managedOAuth) return "oauth";
+  return o.keySchemes > 0 ? "key" : "oauth";
+}
+
+const toSummary = (t: any): ToolkitSummary => {
+  const schemes: string[] = (t.authSchemes ?? []).map(String);
+  return {
+    slug: String(t.slug ?? "").toLowerCase(),
+    name: String(t.name ?? t.slug ?? ""),
+    ...(t.meta?.logo ? { logo: String(t.meta.logo) } : {}),
+    ...(t.meta?.description ? { description: String(t.meta.description) } : {}),
+    auth: authKindOf({ noAuth: t.noAuth === true, managedOAuth: (t.composioManagedAuthSchemes ?? []).some((s: string) => String(s).startsWith("OAUTH")), keySchemes: schemes.filter((s) => !s.startsWith("OAUTH") && s !== "NO_AUTH").length }),
+  };
+};
+
 const toTool = (t: any): ToolInfo => ({ slug: t.slug, toolkit: String(t.toolkit?.slug ?? "").toLowerCase(), name: t.name ?? t.slug, description: t.description ?? "", inputSchema: t.inputParameters, tags: t.tags ?? [] });
 
 /** Whether an instance's config holds every value the wanted config names (Composio adds defaults of its own). */
@@ -137,6 +160,12 @@ export function sdkComposioApi(apiKey: string): ComposioApi {
   };
 
   const api: ComposioApi = {
+    async listToolkits() {
+      // One page is the whole catalogue: Composio answers a plain array, sorted by use when asked.
+      const items: any[] = await timed("listing toolkits", composio.toolkits.get({ sortBy: "usage", limit: 1000 }), 60_000);
+      return (Array.isArray(items) ? items : []).map(toSummary);
+    },
+
     async toolkitInfo(slug) {
       return toolkitInfoFrom(await timed("reading a toolkit", composio.toolkits.get(slug)));
     },

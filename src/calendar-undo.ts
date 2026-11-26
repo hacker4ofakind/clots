@@ -8,11 +8,16 @@ export interface CalendarUndoDeps {
   timeZone: string;
 }
 
-/** Answers `&calendar undo`: reverses a Clot's newest calendar change, one at a time per Clot. */
+/** Answers `/calendar undo`: reverses a Clot's newest calendar change, one at a time per Clot. */
 export class CalendarUndo {
   private chains = new Map<string, Promise<unknown>>();
 
   constructor(private d: CalendarUndoDeps) {}
+
+  /** The user's zone, changed in the configuration. */
+  setTimeZone(timeZone: string): void {
+    this.d.timeZone = timeZone;
+  }
 
   undo(clot: string): Promise<string> {
     const result = (this.chains.get(clot) ?? Promise.resolve()).then(() => this.undoOne(clot));

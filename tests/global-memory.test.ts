@@ -2,13 +2,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { FolderChange, FolderState, MemoryFolders } from "../src/agent/memory-folder.js";
 import { Asks } from "../src/asks.js";
 import { memoryKind } from "../src/asks/memory.js";
-import type { InboundMessage } from "../src/chat/adapter.js";
-import { FakeChat } from "../src/chat/fake.js";
+import { FakeConversation } from "./helpers/conversation.js";
 import { GlobalMemory } from "../src/global-memory.js";
 import { BLOCK_END, BLOCK_START } from "../src/memory-index.js";
 import { Store } from "../src/store.js";
 
-const USER = "user-1";
 const DEPLOY = "global-clot-deploy-days.md";
 const PET = "global-clot-pet.md";
 const deployV1 = "---\nname: Deploy days\ndescription: when the user deploys\ntype: user\n---\n\nFridays only.\n";
@@ -59,18 +57,18 @@ class FakeFolders implements MemoryFolders {
 }
 
 let store: Store;
-let chat: FakeChat;
+let conv: FakeConversation;
 let folders: FakeFolders;
-let said: { clot: string; text: string }[];
 let busy: Set<string>;
 let memory: GlobalMemory;
 let asks: Asks;
-let n: number;
+let now: number;
+const said = () => conv.posts.map(({ clot, text }) => ({ clot, text }));
 
 function build(): void {
-  const say = async (clot: string, text: string) => void said.push({ clot, text });
+  const say = async (clot: string, text: string) => void (await conv.post(clot, text, { kind: "note" }));
   const kind = memoryKind({ resolve: (payload, answer) => memory.resolve(payload, answer), restore: (payload) => memory.restore(payload), inForce: (payload) => memory.inForce(payload) });
-  asks = new Asks({ store, chat, userId: USER, now: () => 0, kick: () => undefined, say, after: () => () => undefined, kinds: [kind] });
+  asks = new Asks({ store, conv, now: () => now, kick: () => undefined, after: () => () => undefined, emit: () => undefined, timeoutMs: () => 10 * 60_000, kinds: [kind] });
   memory = new GlobalMemory({
     store,
     folders,
@@ -82,11 +80,6 @@ function build(): void {
   });
 }
 
-function reply(channelId: string, text: string, authorId = USER): InboundMessage {
-  n += 1;
-  return { id: `r${n}`, channelId, authorId, text, at: new Date(0) };
-}
-
 const questions = () => store.openAsks("home").filter((ask) => ask.kind === "memory");
 const notes = (clot: string) => store.notes(clot).map((note) => note.text);
 
@@ -96,28 +89,26 @@ async function write(file: string, text: string): Promise<void> {
   await memory.afterHomeTurn({ outsider: false });
 }
 
-beforeEach(async () => {
+beforeEach(() => {
   store = new Store(":memory:");
-  chat = new FakeChat();
+  conv = new FakeConversation();
   folders = new FakeFolders();
-  said = [];
   busy = new Set();
-  n = 0;
-  const category = await chat.ensureCategory("home");
-  store.upsertClot("home", category);
-  store.createSession({ id: "s1", clot: "home", channelId: await chat.createChannel(category, "home-1410"), seed: null });
+  now = 1_000_000;
+  store.upsertClot("home");
+  store.createSession({ id: "s1", clot: "home", seed: null });
   folders.folders.set("home", { files: new Map(), index: null });
   build();
 });
 
 describe("a new or changed global memory", () => {
-  it("is in force at once, reaches every Clot at its next turn with a note, and opens no channel", async () => {
+  it("is in force at once, reaches every Clot at its next turn with a note, and asks nothing", async () => {
     await write(DEPLOY, deployV1);
 
     expect([...store.approvedMemories()]).toEqual([[DEPLOY, deployV1]]);
     expect(questions()).toEqual([]);
-    expect(chat.channels.map((c) => c.name)).toEqual(["home-1410"]);
-    expect(said).toEqual([{ clot: "home", text: "Global memory added for every Clot: Deploy days (`global-clot-deploy-days.md`). `&memory undo` takes it back." }]);
+    expect(conv.asksPosted).toEqual([]);
+    expect(said()).toEqual([{ clot: "home", text: "Global memory added for every Clot: Deploy days (`global-clot-deploy-days.md`). `/memory undo` takes it back." }]);
     for (const clot of ["graphite", "widgets"]) expect(notes(clot)).toEqual(["A global memory was added: Deploy days (global-clot-deploy-days.md). It is listed in your MEMORY.md."]);
 
     await memory.beforeTurn("graphite");
@@ -126,14 +117,14 @@ describe("a new or changed global memory", () => {
     expect(folders.file("widgets", DEPLOY)).toBeUndefined();
 
     await memory.afterHomeTurn();
-    expect(said).toHaveLength(1);
+    expect(said()).toHaveLength(1);
   });
 
   it("says a change is a change", async () => {
     await write(DEPLOY, deployV1);
     await write(DEPLOY, deployV2);
     expect(store.approvedMemories().get(DEPLOY)).toBe(deployV2);
-    expect(said.at(-1)!.text).toBe("Global memory changed for every Clot: Deploy days (`global-clot-deploy-days.md`). `&memory undo` takes it back.");
+    expect(said().at(-1)!.text).toBe("Global memory changed for every Clot: Deploy days (`global-clot-deploy-days.md`). `/memory undo` takes it back.");
     expect(notes("graphite").at(-1)).toBe("The global memory Deploy days (global-clot-deploy-days.md) was changed. Read it again before relying on it.");
   });
 });
@@ -144,14 +135,12 @@ describe("a global memory written in a turn an outsider's text started", () => {
     await memory.afterHomeTurn({ outsider: true });
   }
 
-  it("is asked about in a home-memory channel with its full text, and spreads nowhere yet", async () => {
+  it("is asked about as a card with its full text, and spreads nowhere yet", async () => {
     await tainted(DEPLOY, deployV1);
 
-    expect(questions()).toMatchObject([{ channelName: "home-memory", payload: { file: DEPLOY, text: deployV1 } }]);
-    const posted = chat.postsIn(questions()[0].channelId)[0];
-    expect(posted).toContain("<@user-1> home wrote a new global memory, `global-clot-deploy-days.md`, in a turn an outsider's text started:");
-    expect(posted).toContain("```md\n" + deployV1 + "\n```");
-    expect(posted).toContain("`yes`, `sure`, `do that` or `yeah` to give it to every Clot");
+    const view = asks.snapshot(questions()[0]!)!.view;
+    expect(view).toMatchObject({ heading: "Allow Home to give every Clot a memory?", rows: [{ label: "File", value: DEPLOY }, { label: "Source", value: "A turn an outsider's text started" }], body: deployV1, labels: { allow: "Allow", block: "Decline" } });
+    expect(view.warning).toBe("Every Clot would trust it from then on.");
     expect(store.approvedMemories().size).toBe(0);
     expect(notes("graphite")).toEqual([]);
 
@@ -161,59 +150,69 @@ describe("a global memory written in a turn an outsider's text started", () => {
     expect(store.approvedMemories().size).toBe(0);
   });
 
-  it("on a yes, is in force as an untainted change would be", async () => {
-    await tainted(DEPLOY, deployV1);
-    const channel = questions()[0].channelId;
-    await asks.onReply(reply(channel, "yes"));
-    expect([...store.approvedMemories()]).toEqual([[DEPLOY, deployV1]]);
-    expect(questions()).toEqual([]);
-    expect(chat.deleted).toContain(channel);
-    expect(said.at(-1)!.text).toBe("Approved. Global memory added for every Clot: Deploy days (`global-clot-deploy-days.md`).");
-    expect(notes("home")).toEqual(["The user approved the global memory Deploy days (global-clot-deploy-days.md). It is now in every Clot's memory."]);
-    expect(notes("graphite")).toEqual(["A global memory was added: Deploy days (global-clot-deploy-days.md). It is listed in your MEMORY.md."]);
+  it("shows the text in force beside a changed one", async () => {
+    await write(DEPLOY, deployV1);
+    await tainted(DEPLOY, deployV2);
+    expect(asks.snapshot(questions()[0]!)!.view).toMatchObject({ previous: deployV1, body: deployV2 });
   });
 
-  it("on a no, puts the home Clot's copy back and tells it not to write it again", async () => {
+  it("on Allow, is in force as an untainted change would be", async () => {
     await tainted(DEPLOY, deployV1);
-    await asks.onReply(reply(questions()[0].channelId, "no"));
+    await asks.answer(questions()[0]!.id, { action: "allow" });
+    expect([...store.approvedMemories()]).toEqual([[DEPLOY, deployV1]]);
+    expect(questions()).toEqual([]);
+    expect(said().at(-1)!.text).toBe("Approved. Global memory added for every Clot: Deploy days (`global-clot-deploy-days.md`).");
+    expect(notes("home")).toEqual(["The user approved the global memory Deploy days (global-clot-deploy-days.md). It is now in every Clot's memory."]);
+    expect(notes("graphite")).toEqual(["A global memory was added: Deploy days (global-clot-deploy-days.md). It is listed in your MEMORY.md."]);
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
+  });
+
+  it("on Block, puts the home Clot's copy back and tells it not to write it again", async () => {
+    await tainted(DEPLOY, deployV1);
+    await asks.answer(questions()[0]!.id, { action: "block" });
     expect(folders.file("home", DEPLOY)).toBeUndefined();
     expect(store.approvedMemories().size).toBe(0);
-    expect(said.at(-1)!.text).toBe("Declined: global memory Deploy days (`global-clot-deploy-days.md`).");
+    expect(said().at(-1)!.text).toBe("Declined: global memory Deploy days (`global-clot-deploy-days.md`).");
     expect(notes("home")[0]).toBe("The user declined the global memory you wrote, Deploy days (global-clot-deploy-days.md). Your copy was removed. Do not write it again unless the user asks.");
 
     await write(DEPLOY, deployV1);
     await tainted(DEPLOY, deployV2);
-    await asks.onReply(reply(questions()[0].channelId, "dont"));
+    await asks.answer(questions()[0]!.id, { action: "block" });
     expect(folders.file("home", DEPLOY)).toBe(deployV1);
     expect(notes("home").at(-1)).toContain("Your copy was put back to the text in force.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("declined");
   });
 
   it("is withdrawn when the home Clot removes the file or puts it back", async () => {
     await tainted(DEPLOY, deployV1);
-    const channel = questions()[0].channelId;
     folders.remove("home", DEPLOY);
     await memory.afterHomeTurn();
     expect(questions()).toEqual([]);
-    expect(chat.deleted).toContain(channel);
     expect(store.approvedMemories().size).toBe(0);
   });
 
   it("is asked about again with the newest text when the home Clot changes it before the answer", async () => {
     await tainted(DEPLOY, deployV1);
-    const first = questions()[0].channelId;
     folders.put("home", DEPLOY, deployV2);
     await memory.afterHomeTurn({ outsider: false });
-    expect(chat.deleted).toContain(first);
     expect(questions()).toMatchObject([{ payload: { text: deployV2 } }]);
   });
 
-  it("ignores anyone but the user, and repeats the question on any other reply", async () => {
+  it("leaves a message typed in the chat to the Clot: a memory ask takes no feedback", async () => {
     await tainted(DEPLOY, deployV1);
-    const channel = questions()[0].channelId;
-    expect(await asks.onReply(reply(channel, "yes", "someone-else"))).toBe(true);
-    await asks.onReply(reply(channel, "after"));
-    expect(chat.postsIn(channel).at(-1)).toContain("I couldn't match that reply.");
+    expect(await asks.onUserMessage("home", "after")).toBe(false);
     expect(questions()).toHaveLength(1);
+  });
+
+  it("is blocked at its deadline: the home Clot's copy is put back, as for a no", async () => {
+    await tainted(DEPLOY, deployV1);
+    now += 10 * 60_000;
+    await asks.sweep(false);
+    expect(questions()).toEqual([]);
+    expect(store.approvedMemories().size).toBe(0);
+    expect(folders.file("home", DEPLOY)).toBeUndefined();
+    expect(said().at(-1)!.text).toContain("Blocked: no answer within 10 minutes.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("timed_out");
   });
 
   it("is not applied by a later check when a stop caught the answer half-way: the copy is put back", async () => {
@@ -225,6 +224,7 @@ describe("a global memory written in a turn an outsider's text started", () => {
     expect(store.approvedMemories().size).toBe(0);
     expect(folders.file("home", DEPLOY)).toBeUndefined();
     expect(notes("home").at(-1)).toContain("It is not in force, and your copy was put back.");
+    expect(store.conversation.askOutcome(1)?.result).toBe("failed");
   });
 
   it("says a yes carried out before a stop stands", async () => {
@@ -234,26 +234,16 @@ describe("a global memory written in a turn an outsider's text started", () => {
     store.moveAsk(ask.id, "open", "busy");
     await asks.sweep(true);
     expect(store.approvedMemories().get(DEPLOY)).toBe(deployV1);
-    expect(said.at(-1)!.text).toContain("is in force for every Clot");
+    expect(said().at(-1)!.text).toContain("is in force for every Clot");
+    expect(store.conversation.askOutcome(1)?.result).toBe("approved");
   });
 
   it("puts the copy back when a question about it cannot be asked, so no later check applies it", async () => {
-    const create = chat.createChannel.bind(chat);
-    chat.createChannel = async () => {
-      throw new Error("Discord is down");
+    conv.postAsk = async () => {
+      throw new Error("down");
     };
     await tainted(DEPLOY, deployV1);
-    chat.createChannel = create;
     expect(questions()).toEqual([]);
-    await memory.afterHomeTurn({ outsider: false });
-    expect(store.approvedMemories().size).toBe(0);
-    expect(folders.file("home", DEPLOY)).toBeUndefined();
-  });
-
-  it("is not applied by a later check when its channel was removed: the copy is put back", async () => {
-    await tainted(DEPLOY, deployV1);
-    await chat.deleteChannel(questions()[0].channelId);
-    await asks.sweep(false);
     await memory.afterHomeTurn({ outsider: false });
     expect(store.approvedMemories().size).toBe(0);
     expect(folders.file("home", DEPLOY)).toBeUndefined();
@@ -276,7 +266,7 @@ describe("a deletion", () => {
     await memory.afterHomeTurn();
 
     expect(store.approvedMemories().size).toBe(0);
-    expect(said.at(-1)!.text).toBe("Global memory removed from every Clot: Deploy days (`global-clot-deploy-days.md`). `&memory undo` brings it back.");
+    expect(said().at(-1)!.text).toBe("Global memory removed from every Clot: Deploy days (`global-clot-deploy-days.md`). `/memory undo` brings it back.");
     expect(notes("graphite").at(-1)).toBe("The global memory Deploy days (global-clot-deploy-days.md) was removed. Stop acting on it.");
 
     await memory.beforeTurn("graphite");
@@ -343,7 +333,7 @@ describe("syncing before a turn", () => {
   });
 });
 
-describe("&memory undo", () => {
+describe("/memory undo", () => {
   it("steps back through additions, changes and deletions, putting the home Clot's copy back to match", async () => {
     await write(DEPLOY, deployV1);
     await write(DEPLOY, deployV2);
@@ -391,7 +381,7 @@ describe("&memory undo", () => {
   });
 });
 
-describe("&memory", () => {
+describe("/memory", () => {
   it("lists only what is in force", async () => {
     expect(memory.list()).toBe("No global memories are in force.");
     await write(DEPLOY, deployV1);

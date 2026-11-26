@@ -2,13 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { applyChange, check, getAt, missingEnvKeys, needsAsk, parseKey } from "../src/config-edit.js";
+import { applyChangeLive, check, getAt, missingEnvKeys, needsAsk, parseKey } from "../src/config-edit.js";
+import { ConfigStore } from "../src/config-store.js";
+import { LiveEnv } from "../src/live-env.js";
 import { makeTools, type ToolDeps } from "../src/tools.js";
 
 const base = {
   timeZone: "UTC",
   image: "clots-clot:dev",
-  discord: { guildId: "g", userId: "u" },
+  ui: { owner: "me@example.com" },
   clots: [{ name: "app", repoUrl: "https://github.com/o/r.git" }],
   home: true,
   publicUrl: "https://x.ts.net",
@@ -19,53 +21,59 @@ const oldPosthog = { toolkit: "posthog", account: "prod", clot: "app", apiKey: "
 
 let dir: string;
 let file: string;
+let store: ConfigStore;
+const applyChange = (key: string, value: unknown) => applyChangeLive(store, process.env, key, value);
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "clots-config-edit-"));
   file = path.join(dir, "clots.config.json");
   fs.writeFileSync(file, JSON.stringify(base));
   for (const [k, v] of Object.entries({ DISCORD_BOT_TOKEN: "d", CLAUDE_CODE_OAUTH_TOKEN: "c", CLOT_GITHUB_TOKEN: "g", GITHUB_WEBHOOK_SECRET: "w", COMPOSIO_API_KEY: "ck" })) process.env[k] = v;
   delete process.env.PH_NEW_KEY;
+  const envFile = path.join(dir, ".env");
+  fs.writeFileSync(envFile, "");
+  store = new ConfigStore({ file, envFile, env: new LiveEnv(envFile) });
 });
 
 describe("keys", () => {
-  it("refuses home, publicUrl, discord and image, and keys the file does not have", () => {
-    for (const key of ["home", "publicUrl", "discord", "image", "discord.userId"]) expect(parseKey(key)).toContain("cannot be changed");
+  it("refuses home, publicUrl, ui and image, and keys the file does not have", () => {
+    for (const key of ["home", "publicUrl", "ui", "image", "ui.owner"]) expect(parseKey(key)).toContain("cannot be changed");
     expect(parseKey("nonsense")).toContain("no key nonsense");
     expect(parseKey("a.b.c")).toContain("top-level");
     expect(parseKey("sources.composio")).toEqual(["sources", "composio"]);
   });
 
-  it("applies plain tunables at once and asks for everything else", () => {
-    for (const key of ["rolloverPercent", "maxWorkers", "gates", "spend", "timeZone"]) expect(needsAsk(parseKey(key) as string[])).toBe(false);
+  it("puts every change to the user", () => {
+    // Every key is put to the user: nothing a Clot proposes is saved without a yes.
+    for (const key of ["rolloverPercent", "maxWorkers", "gates", "spend", "timeZone"]) expect(needsAsk(parseKey(key) as string[])).toBe(true);
     for (const key of ["sources.composio", "mcpServers.x", "clots", "sendReview", "intake", "rulebookDir"]) expect(needsAsk(parseKey(key) as string[])).toBe(true);
   });
 });
 
 describe("check and apply", () => {
-  it("saves a valid entry, keeps the old file as .bak, and names the .env key still to add", () => {
-    const done = applyChange(file, "sources.composio", [posthog]);
+  it("saves a valid entry, keeps the old file as .bak, and names the .env key still to add", async () => {
+    const done = await applyChange("sources.composio", [posthog]);
     expect(done.ok).toBe(true);
     expect(done.text).toContain("PH_NEW_KEY");
     expect(getAt(JSON.parse(fs.readFileSync(file, "utf8")), ["sources", "composio"])).toEqual([posthog]);
     expect(JSON.parse(fs.readFileSync(`${file}.bak`, "utf8"))).toEqual(base);
   });
 
-  it("refuses an entry the loader would not take, and leaves the file as it was", () => {
-    const done = applyChange(file, "sources.composio", [oldPosthog]);
+  it("refuses an entry the loader would not take, and leaves the file as it was", async () => {
+    const done = await applyChange("sources.composio", [oldPosthog]);
     expect(done.ok).toBe(false);
     expect(done.text).toContain("PostHog is a generic entry now");
     expect(JSON.parse(fs.readFileSync(file, "utf8"))).toEqual(base);
     expect(fs.existsSync(`${file}.bak`)).toBe(false);
   });
 
-  it("refuses a value outside a plain tunable's range", () => {
-    expect(applyChange(file, "rolloverPercent", 500).ok).toBe(false);
-    expect(applyChange(file, "rolloverPercent", 80).ok).toBe(true);
+  it("refuses a value outside a plain tunable's range", async () => {
+    expect((await applyChange("rolloverPercent", 500)).ok).toBe(false);
+    expect((await applyChange("rolloverPercent", 80)).ok).toBe(true);
     expect(JSON.parse(fs.readFileSync(file, "utf8")).rolloverPercent).toBe(80);
   });
 
-  it("refuses a blocked key even when called directly", () => {
-    expect(applyChange(file, "publicUrl", "https://evil.example").ok).toBe(false);
+  it("refuses a blocked key even when called directly", async () => {
+    expect((await applyChange("publicUrl", "https://evil.example")).ok).toBe(false);
     expect(JSON.parse(fs.readFileSync(file, "utf8")).publicUrl).toBe("https://x.ts.net");
   });
 

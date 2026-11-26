@@ -102,7 +102,7 @@ describe("the weekly warning", () => {
     expect(posted).toEqual([]);
     await log.book({ clot: "graphite", who: "main", sessionId: "s", total: 52.1 });
     await log.book({ clot: "graphite", who: "main", sessionId: "s", total: 60 });
-    expect(posted).toEqual([{ clot: "graphite", text: "graphite has spent an estimated $52.10 this week, past the $50 warning. `&spend` shows where." }]);
+    expect(posted).toEqual([{ clot: "graphite", text: "graphite has spent an estimated $52.10 this week, past the $50 warning. `/spend` shows where." }]);
     await make({ weeklyWarnUsd: 50 }).book({ clot: "graphite", who: "main", sessionId: "s", total: 70 });
     expect(posted).toHaveLength(1);
     clock += 7 * 86_400_000;
@@ -172,7 +172,7 @@ describe("the weekly warning", () => {
   });
 });
 
-describe("&spend", () => {
+describe("/spend", () => {
   async function seed(log: SpendLog) {
     store.createWorker({ id: "1a2b3c4d-0000-0000-0000-000000000000", clot: "encryptify", title: "Fix login redirect", brief: "b", model: "sonnet", effort: "high", branch: "b", base: "main", worktree: "/w", urgent: false });
     await log.book({ clot: "encryptify", who: "main", sessionId: "s", total: 6.1 });

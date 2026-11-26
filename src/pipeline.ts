@@ -1,4 +1,4 @@
-import type { ChatAdapter } from "./chat/adapter.js";
+import type { Conversation } from "./conversation/conversation.js";
 import type { Enricher } from "./enrich.js";
 import { combine } from "./events/batch.js";
 import { linkTo } from "./events/format.js";
@@ -16,7 +16,7 @@ export interface ClotPort {
 
 export interface PipelineDeps {
   store: Store;
-  chat: ChatAdapter;
+  conv: Conversation;
   /** One file's pre-filters ("global", or a Clot's name), and the triage guidance for a Clot. */
   rulebook: { dropsIn(name: string, event: ClotEvent): boolean; guidance(clot: string): string };
   triage: Triage;
@@ -42,6 +42,11 @@ export class Pipeline {
 
   constructor(private d: PipelineDeps) {
     this.held = new Hold({ ...d.hold, now: d.now, schedule: d.schedule, onRelease: (clot, events) => void this.release(clot, events) });
+  }
+
+  /** How long automated events are held, changed in the configuration. */
+  setHold(hold: { quietMs: number; capMs: number }): void {
+    this.held.configure(hold);
   }
 
   /** Never throws: an event that cannot be processed is logged and left as received, to be picked up at the next start. */
@@ -145,7 +150,7 @@ export class Pipeline {
   }
 
   private async proceed(clotName: string, port: ClotPort, event: ClotEvent): Promise<void> {
-    const { store, chat } = this.d;
+    const { store, conv } = this.d;
     const drop = (why: string) => store.setEventStatus(event.id, "dropped", why);
 
     const verdict = await this.d.triage.judge({ clot: clotName, event, guidance: this.d.rulebook.guidance(clotName) });
@@ -153,10 +158,7 @@ export class Pipeline {
 
     // Checked before "no action": triage usually says both of an injection attempt, and the user must still hear of it.
     if (verdict.suspicious) {
-      const session = store.activeSession(clotName);
-      if (session) {
-        await chat.post(session.channelId, `Suspicious event, not acted on: ${verdict.message}${linkTo(event.url)}`).catch(() => undefined);
-      }
+      await conv.post(clotName, `Suspicious event, not acted on: ${verdict.message}${linkTo(event.url)}`, { kind: "note" }).catch(() => undefined);
       return drop("triage: suspicious");
     }
 

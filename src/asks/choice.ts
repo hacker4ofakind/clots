@@ -1,6 +1,5 @@
 import type { AskKind, Asks } from "../asks.js";
-import { choiceChannelName } from "../chat/names.js";
-import { matchChoice } from "../events/reply.js";
+import { minutes, waitedMinutes } from "./common.js";
 
 export interface ChoicePayload {
   question: string;
@@ -15,43 +14,47 @@ export interface ChoicePayload {
 export const MAX_CHOICES = 3;
 
 /**
- * Two ways of doing something, put to the user with the Clot's pick. An exact answer decides it;
- * any other text goes to the main session as the user's own words; with no answer by the deadline,
- * the Clot goes with its pick in a turn that carries none of the user's authority.
+ * Two ways of doing something, put to the user with the Clot's pick. A button decides it (the API numbers the
+ * options 0 and 1; the stored pick is 1 or 2); any other text goes to the main session as the user's own words;
+ * with no answer by the deadline, the Clot goes with its pick in a turn that carries none of the user's authority.
  */
-export function choiceKind(d: { timeoutMinutes: number }): AskKind<ChoicePayload> {
+export function choiceKind(): AskKind<ChoicePayload> {
   return {
     kind: "choice",
-    channelName: choiceChannelName,
-    render: (_clot, p, { deadline }) =>
-      `asks: ${p.question}\n\n**1.** ${p.options[0]}\n**2.** ${p.options[1]}\n\nMy pick: ${p.pick}. Answer 1 or 2, "your pick", or write what you want instead. I'll go with ${p.pick} at <t:${Math.floor((deadline ?? 0) / 1000)}:t> if I don't hear from you.`,
+    answers: ["pick"],
+    view: (_clot, p) => ({ heading: p.question, shortHeading: p.question, rows: [], options: p.options, pick: p.pick === 1 ? 0 : 1, ...(p.outsider ? { warning: "From an outsider's report." } : {}) }),
     texts: {
-      filed: `Put to the user in a separate channel. Do not wait for the answer: end your turn, or carry on with other work. Their answer comes to you as a message from them; with none in ${d.timeoutMinutes} minutes, a turn of your own tells you to go with your pick.`,
+      filed: "Put to the user in your chat. Do not wait for the answer: end your turn, or carry on with other work. Their answer comes to you as a message from them; with none by the deadline, a turn of your own tells you to go with your pick.",
       already: "This choice is already with the user.",
       full: (n) => `Not asked: ${n} choices already wait for the user. Decide this one yourself, or put it in your reply.`,
       notAsked: (reason) => `The user could not be asked just now${reason ? ` (${reason})` : ""}. Decide yourself, or put the options in your reply.`,
     },
 
-    async onReply(ask, text, io) {
+    async onAnswer(ask, answer, io) {
+      if (answer.action !== "pick") return;
       const p = ask.payload;
-      const answer = matchChoice(text);
-      // Both are the user's own words, so both are turns of the user's own.
-      if (answer !== undefined) {
-        const n = answer === "pick" ? p.pick : answer;
-        await io.close(null, `You picked ${n} for "${p.question}": ${p.options[n - 1]}`, { inbox: { id: `choice-answer:${ask.id}`, text: `[Your choice "${p.question}": the user picked ${n}: ${p.options[n - 1]}.]`, kind: "message", outsider: p.outsider } });
-        return;
-      }
-      await io.close(null, null, {
-        inbox: { id: `choice-answer:${ask.id}`, text: `[The user answered your choice "${p.question}" (1. ${p.options[0]} 2. ${p.options[1]}; your pick was ${p.pick}):]\n${text}`, kind: "message", outsider: p.outsider },
-      });
+      const n = answer.option === 0 ? 1 : 2;
+      await io.close("approved", null, `You picked ${n} for "${p.question}": ${p.options[n - 1]}`, { inbox: { id: `choice-answer:${ask.id}`, text: `[Your choice "${p.question}": the user picked ${n}: ${p.options[n - 1]}.]`, kind: "message", outsider: p.outsider } });
+    },
+
+    async onFeedback(ask, text, io) {
+      const p = ask.payload;
+      await io.close(
+        "feedback",
+        null,
+        null,
+        { inbox: { id: `choice-answer:${ask.id}`, text: `[The user answered your choice "${p.question}" (1. ${p.options[0]} 2. ${p.options[1]}; your pick was ${p.pick}):]\n${text}`, kind: "message", outsider: p.outsider } },
+        "You answered in chat.",
+      );
     },
 
     async onDeadline(ask, io) {
       const p = ask.payload;
-      await io.close(null, null, {
+      const wait = minutes(waitedMinutes(ask));
+      await io.close("timed_out", null, `No answer within ${wait}: going with the Clot's pick, ${p.pick}: ${p.options[p.pick - 1]}`, {
         inbox: {
           id: `choice:${ask.id}`,
-          text: `[The user did not answer your choice "${p.question}" within ${d.timeoutMinutes} minutes and appears to be busy. Go with your pick, ${p.pick}: ${p.options[p.pick - 1]}. Tell the user in one line which you took, and that a reply in this channel switches it. Carry on with the pick; do not start a second worker for the same work.]`,
+          text: `[The user did not answer your choice "${p.question}" within ${wait} and appears to be busy. Go with your pick, ${p.pick}: ${p.options[p.pick - 1]}. Tell the user in one line which you took, and that a reply in this chat switches it. Carry on with the pick; do not start a second worker for the same work.]`,
           kind: "choice",
           outsider: p.outsider,
         },
@@ -60,7 +63,7 @@ export function choiceKind(d: { timeoutMinutes: number }): AskKind<ChoicePayload
   };
 }
 
-/** Opens a choice, decided by the Clot's pick after the timeout. Returns what the tool tells the Clot. */
-export function askChoice(asks: Asks, kind: AskKind<ChoicePayload>, o: { now: () => number; timeoutMinutes: number }, clot: string, a: { question: string; options: [string, string]; pick: 1 | 2 }, outsider: boolean): Promise<string> {
-  return asks.open(kind, clot, { ...a, outsider }, { summary: `Choice: ${a.question}`, dedupe: a.question, max: MAX_CHOICES, deadline: o.now() + o.timeoutMinutes * 60_000, outsider });
+/** Opens a choice, decided by the Clot's pick at the deadline. Returns what the tool tells the Clot. */
+export function askChoice(asks: Asks, kind: AskKind<ChoicePayload>, clot: string, a: { question: string; options: [string, string]; pick: 1 | 2 }, outsider: boolean): Promise<string> {
+  return asks.open(kind, clot, { ...a, outsider }, { summary: `Choice: ${a.question}`, dedupe: a.question, max: MAX_CHOICES, outsider });
 }

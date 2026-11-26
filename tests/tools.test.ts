@@ -89,7 +89,7 @@ describe("the rulebook tools", () => {
     const reply = await tools("chat").prefilter({ action: "add", file: "own", rule: { actor: "dependabot[bot]" } });
     expect(reply).toContain("Applied");
     expect(own().prefilters).toEqual([{ actor: "dependabot[bot]" }]);
-    expect(said).toEqual(["Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`\n`&rules undo` takes it back."]);
+    expect(said).toEqual(["Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`\n`/rules undo` takes it back."]);
     expect(opened).toEqual([]);
 
     await tools("chat").guidance({ action: "add", file: "own", line: "Billing is urgent." });
@@ -144,8 +144,8 @@ describe("the rulebook tools", () => {
   it("show the rules in force and the open rule asks", async () => {
     fs.writeFileSync(path.join(dir, "global.yaml"), "prefilters:\n  - actor: dependabot[bot]\ntriage:\n  - Billing is urgent.\n");
     standing(ACK);
-    store.createAsk({ kind: "rule", clot: "graphite", channelId: "ch-9", channelName: "graphite-rule", payload: {}, summary: "Drop events where kind is `comment`\nmore", openedAt: 0, deadline: null, dedupe: "x", outsider: false });
-    store.createAsk({ kind: "email", clot: "graphite", channelId: "ch-10", channelName: "graphite-mail", payload: {}, summary: "An email", openedAt: 0, deadline: null, dedupe: "y", outsider: false });
+    store.createAsk({ kind: "rule", clot: "graphite", payload: {}, summary: "Drop events where kind is `comment`\nmore", openedAt: 0, deadline: null, dedupe: "x", outsider: false });
+    store.createAsk({ kind: "email", clot: "graphite", payload: {}, summary: "An email", openedAt: 0, deadline: null, dedupe: "y", outsider: false });
     const shown = await tools("chat").show();
     expect(shown).toBe(showRules({ rulebook, store }, "graphite"));
     expect(shown).toContain("Rules in force for graphite");
@@ -497,7 +497,7 @@ describe("calendar_list", () => {
     expect(await allCalendarTools("event").calendarRemove!({ uid: "demo@google.com" })).toContain("Removed");
     expect(calls.map((c) => c.req.action)).toEqual(["check", "remove"]);
     expect(store.latestCalendarChange("graphite")).toMatchObject({ op: "remove", uid: "demo@google.com", before: JSON.stringify(scriptEvent) });
-    expect(said.at(-1)).toBe('Calendar (me): removed "Demo with ACME", Fri 16 Oct 2026, 14:00–15:00 (Europe/Zurich) [id: demo@google.com]. `&calendar undo` puts it back.');
+    expect(said.at(-1)).toBe('Calendar (me): removed "Demo with ACME", Fri 16 Oct 2026, 14:00–15:00 (Europe/Zurich) [id: demo@google.com]. `/calendar undo` puts it back.');
   });
 
   it("keeps the copy of a removal whose answer was lost, and drops it for a definite refusal", async () => {
@@ -547,7 +547,7 @@ describe("calendar_list", () => {
     });
   });
 
-  describe("&calendar undo", () => {
+  describe("/calendar undo", () => {
     it("puts a removed event back from the copy, as a new copy, then steps further back, then has nothing left", async () => {
       scriptAnswers.create = { ok: true, event: scriptEvent };
       await allCalendarTools("chat").calendarWrite!({ action: "create", title: "Demo with ACME", start: "2026-10-16T14:00", end: "2026-10-16T15:00" });

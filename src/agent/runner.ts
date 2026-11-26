@@ -27,9 +27,23 @@ interface TurnBase {
   cwd?: string;
   /** Overrides what the runner adds to Claude Code's own system prompt. */
   systemPrompt?: string;
-  onText: (text: string) => void;
+  /** Called with each piece of text the session writes, whole. `key` ties it to the deltas that were streamed for it. */
+  onText: (text: string, key?: string) => void;
+  /** Called with the text of a reply as it is written, under a key that its `onText` repeats. Setting it turns partial messages on. */
+  onTextDelta?: (key: string, delta: string) => void;
+  /** Called for each tool call the session makes itself (not its subagents). */
+  onToolUse?: (block: { name: string; input: unknown }) => void;
   /** Called for each tool call the session makes itself (not its subagents), with a short name for it. */
   onStep?: (step: string) => void;
+  /** Images that go with the prompt, as base64. */
+  images?: ImageInput[];
+}
+
+/** An image the user attached. */
+export interface ImageInput {
+  mediaType: string;
+  /** Base64. */
+  data: string;
 }
 
 /** A main session turn, always under the lock: it reads and looks things up, and changes nothing but its memory. */
@@ -77,7 +91,7 @@ export interface TurnHandle {
    * Feeds a message into the running turn. Returns false when the turn no longer accepts input; the message was then not delivered.
    * An effort, when given, applies from the model's next step.
    */
-  push(text: string, effort?: Effort): boolean;
+  push(text: string, effort?: Effort, images?: ImageInput[]): boolean;
   /** Ends the turn: closes its input and interrupts the session. `done` still resolves. */
   stop(): void;
   done: Promise<TurnResult>;
@@ -120,8 +134,14 @@ const KEEP_WARM_REFUSAL = "Refused: this turn only keeps the cache warm. Reply w
 const CWD = "/workspace/repo";
 const MAX_STEP = 120;
 
-function userMessage(text: string): SDKUserMessage {
-  return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
+type ImageType = (typeof IMAGE_TYPES)[number];
+
+function userMessage(text: string, images: ImageInput[] = []): SDKUserMessage {
+  const valid = images.filter((image): image is ImageInput & { mediaType: ImageType } => (IMAGE_TYPES as readonly string[]).includes(image.mediaType));
+  if (valid.length === 0) return { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null };
+  const content = [...valid.map((image) => ({ type: "image" as const, source: { type: "base64" as const, media_type: image.mediaType, data: image.data } })), { type: "text" as const, text }];
+  return { type: "user", message: { role: "user", content }, parent_tool_use_id: null };
 }
 
 /** A word that can only be a program's name: no URL, path, assignment or value. */
@@ -200,6 +220,8 @@ export function turnOptions(req: TurnRequest, o: RunnerOptions): Options {
     cwd,
     allowDangerouslySkipPermissions: true,
     systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: (req.systemPrompt ?? o.systemPrompt ?? CLOT_SYSTEM_PROMPT) + roster },
+    // A main session's text is streamed to the chat as it is written; workers are not streamed.
+    ...(req.role === "main" && req.onTextDelta ? { includePartialMessages: true } : {}),
   };
   if (req.role === "worker") {
     const env = { ...o.env, ...req.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
@@ -251,6 +273,44 @@ export function turnOptions(req: TurnRequest, o: RunnerOptions): Options {
   };
 }
 
+/**
+ * Follows a turn's partial messages, to give each streamed text block a key and its text deltas. A block's key
+ * is `<message id>:<n>`, n counting the message's text blocks in the order they begin; the finished message
+ * names the same keys in the same order, so the final text finds the deltas it was streamed as.
+ */
+export class TextStreams {
+  private messageId: string | undefined;
+  private blocks = new Map<number, string>();
+  private begun = new Map<string, number>();
+  private finished = new Map<string, number>();
+
+  /** Reads one stream event; returns text to send on, when it carries some. */
+  observe(event: unknown): { key: string; text: string } | undefined {
+    const e = event as { type?: string; message?: { id?: string }; index?: number; content_block?: { type?: string }; delta?: { type?: string; text?: string } } | null;
+    if (!e || typeof e !== "object") return undefined;
+    if (e.type === "message_start") {
+      this.messageId = e.message?.id;
+      this.blocks.clear();
+    } else if (e.type === "content_block_start" && e.content_block?.type === "text" && this.messageId !== undefined && typeof e.index === "number") {
+      const n = this.begun.get(this.messageId) ?? 0;
+      this.begun.set(this.messageId, n + 1);
+      this.blocks.set(e.index, `${this.messageId}:${n}`);
+    } else if (e.type === "content_block_delta" && e.delta?.type === "text_delta" && typeof e.delta.text === "string" && typeof e.index === "number") {
+      const key = this.blocks.get(e.index);
+      if (key !== undefined && e.delta.text !== "") return { key, text: e.delta.text };
+    }
+    return undefined;
+  }
+
+  /** The key of the next finished text block of a message, or undefined when none was streamed for it. */
+  finish(messageId: string): string | undefined {
+    const n = this.finished.get(messageId) ?? 0;
+    if (n >= (this.begun.get(messageId) ?? 0)) return undefined;
+    this.finished.set(messageId, n + 1);
+    return `${messageId}:${n}`;
+  }
+}
+
 export class SdkRunner implements AgentRunner {
   private graceMs: number;
 
@@ -258,8 +318,13 @@ export class SdkRunner implements AgentRunner {
     this.graceMs = o.graceMs ?? 15_000;
   }
 
+  /** The project's test command, changed in the configuration: the next turn's lock reads it. */
+  setTestCommand(testCommand: string | undefined): void {
+    this.o = { ...this.o, testCommand };
+  }
+
   startTurn(req: TurnRequest): TurnHandle {
-    const input = new InputQueue<SDKUserMessage>([userMessage(req.prompt)]);
+    const input = new InputQueue<SDKUserMessage>([userMessage(req.prompt, req.images)]);
     const finish = () => input.close();
 
     // A first turn cut off by a daemon restart leaves its transcript behind, and
@@ -276,6 +341,8 @@ export class SdkRunner implements AgentRunner {
 
     const tracker = new TurnTracker();
     const collector = new ActivityCollector(cwd);
+    // Streamed text is keyed by the model's message and the order of its text blocks, which the finished message repeats.
+    const streams = new TextStreams();
     const done = (async (): Promise<TurnResult> => {
       const result: TurnResult = { sessionId: req.resume ?? req.newSessionId ?? "", contextPercent: 0, ok: false, responded: false };
       let grace: NodeJS.Timeout | undefined;
@@ -288,10 +355,22 @@ export class SdkRunner implements AgentRunner {
           collector.observe(message);
           this.observe(message, result);
           if (message.type === "assistant") result.responded = true;
+          if (message.type === "stream_event" && message.parent_tool_use_id === null && req.onTextDelta) {
+            const delta = streams.observe(message.event);
+            if (delta) req.onTextDelta(delta.key, delta.text);
+          }
           if (message.type === "assistant" && message.parent_tool_use_id === null) {
+            const messageId = (message.message as { id?: string }).id;
             for (const block of message.message.content) {
-              if (block.type === "text" && block.text.trim() !== "") req.onText(block.text);
-              if (block.type === "tool_use") req.onStep?.(stepOf(block));
+              if (block.type === "text") {
+                // Every text block takes its key, so a blank one does not shift the keys of those after it.
+                const key = messageId === undefined ? undefined : streams.finish(messageId);
+                if (block.text.trim() !== "") req.onText(block.text, key);
+              }
+              if (block.type === "tool_use") {
+                req.onStep?.(stepOf(block));
+                req.onToolUse?.({ name: block.name, input: block.input });
+              }
             }
           }
           if (message.type === "result") {
@@ -321,8 +400,8 @@ export class SdkRunner implements AgentRunner {
     })();
 
     return {
-      push: (text, effort) => {
-        if (!input.push(userMessage(text))) return false;
+      push: (text, effort, images) => {
+        if (!input.push(userMessage(text, images))) return false;
         tracker.onPush();
         if (effort) void session.applyFlagSettings({ effortLevel: effort }).catch(() => undefined);
         return true;

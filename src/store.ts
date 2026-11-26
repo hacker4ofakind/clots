@@ -1,11 +1,13 @@
 import Database from "better-sqlite3";
+import type { AskResult } from "@clots/ui-api-schemas";
 import { ComposioStore } from "./composio/store.js";
+import { ConversationStore } from "./conversation/store.js";
+import { PushStore } from "./push.js";
 import type { ClotEvent } from "./events/types.js";
 import type { Effort, MainEffort, SeedReason, TailMessage, WorkerModel } from "./types.js";
 
 export interface ClotRow {
   name: string;
-  categoryId: string;
   /** Unix seconds, or null when not paused. */
   pausedUntil: number | null;
 }
@@ -13,7 +15,6 @@ export interface ClotRow {
 export interface SessionRow {
   id: string;
   clot: string;
-  channelId: string;
   seed: string | null;
   seedReason: SeedReason;
   started: boolean;
@@ -74,6 +75,8 @@ export interface WorkerRow {
   idleSince: number | null;
   /** It was started, or told something, by a turn an outsider's text started: its reports carry none of the user's trust. */
   outsider: boolean;
+  /** The main-session turn that started it: the chat's worker card groups workers by it. Null for one started before 4a. */
+  turnId: string | null;
 }
 
 export type WorkerChange = Partial<Pick<WorkerRow, "status" | "started" | "interrupted" | "asked" | "prUrl" | "prNumber" | "prRepo" | "lastStep" | "turnSeq" | "failure" | "retries" | "idleSince" | "base" | "outsider">>;
@@ -122,6 +125,7 @@ function toWorker(r: any): WorkerRow {
     retries: r.retries,
     idleSince: r.idle_since,
     outsider: r.outsider === 1,
+    turnId: r.turn_id ?? null,
   };
 }
 
@@ -129,7 +133,6 @@ function toWorker(r: any): WorkerRow {
 export interface InboxInsert {
   id: string;
   clot: string;
-  channelId: string;
   text: string;
   receivedAt: number;
   kind?: InboxKind;
@@ -143,7 +146,6 @@ export interface InboxInsert {
 export interface InboxRow {
   id: string;
   clot: string;
-  channelId: string;
   text: string;
   receivedAt: number;
   status: InboxStatus;
@@ -164,21 +166,19 @@ export interface InboxRow {
 class RowExists extends Error {}
 
 /**
- * Something put to the user in a temporary channel of its own: shown ("posting"), waiting for the
- * answer ("open"), or being carried out after it ("busy"). The kind decides what an answer does.
+ * Something put to the user in the Clot's chat and in Waiting for you: waiting for the answer ("open"),
+ * or being carried out after it ("busy"). The kind decides what an answer does.
  */
 export interface AskRow<P = unknown> {
   id: number;
   kind: string;
   clot: string;
-  channelId: string;
-  channelName: string;
   payload: P;
-  /** One line, for clots-waiting and &rules. */
+  /** One line, for Waiting for you and notifications. */
   summary: string;
   state: AskState;
   openedAt: number;
-  /** Unix milliseconds when it is decided without the user, or null. */
+  /** Unix milliseconds when it is decided without the user. Null only for an ask an earlier version opened. */
   deadline: number | null;
   /** Unique among the open asks of a kind and Clot. */
   dedupe: string;
@@ -186,9 +186,9 @@ export interface AskRow<P = unknown> {
   outsider: boolean;
 }
 
-export type AskState = "posting" | "open" | "busy";
+export type AskState = "open" | "busy";
 
-/** One calendar change a Clot made, with what it replaced, for `&calendar undo`. Events are ScriptEvent JSON. */
+/** One calendar change a Clot made, with what it replaced, for `/calendar undo`. Events are ScriptEvent JSON. */
 export interface CalendarChangeRow {
   id: number;
   clot: string;
@@ -249,14 +249,12 @@ export interface EventRow extends ClotEvent {
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS clots (
   name TEXT PRIMARY KEY,
-  category_id TEXT NOT NULL,
   mode TEXT NOT NULL DEFAULT 'action',
   paused_until INTEGER
 );
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   clot TEXT NOT NULL,
-  channel_id TEXT NOT NULL UNIQUE,
   seed TEXT,
   started INTEGER NOT NULL DEFAULT 0,
   interrupted INTEGER NOT NULL DEFAULT 0,
@@ -265,7 +263,6 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS inbox (
   id TEXT PRIMARY KEY,
   clot TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
   text TEXT NOT NULL,
   received_at INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending'
@@ -289,35 +286,11 @@ CREATE TABLE IF NOT EXISTS events (
   triage_message TEXT,
   urgent INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS asks (
-  event_id TEXT PRIMARY KEY,
-  clot TEXT NOT NULL,
-  channel_id TEXT NOT NULL UNIQUE
-);
 CREATE TABLE IF NOT EXISTS tail (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   clot TEXT NOT NULL,
   role TEXT NOT NULL,
   text TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS proposals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  clot TEXT NOT NULL,
-  channel_id TEXT NOT NULL UNIQUE,
-  channel_name TEXT NOT NULL,
-  scope TEXT NOT NULL,
-  edit TEXT NOT NULL,
-  summary TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS send_reviews (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  clot TEXT NOT NULL,
-  channel_id TEXT NOT NULL UNIQUE,
-  account TEXT NOT NULL,
-  event_id TEXT,
-  mail TEXT NOT NULL,
-  opened_at INTEGER NOT NULL,
-  state TEXT NOT NULL DEFAULT 'open'
 );
 CREATE TABLE IF NOT EXISTS notes (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -341,12 +314,6 @@ CREATE TABLE IF NOT EXISTS sends (
 CREATE TABLE IF NOT EXISTS global_memories (
   file TEXT PRIMARY KEY,
   text TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS memory_questions (
-  file TEXT PRIMARY KEY,
-  text TEXT NOT NULL,
-  channel_id TEXT NOT NULL UNIQUE,
-  channel_name TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS memory_changes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -392,11 +359,9 @@ CREATE TABLE IF NOT EXISTS user_asks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   kind TEXT NOT NULL,
   clot TEXT NOT NULL,
-  channel_id TEXT NOT NULL UNIQUE,
-  channel_name TEXT NOT NULL,
   payload TEXT NOT NULL,
   summary TEXT NOT NULL,
-  state TEXT NOT NULL DEFAULT 'posting',
+  state TEXT NOT NULL DEFAULT 'open',
   opened_at INTEGER NOT NULL,
   deadline INTEGER,
   dedupe TEXT NOT NULL,
@@ -443,7 +408,6 @@ function toSession(r: any): SessionRow {
   return {
     id: r.id,
     clot: r.clot,
-    channelId: r.channel_id,
     seed: r.seed,
     seedReason: r.seed_reason,
     started: r.started === 1,
@@ -456,7 +420,7 @@ function toSession(r: any): SessionRow {
 }
 
 function toInbox(r: any): InboxRow {
-  return { id: r.id, clot: r.clot, channelId: r.channel_id, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind, eventId: r.event_id ?? null, workerId: r.worker_id ?? null, outsider: r.outsider === 1, gated: r.gated === 1, urgent: r.ev_urgent === 1 };
+  return { id: r.id, clot: r.clot, text: r.text, receivedAt: r.received_at, status: r.status, kind: r.kind, eventId: r.event_id ?? null, workerId: r.worker_id ?? null, outsider: r.outsider === 1, gated: r.gated === 1, urgent: r.ev_urgent === 1 };
 }
 
 function toAsk(r: any): AskRow {
@@ -464,8 +428,6 @@ function toAsk(r: any): AskRow {
     id: r.id,
     kind: r.kind,
     clot: r.clot,
-    channelId: r.channel_id,
-    channelName: r.channel_name,
     payload: JSON.parse(r.payload),
     summary: r.summary,
     state: r.state,
@@ -506,14 +468,22 @@ function toEvent(r: any): EventRow {
 
 export class Store {
   private db: Database.Database;
+  private workerListeners: ((worker: WorkerRow) => void)[] = [];
   /** What Composio keeps: accounts, trigger instances and the log of the Clots' writes. */
   readonly composio: ComposioStore;
+  /** Every Clot's chat, the closed asks and the UI's preferences. */
+  readonly conversation: ConversationStore;
+  /** The devices that asked for notifications. */
+  readonly push: PushStore;
 
   constructor(path: string) {
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
+    this.migrateFromChannels();
     this.db.exec(SCHEMA);
     this.composio = new ComposioStore(this.db);
+    this.conversation = new ConversationStore(this.db);
+    this.push = new PushStore(this.db);
     this.addColumn("sessions", "seed_reason", "TEXT NOT NULL DEFAULT 'context'");
     this.addColumn("clots", "next_effort", "TEXT");
     this.addColumn("inbox", "kind", "TEXT NOT NULL DEFAULT 'message'");
@@ -523,8 +493,6 @@ export class Store {
     this.addColumn("events", "automated", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("inbox", "event_id", "TEXT");
     this.addColumn("sessions", "interrupted_event", "TEXT");
-    this.addColumn("proposals", "session_id", "TEXT");
-    this.addColumn("send_reviews", "state", "TEXT NOT NULL DEFAULT 'open'");
     this.addColumn("events", "account", "TEXT NOT NULL DEFAULT 'github'");
     this.addColumn("events", "place", "TEXT NOT NULL DEFAULT ''");
     this.addColumn("events", "outsider", "INTEGER NOT NULL DEFAULT 0");
@@ -535,8 +503,8 @@ export class Store {
     this.addColumn("workers", "gate_ok", "INTEGER NOT NULL DEFAULT 1");
     this.addColumn("sessions", "interrupted_outsider", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("workers", "outsider", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumn("workers", "turn_id", "TEXT");
     this.addColumn("rule_edits", "edit", "TEXT");
-    this.addColumn("sessions", "channel_removed", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("calendar_changes", "confirmed", "INTEGER NOT NULL DEFAULT 0");
     this.addColumn("calendar_changes", "restored", "INTEGER NOT NULL DEFAULT 0");
     // Every event stored before 2c came from GitHub, and its place is its repository.
@@ -555,15 +523,104 @@ export class Store {
     this.db.close();
   }
 
+  /**
+   * Stage 4a took the chat out of Discord, so the channel and category columns go. SQLite cannot drop a
+   * column that is UNIQUE, so `sessions` and `user_asks` are rebuilt; `clots` and `inbox` just lose a column.
+   * What an earlier version left in its own ask tables (rule proposals, send reviews, memory questions,
+   * steering questions) is dropped, with a note to the Clot for each proposal and review. It runs in one
+   * transaction, so a stop in the middle leaves the database as it was. Done once, marked by `user_version`.
+   */
+  private migrateFromChannels(): void {
+    if ((this.db.pragma("user_version", { simple: true }) as number) >= 1) return;
+    const has = (table: string) => (this.db.pragma(`table_info(${table})`) as { name: string }[]).length > 0;
+    const columns = (table: string) => (this.db.pragma(`table_info(${table})`) as { name: string }[]).map((c) => c.name);
+    this.db.transaction(() => {
+      if (has("clots") && columns("clots").includes("category_id")) this.db.exec("ALTER TABLE clots DROP COLUMN category_id");
+      if (has("inbox") && columns("inbox").includes("channel_id")) this.db.exec("ALTER TABLE inbox DROP COLUMN channel_id");
+      if (has("sessions") && columns("sessions").includes("channel_id")) {
+        const old = columns("sessions");
+        this.db.exec("ALTER TABLE sessions RENAME TO sessions_old");
+        this.db.exec(`CREATE TABLE sessions (
+          id TEXT PRIMARY KEY,
+          clot TEXT NOT NULL,
+          seed TEXT,
+          started INTEGER NOT NULL DEFAULT 0,
+          interrupted INTEGER NOT NULL DEFAULT 0,
+          active INTEGER NOT NULL DEFAULT 1,
+          seed_reason TEXT NOT NULL DEFAULT 'context',
+          interrupted_kind TEXT NOT NULL DEFAULT 'message',
+          interrupted_event TEXT,
+          interrupted_outsider INTEGER NOT NULL DEFAULT 0
+        )`);
+        // Only the columns the new table has: an older version left others behind (`steered`), and the channel ones go.
+        const keep = columns("sessions").filter((c) => old.includes(c));
+        this.db.exec(`INSERT INTO sessions (${keep.join(", ")}) SELECT ${keep.join(", ")} FROM sessions_old ORDER BY rowid`);
+        this.db.exec("DROP TABLE sessions_old");
+      }
+      if (has("user_asks") && columns("user_asks").includes("channel_id")) {
+        this.db.exec("ALTER TABLE user_asks RENAME TO user_asks_old");
+        this.db.exec(`CREATE TABLE user_asks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          clot TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'open',
+          opened_at INTEGER NOT NULL,
+          deadline INTEGER,
+          dedupe TEXT NOT NULL,
+          outsider INTEGER NOT NULL DEFAULT 0
+        )`);
+        // An ask that was still being shown was never answerable; the others keep their IDs and state.
+        this.db.exec("INSERT INTO user_asks (id, kind, clot, payload, summary, state, opened_at, deadline, dedupe, outsider) SELECT id, kind, clot, payload, summary, state, opened_at, deadline, dedupe, outsider FROM user_asks_old WHERE state != 'posting' ORDER BY id");
+        this.db.exec("DROP TABLE user_asks_old");
+      }
+      if (has("notes")) {
+        if (has("proposals")) for (const r of this.db.prepare("SELECT clot, summary FROM proposals ORDER BY id").all() as { clot: string; summary: string }[]) this.db.prepare("INSERT INTO notes (clot, text) VALUES (?, ?)").run(r.clot, `Withdrawn when the daemon was updated: the rule change ${r.summary.split("\n")[0]}. Ask again if it still makes sense.`);
+        if (has("send_reviews")) {
+          for (const r of this.db.prepare("SELECT clot, mail, account FROM send_reviews ORDER BY id").all() as { clot: string; mail: string; account: string }[]) {
+            let what = "an email";
+            try {
+              const mail = JSON.parse(r.mail) as { to?: string[]; subject?: string };
+              what = `the email to ${(mail.to ?? []).join(", ")}, "${mail.subject ?? ""}" (${r.account})`;
+            } catch {
+              // The note names the account only.
+            }
+            this.db.prepare("INSERT INTO notes (clot, text) VALUES (?, ?)").run(r.clot, `Withdrawn when the daemon was updated: ${what}. Ask again if it still makes sense.`);
+          }
+        }
+      }
+      for (const table of ["proposals", "send_reviews", "memory_questions", "asks"]) this.db.exec(`DROP TABLE IF EXISTS ${table}`);
+      this.db.pragma("user_version = 1");
+    })();
+  }
+
   /** Runs fn in one transaction: everything it writes is stored, or nothing is. */
   inTransaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
   }
 
-  createWorker(w: Pick<WorkerRow, "id" | "clot" | "title" | "brief" | "model" | "effort" | "branch" | "base" | "worktree" | "urgent"> & { outsider?: boolean; gateOk?: boolean }): void {
+  /** Called after a worker is made or changed, with the worker as it is then. */
+  onWorkerChange(fn: (worker: WorkerRow) => void): void {
+    this.workerListeners.push(fn);
+  }
+
+  private workerChanged(id: string): void {
+    if (this.workerListeners.length === 0) return;
+    const worker = this.getWorker(id);
+    if (worker) for (const fn of this.workerListeners) fn(worker);
+  }
+
+  createWorker(w: Pick<WorkerRow, "id" | "clot" | "title" | "brief" | "model" | "effort" | "branch" | "base" | "worktree" | "urgent"> & { outsider?: boolean; gateOk?: boolean; turnId?: string | null }): void {
     this.db
-      .prepare("INSERT INTO workers (id, clot, title, brief, model, effort, branch, base, worktree, urgent, outsider, gate_ok) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(w.id, w.clot, w.title, w.brief, w.model, w.effort, w.branch, w.base, w.worktree, w.urgent ? 1 : 0, w.outsider ? 1 : 0, w.gateOk === false ? 0 : 1);
+      .prepare("INSERT INTO workers (id, clot, title, brief, model, effort, branch, base, worktree, urgent, outsider, gate_ok, turn_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(w.id, w.clot, w.title, w.brief, w.model, w.effort, w.branch, w.base, w.worktree, w.urgent ? 1 : 0, w.outsider ? 1 : 0, w.gateOk === false ? 0 : 1, w.turnId ?? null);
+    this.workerChanged(w.id);
+  }
+
+  /** The workers a main-session turn started, in the order they were made. */
+  workersOfTurn(turnId: string): WorkerRow[] {
+    return this.db.prepare("SELECT * FROM workers WHERE turn_id = ? ORDER BY rowid").all(turnId).map(toWorker);
   }
 
   getWorker(id: string): WorkerRow | undefined {
@@ -604,6 +661,7 @@ export class Store {
     if (entries.length === 0) return;
     const values = entries.map(([, value]) => (typeof value === "boolean" ? (value ? 1 : 0) : value));
     this.db.prepare(`UPDATE workers SET ${entries.map(([key]) => `${WORKER_COLUMNS[key]} = ?`).join(", ")} WHERE id = ?`).run(...values, id);
+    this.workerChanged(id);
   }
 
   /** Puts a worker at the back of the queue. */
@@ -611,6 +669,7 @@ export class Store {
     const seq = Number(this.getState("worker-queue-seq") ?? "0") + 1;
     this.setState("worker-queue-seq", String(seq));
     this.db.prepare("UPDATE workers SET status = 'queued', queued_seq = ? WHERE id = ?").run(seq, id);
+    this.workerChanged(id);
   }
 
   addWorkerMessage(id: string, text: string): void {
@@ -668,37 +727,30 @@ export class Store {
     this.db.prepare("DELETE FROM tail WHERE clot = ?").run(clot);
   }
 
-  upsertClot(name: string, categoryId: string): void {
-    this.db
-      .prepare("INSERT INTO clots (name, category_id) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET category_id = excluded.category_id")
-      .run(name, categoryId);
+  upsertClot(name: string): void {
+    this.db.prepare("INSERT OR IGNORE INTO clots (name) VALUES (?)").run(name);
   }
 
   getClot(name: string): ClotRow | undefined {
     const r: any = this.db.prepare("SELECT * FROM clots WHERE name = ?").get(name);
-    return r && { name: r.name, categoryId: r.category_id, pausedUntil: r.paused_until };
+    return r && { name: r.name, pausedUntil: r.paused_until };
   }
 
   setPausedUntil(name: string, pausedUntil: number | null): void {
     this.db.prepare("UPDATE clots SET paused_until = ? WHERE name = ?").run(pausedUntil, name);
   }
 
-  createSession(s: { id: string; clot: string; channelId: string; seed: string | null; seedReason?: SeedReason }): void {
+  createSession(s: { id: string; clot: string; seed: string | null; seedReason?: SeedReason }): void {
     this.db.transaction(() => {
       this.db.prepare("UPDATE sessions SET active = 0 WHERE clot = ?").run(s.clot);
       this.db
-        .prepare("INSERT INTO sessions (id, clot, channel_id, seed, seed_reason) VALUES (?, ?, ?, ?, ?)")
-        .run(s.id, s.clot, s.channelId, s.seed, s.seedReason ?? "context");
+        .prepare("INSERT INTO sessions (id, clot, seed, seed_reason) VALUES (?, ?, ?, ?)")
+        .run(s.id, s.clot, s.seed, s.seedReason ?? "context");
     })();
   }
 
   activeSession(clot: string): SessionRow | undefined {
     const r = this.db.prepare("SELECT * FROM sessions WHERE clot = ? AND active = 1").get(clot);
-    return r ? toSession(r) : undefined;
-  }
-
-  sessionByChannel(channelId: string): SessionRow | undefined {
-    const r = this.db.prepare("SELECT * FROM sessions WHERE channel_id = ?").get(channelId);
     return r ? toSession(r) : undefined;
   }
 
@@ -714,8 +766,8 @@ export class Store {
 
   enqueue(m: InboxInsert): boolean {
     const info = this.db
-      .prepare("INSERT OR IGNORE INTO inbox (id, clot, channel_id, text, received_at, kind, event_id, worker_id, outsider, gated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(m.id, m.clot, m.channelId, m.text, m.receivedAt, m.kind ?? "message", m.eventId ?? null, m.workerId ?? null, m.outsider ? 1 : 0, m.gated ? 1 : 0);
+      .prepare("INSERT OR IGNORE INTO inbox (id, clot, text, received_at, kind, event_id, worker_id, outsider, gated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(m.id, m.clot, m.text, m.receivedAt, m.kind ?? "message", m.eventId ?? null, m.workerId ?? null, m.outsider ? 1 : 0, m.gated ? 1 : 0);
     return info.changes === 1;
   }
 
@@ -789,15 +841,6 @@ export class Store {
     this.db.prepare("UPDATE events SET triage_message = ?, urgent = ? WHERE id = ?").run(message, urgent ? 1 : 0, id);
   }
 
-  /** Channels of the steering questions an earlier version left open about events, which nothing answers any more. */
-  steeringAskChannels(): string[] {
-    return (this.db.prepare("SELECT channel_id FROM asks ORDER BY rowid").all() as { channel_id: string }[]).map((r) => r.channel_id);
-  }
-
-  clearSteeringAsks(): void {
-    this.db.prepare("DELETE FROM asks").run();
-  }
-
   nextPending(clot: string): InboxRow | undefined {
     const r = this.db.prepare("SELECT * FROM inbox WHERE clot = ? AND status = 'pending' ORDER BY rowid LIMIT 1").get(clot);
     return r ? toInbox(r) : undefined;
@@ -809,6 +852,11 @@ export class Store {
       .prepare("SELECT inbox.*, events.urgent AS ev_urgent FROM inbox LEFT JOIN events ON events.id = inbox.event_id WHERE inbox.clot = ? AND inbox.status = 'pending' ORDER BY inbox.rowid")
       .all(clot)
       .map(toInbox);
+  }
+
+  /** Forgets a removed Clot's waiting messages. Its chat, its sessions' transcripts and its volumes stay. */
+  clearInbox(clot: string): void {
+    this.db.prepare("DELETE FROM inbox WHERE clot = ? AND status = 'pending'").run(clot);
   }
 
   setGated(id: string, gated: boolean): void {
@@ -824,7 +872,7 @@ export class Store {
     const first = rows[0]!;
     const id = `digest:${clot}:${first.id}`;
     return this.inTransaction(() => {
-      this.enqueue({ id, clot, channelId: first.channelId, text: "", receivedAt: first.receivedAt, kind: "digest", eventId: id, outsider: rows.some((r) => r.outsider) });
+      this.enqueue({ id, clot, text: "", receivedAt: first.receivedAt, kind: "digest", eventId: id, outsider: rows.some((r) => r.outsider) });
       rows.forEach((r, position) => {
         this.db.prepare("INSERT OR IGNORE INTO digests (digest_id, event_id, position) VALUES (?, ?, ?)").run(id, r.eventId, position);
         this.setInboxStatus(r.id, "digested");
@@ -869,11 +917,11 @@ export class Store {
     return this.db.prepare("SELECT * FROM events WHERE status = 'merged' AND note = ? ORDER BY rowid").all(`into ${id}`).map(toEvent);
   }
 
-  /** Stores an ask, in "posting", and returns its ID. IDs are never reused. */
-  createAsk(a: Pick<AskRow, "kind" | "clot" | "channelId" | "channelName" | "payload" | "summary" | "openedAt" | "deadline" | "dedupe" | "outsider">): number {
+  /** Stores an ask, open, and returns its ID. IDs are never reused. */
+  createAsk(a: Pick<AskRow, "kind" | "clot" | "payload" | "summary" | "openedAt" | "deadline" | "dedupe" | "outsider">): number {
     const info = this.db
-      .prepare("INSERT INTO user_asks (kind, clot, channel_id, channel_name, payload, summary, opened_at, deadline, dedupe, outsider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(a.kind, a.clot, a.channelId, a.channelName, JSON.stringify(a.payload), a.summary, a.openedAt, a.deadline, a.dedupe, a.outsider ? 1 : 0);
+      .prepare("INSERT INTO user_asks (kind, clot, payload, summary, opened_at, deadline, dedupe, outsider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(a.kind, a.clot, JSON.stringify(a.payload), a.summary, a.openedAt, a.deadline, a.dedupe, a.outsider ? 1 : 0);
     return Number(info.lastInsertRowid);
   }
 
@@ -882,15 +930,15 @@ export class Store {
     return r ? toAsk(r) : undefined;
   }
 
-  askByChannel(channelId: string): AskRow | undefined {
-    const r = this.db.prepare("SELECT * FROM user_asks WHERE channel_id = ?").get(channelId);
-    return r ? toAsk(r) : undefined;
-  }
-
   /** Every ask not yet closed, in any state, oldest first: one Clot's, or everyone's. */
   openAsks(clot?: string): AskRow[] {
     const rows = clot === undefined ? this.db.prepare("SELECT * FROM user_asks ORDER BY id").all() : this.db.prepare("SELECT * FROM user_asks WHERE clot = ? ORDER BY id").all(clot);
     return rows.map(toAsk);
+  }
+
+  /** Sets the deadline of an ask that has none: one an earlier version opened. */
+  setAskDeadline(id: number, deadline: number): void {
+    this.db.prepare("UPDATE user_asks SET deadline = ? WHERE id = ? AND deadline IS NULL").run(deadline, id);
   }
 
   /** Moves an ask from one state to another, with a new payload if given. Returns false when it was not in that state: only the caller that gets true goes on. */
@@ -904,11 +952,13 @@ export class Store {
    * transaction. Returns false when it was closed already, or (with onlyOpen) is not open, or the
    * inbox row already exists: then nothing is written. Only the caller that gets true carries on.
    */
-  closeAsk(id: number, clot: string, note: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean; also?: () => void } = {}): boolean {
+  closeAsk(id: number, clot: string, note: string | null, o: { inbox?: InboxInsert; onlyOpen?: boolean; also?: () => void; history?: { view: unknown; outcome: string; result: AskResult; closedAt: number; answerKey: string | null } } = {}): boolean {
     try {
       return this.db.transaction(() => {
+        const before = o.history === undefined ? undefined : this.askById(id);
         const deleted = o.onlyOpen ? this.db.prepare("DELETE FROM user_asks WHERE id = ? AND state = 'open'").run(id) : this.db.prepare("DELETE FROM user_asks WHERE id = ?").run(id);
         if (deleted.changes !== 1) return false;
+        if (before !== undefined && o.history !== undefined) this.conversation.recordAskOutcome({ id, clot, kind: before.kind, summary: before.summary, view: o.history.view, outcome: o.history.outcome, result: o.history.result, closedAt: o.history.closedAt, answerKey: o.history.answerKey });
         if (note !== null) this.addNote(clot, note);
         if (o.inbox !== undefined && !this.enqueue(o.inbox)) throw new RowExists();
         o.also?.();
@@ -918,23 +968,6 @@ export class Store {
       if (error instanceof RowExists) return false;
       throw error;
     }
-  }
-
-  /** The asks an earlier version kept in its own tables: rule proposals, send reviews and memory questions. */
-  legacyAsks(): { table: "proposals" | "send_reviews" | "memory_questions"; clot: string | null; channelId: string; summary: string | null; mail: string | null; account: string | null }[] {
-    const proposals = (this.db.prepare("SELECT clot, channel_id, summary FROM proposals ORDER BY id").all() as any[]).map((r) => ({ table: "proposals" as const, clot: r.clot, channelId: r.channel_id, summary: r.summary, mail: null, account: null }));
-    const reviews = (this.db.prepare("SELECT clot, channel_id, mail, account FROM send_reviews ORDER BY id").all() as any[]).map((r) => ({ table: "send_reviews" as const, clot: r.clot, channelId: r.channel_id, summary: null, mail: r.mail, account: r.account }));
-    const questions = (this.db.prepare("SELECT channel_id FROM memory_questions ORDER BY file").all() as any[]).map((r) => ({ table: "memory_questions" as const, clot: null, channelId: r.channel_id, summary: null, mail: null, account: null }));
-    return [...proposals, ...reviews, ...questions];
-  }
-
-  /** Drops every legacy ask, leaves the notes given, and sets a state value, all or nothing. */
-  dropLegacyAsks(notes: { clot: string; text: string }[], key: string): void {
-    this.db.transaction(() => {
-      this.db.exec("DELETE FROM proposals; DELETE FROM send_reviews; DELETE FROM memory_questions;");
-      for (const note of notes) this.addNote(note.clot, note.text);
-      this.setState(key, "1");
-    })();
   }
 
   /** Logs a calendar change a Clot made. Returns its ID. */
@@ -996,15 +1029,6 @@ export class Store {
   /** How many events a Clot added from outsiders' turns since a time. */
   outsiderCreatesSince(clot: string, since: number): number {
     return this.db.prepare("SELECT COUNT(*) FROM calendar_changes WHERE clot = ? AND op = 'create' AND outsider = 1 AND at >= ?").pluck().get(clot, since) as number;
-  }
-
-  /** The channels of a Clot's closed sessions that are still there, oldest first. */
-  closedSessionChannels(clot: string): string[] {
-    return this.db.prepare("SELECT channel_id FROM sessions WHERE clot = ? AND active = 0 AND channel_removed = 0 ORDER BY rowid").pluck().all(clot) as string[];
-  }
-
-  markSessionChannelRemoved(channelId: string): void {
-    this.db.prepare("UPDATE sessions SET channel_removed = 1 WHERE channel_id = ?").run(channelId);
   }
 
   addNote(clot: string, text: string): void {

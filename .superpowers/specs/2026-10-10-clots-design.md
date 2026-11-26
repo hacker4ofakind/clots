@@ -4,7 +4,7 @@ Date: 2026-10-10
 Status: approved in brainstorming. Stages 1, 2a, 2b and 2c (but for Sentry, Vercel
 and PostHog), global memory, and the main session and workers (section 4) are
 implemented, and so is autonomy (sections 3 and 7: the four axes, asks, choices,
-merges and `clots-waiting`), and stage 2d. Stage 2e (Composio) is built (code
+merges and the list of what is waiting), and stage 2d. Stage 2e (Composio) is built (code
 and unit tests); its live checks are reported in its plan's Implementation Notes.
 
 ## 1. What Clots is
@@ -21,8 +21,9 @@ what belongs to no project. A Clot:
   it through to an open pull request;
 - acts without asking on whatever is low on all four axes (reversibility,
   visibility, price, committing the user), and asks only for what is high on any
-  of them (section 7). When it offers the user a choice and gets no reply within 10
-  minutes, it goes with its own pick, as long as that pick is low;
+  of them (section 7). When it offers the user a choice and gets no answer within 10
+  minutes, it goes with its own pick, as long as that pick is low; any other ask that
+  is not answered in that time is blocked;
 - has its own isolated computer (a container with a repo clone and a browser);
 - keeps the main session long, rolled over into a fresh session with a written
   recap when context reaches 65% or when the user closes it;
@@ -39,7 +40,7 @@ illustrative.
 ## 2. Architecture
 
 One daemon runs on a Raspberry Pi 5 (8 GB RAM, 512 GB microSD) and owns everything
-that must be always-on: event intake, the clock, the chat bots, the queue, and
+that must be always-on: event intake, the clock, the conversation with each Clot, the queue, and
 control of the Clot containers.
 
 Each Clot is a Docker container. Claude Code runs inside the container, driven by
@@ -72,18 +73,20 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
 | Session manager | Start a Clot's process for a turn, resume its session, apply effort, stop the process afterwards. Enforce one heavy job at a time per host. | Agent SDK, Docker |
 | Workers | Start a worker session in a new worktree when the main session asks, queue it while the host's limit is reached, pass messages between it and the main session, post its progress lines, remove its worktree when its pull request is merged or closed. | Session manager |
 | Axes | A fixed rating, in code, of every daemon tool on the four axes. An action high on any axis becomes an ask. | None |
-| Asks | One component for every question put to the user in a temporary channel: standing rules, emails to send, merges and choices. Each kind has its handler; all share the channel, reply matching, closing exactly once, withdrawal and the pinned list in `clots-waiting`. | Chat adapter, axes |
+| Asks | One component for every question put to the user, shown as a card in the Clot's chat and as an entry on the Waiting for you page: standing rules, emails to send, merges and choices. Each kind has its handler; all share the buttons, the deadline, closing exactly once, withdrawal and the Waiting for you list. | Conversation store, axes |
 | Clot container | The Clot's computer: repo clone, Chromium with a persistent profile, live view, scoped credentials, its own Claude login, a copy of the user's Claude setup. | Image for arm64 and x64 |
-| Commands | Messages that start with `&`. Handled by the daemon before routing; never passed to the model. | Session manager |
-| Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container, and are made for each turn, so each call knows what kind of turn it is in. | Rulebook, chat adapter |
-| Global memory | Notices the global memories the home Clot writes, posts each, and copies them into every Clot's memory before its turns. | Chat adapter, Docker |
-| Chat adapter | The interface the daemon talks to chat through. Discord is the one built. | Platform bot credentials |
+| Commands | Messages that start with `/`. Handled by the daemon before routing; never passed to the model. | Session manager |
+| Daemon tools | Custom tools registered with `createSdkMcpServer`. They run in the daemon process, outside the container, and are made for each turn, so each call knows what kind of turn it is in. | Rulebook, conversation store |
+| Global memory | Notices the global memories the home Clot writes, posts each, and copies them into every Clot's memory before its turns. | Conversation store, Docker |
+| Conversation store | Every item in a Clot's chat as a row in SQLite: the user's messages, the Clot's replies, tool-activity lines, notes, asks and worker cards. Everything the daemon says to the user is written here and sent on as a stream event. | SQLite |
+| UI API | JSON over HTTP on a port of its own (`127.0.0.1:8788`, never the intake port), with one Server-Sent Events stream. Serves chats, asks, workers, settings, keys, integrations and push subscriptions, and sends the push notifications. Refuses a request without the shared secret. | Conversation store, config |
+| Web app | A Next.js app on `127.0.0.1:3000`, published to the tailnet only by `tailscale serve`; the browser never calls the daemon. Chat with each Clot, the Waiting for you page, settings and the New Clot flow, installable on a phone's home screen. | UI API, Tailscale |
 | Usage meter | Keeps the account's five-hour and seven-day utilization, from turns' rate-limit events and the SDK's usage call. | Agent SDK |
-| Spend log | Books every model call's estimated cost to its Clot, worker, the daemon or the sweep; answers `&spend`; warns once a week per Clot past a set figure. | Store, chat |
+| Spend log | Books every model call's estimated cost to its Clot, worker, the daemon or the sweep; answers `/spend`; warns once a week per Clot past a set figure. | Store, conversation store |
 | Sweep | One throwaway session for the whole daemon every 3 hours: reads the connectors of the claude.ai login and turns what changed into events, routed like a shared source's. | Connectors, routing |
 | Cache keeper | Keeps each Clot's prompt cache from expiring between turns: 55 minutes after a Clot's last turn it sends its session one small message that is answered and logged, never posted. | Runner, store |
 | Re-grounder | A throwaway session at each rollover that checks the recap against the current state. | Recap |
-| `clots` CLI | `clots add`, secret entry, status. Runs on the PC and talks to the daemon. | Network path to the Pi |
+| `clots` CLI | Secret entry and status. Runs on the PC and talks to the daemon. | Network path to the Pi |
 
 ## 3. Event pipeline
 
@@ -115,7 +118,7 @@ project too heavy for the Pi can be hosted elsewhere with the same image.
    need no action stop here, silently. If the triage call fails, the event is
    delivered.
 8. **Gates** deliver the event now or queue it (section 8).
-9. **Queue**: the one-line message is posted in the Clot's live channel, for
+9. **Queue**: the one-line message is posted in the Clot's chat, for
    example "Sentry just reported a crash – investigating it now.", and the event
    joins the main session's queue. Events, the user's messages and the workers'
    reports share one queue and are handled in arrival order.
@@ -226,7 +229,7 @@ several times over.
 The main session's effort level is re-evaluated on every prompt, whether it comes
 from the user, an event or a worker. It is applied with
 `applyFlagSettings({ effortLevel })`, which takes effect on the next turn. The user
-can choose the level for one message with the `&effort` command (section 6).
+can choose the level for one message with the `/effort` command (section 6).
 
 Router criteria:
 
@@ -323,7 +326,7 @@ The main session's daemon tools:
   otherwise investigate old code. Uncommitted changes found there are stashed
   first, never discarded.
 - **Progress**: the worker posts nothing itself. The daemon posts in the Clot's
-  live channel when a worker starts (title, model and effort), every 20 minutes
+  chat when a worker starts (title, model and effort), every 20 minutes
   with its latest step (a tool's name, or a command's program and, for a few
   known programs, its subcommand, never its arguments), and when it ends, followed by the turn summary.
 - **Limit**: 3 workers run at once per host, across all its Clots, or the number in
@@ -356,8 +359,8 @@ The main session's daemon tools:
 ### Rulebook
 
 - Readable files in a folder and git repository of their own, apart from the
-  Clots code: `global.yaml` for every Clot and `<clot>.yaml` for one. The daemon
-  creates the folder and its starter files when they are missing.
+  Clots code: `global.yaml` for every Clot and `<slug>.yaml` for one, where a Clot's slug is its
+  name in lower case. The daemon creates the folder and its starter files when they are missing.
 - Contents: pre-filters, routing rules (in `global.yaml` only), triage guidance as
   a list of plain-language lines, urgency markers, standing rules, watch recipes
   and webhook recipes. A pre-filter drops an event when every field it names
@@ -377,28 +380,29 @@ The daemon decides whether an edit is applied or put to the user, by the axes
 - **Applied at once:** pre-filters, triage lines, urgency markers and routing
   rules, in the Clot's own file or in `global.yaml`, whoever raised them, in any
   kind of turn, and watch and webhook recipes. Each is reversible with
-  `&rules undo` and seen only by the user. The exception is a turn started by an
+  `/rules undo` and seen only by the user. The exception is a turn started by an
   outsider's event (section 7): there every rulebook edit is an ask, so a
-  stranger's text cannot silence the alerts the user relies on. The daemon posts the resulting rule in the Clot's live channel with a
-  reminder of `&rules undo`. After a pre-filter is applied, the daemon also posts
+  stranger's text cannot silence the alerts the user relies on. The daemon posts the resulting rule in the Clot's chat with a
+  reminder of `/rules undo`. After a pre-filter is applied, the daemon also posts
   the first event it drops, so a filter that hides too much is seen without being
   looked for.
 - **An ask, needing the user's yes:** any standing rule added, replaced or
   removed, because a standing rule lets the Clot send to other people. The ask is
-  answered like every ask (section 7), in a temporary channel (`<clot>-rule`) that
-  shows the exact edit. The reply never reaches the model.
+  answered like every ask (section 7), with buttons on a card that shows the exact
+  edit. The answer never reaches the model.
 - **What the Clot learns:** the tool returns at once and the Clot does not wait.
-  The outcome of an ask is posted in its live channel and placed as a note in
+  The outcome of an ask is posted in the Clot's chat and placed as a note in
   front of the main session's next turn. A note starts no turn.
-- **Limits:** an ask about a rule stays open until the user answers it, across
-  rollovers: the rule does not depend on the session. A Clot may have three open,
+- **Limits:** an ask about a rule is never withdrawn and survives rollovers: the
+  rule does not depend on the session. It is blocked if its deadline passes
+  (section 7). A Clot may have three open,
   or the number in `maxProposals` in `clots.config.json`.
 - **When a Clot adds a rule unasked:** only on a clear pattern (the same kind of
   event dismissed more than once, or a stated standing preference), with the
   reason in one line, and never again once undone.
 - **History:** every applied edit is checked against the schema, written so that
   comments and hand-written parts survive, committed in the rulebook's
-  repository, and logged with the edit that undoes it (`&rules undo`, section 6).
+  repository, and logged with the edit that undoes it (`/rules undo`, section 6).
 
 ### Standing rules
 
@@ -445,7 +449,7 @@ named trigger, an exact template and a way of sending.
   turn: a throwaway session checks, under the lock, everything the recap names as
   open, and what changed is posted under the recap and placed as a note in front
   of the first turn. The new session is saved, with its recap,
-  before anything about it is announced, so a failed chat call or a restart
+  before anything about it is announced, so a failed post or a restart
   mid-handoff loses nothing.
 - The new session is told why it was started: the context limit, or the user's
   request.
@@ -474,14 +478,14 @@ design is in `.superpowers/specs/2026-10-14-clots-global-memory-design.md`.
   memory folder: when the user asks, or on its own for what clearly applies to all
   of the user's work. Project Clots cannot suggest one.
 - **Applied at once:** a global memory is seen only by the user's Clots and is
-  reversible with `&memory undo`, so it needs no yes. The exception is a memory
+  reversible with `/memory undo`, so it needs no yes. The exception is a memory
   written in a home Clot turn that an outsider's text started: every Clot would
   trust it from then on, so it is put to the user as an ask first. If that ask ends
   any way but a yes (a no, a withdrawal, a stop part-way, or the question could
   not be asked), the home Clot's copy is
   put back, so the text never goes in force unasked. The daemon notices a new,
   changed or deleted file after each home Clot turn, applies it, and posts it in
-  the home Clot's live channel with a reminder of `&memory undo`.
+  the home Clot's chat with a reminder of `/memory undo`.
 - **Delivery:** before each turn, the daemon copies the global files into the
   Clot's memory folder, removes any other `global-clot-` file, and keeps a block of
   index lines at the top of its `MEMORY.md`. Each change also leaves the Clot a
@@ -489,44 +493,41 @@ design is in `.superpowers/specs/2026-10-14-clots-global-memory-design.md`.
 - **Clots are told** not to edit or remove global memories or the daemon's block.
   This is an instruction only; the next sync undoes any change.
 
-### Discord layout
+### The web app's chat layout
 
-- One server.
-- One channel at the top of the server, `clots-waiting`, holding one pinned
-  message the daemon keeps current: every ask and every open choice from every
-  Clot, each with its Clot, a line on what it is and a link to where it is
-  answered; an open choice also shows the time it will be decided without the
-  user. The message is edited only when the list changes, and it pings no one: the
-  ask or choice itself mentions the user once. One look at it shows whether
-  anything is waiting. At every start, and after each change until it succeeds,
-  the daemon checks that the message is pinned and pins it if not, so a pin that
-  failed before the bot had the Pin Messages permission is made later.
-- One category per Clot.
-- One channel per session, named `project-DDMM` (for example `graphite-1010`). A
-  second rollover on the same day adds a suffix: `graphite-1010-2`.
-- The recap is the first message of the new channel, so the user can read and
-  correct what the new session knows.
-- On rollover the old channel gets a closing link to the new one and becomes
-  read-only. The Clot mentions the user in the new channel and keeps it at the top
-  of the category.
-- Read-only applies to the server's ordinary members. The bot keeps its own
-  permission to post there. Discord ignores channel permissions for the server owner
-  and administrators, so a message from them in a closed channel is answered with a
-  pointer to the live one.
+- One chat per Clot, for the Clot's whole life. The user's messages, the Clot's
+  replies, tool-activity lines, notes, ask cards and worker cards run in order in
+  it. The Clot's replies stream in as they are written and render as markdown;
+  raw HTML is not rendered and links open in a new tab, so the text of an email or
+  an issue a reply quotes stays text. Scrolling up loads older messages.
+- **Waiting for you** is a page of its own, built from the open asks and choices
+  of every Clot: grouped under each Clot, oldest first, each with a line on what
+  it is, its timer and its buttons. An open choice shows the time it will be
+  decided without the user. A dot on the bell shows whether anything is waiting,
+  and the page's summary counts how many are urgent (section 7).
+- The recap is a note at the start of the new session's part of the chat, folded
+  by default, so the user can read what the new session knows and correct it by
+  writing.
+- On rollover the same chat carries on: the daemon adds a note saying why the new
+  session started. The old messages stay visible to the user and are no longer in
+  the Clot's context.
 - While a main session turn runs, or a recap is being written, the Clot shows as
-  typing. Workers show only through their progress lines (section 4).
-- A post pings only the users the daemon mentions itself. Posts carry text from
-  emails, issues and other outsiders, whose `@everyone` or `<@id>` stays text.
-- When a category approaches Discord's channel limit, the oldest session channels
-  are deleted. Full transcripts remain on disk.
-- No threads in the first version.
-- Sweeps have no channel.
+  working. Workers show through one worker card after the turn that started them
+  and through their progress lines (section 4). Each tool call of the main
+  session becomes a short line with an icon ("Read issue #31"); a worker's tool
+  calls are not shown.
+- The user is told by push notification, not by mention: a new ask or choice, an
+  ask entering its last minute, a choice the deadline decided, a Clot paused or
+  failed, and a Clot's reply while no device has been visible and in use in the
+  last 2 minutes. Tapping the notification opens the ask in its chat, or the chat.
+- Sweeps have no chat.
 
 ### Turn summary
 
-After each turn that changed a file or ran a command, the daemon posts one embed:
+After each turn that changed a file or ran a command, the daemon posts one
+activity message:
 
-- each file changed, with the number of lines added and removed, colour-coded;
+- each file changed, with the number of lines added and removed;
 - the commands run, first line only.
 
 It shows counts, not diff contents. File counts come from the Clot's edit and write
@@ -536,23 +537,25 @@ context.
 
 ### Commands
 
-A message that starts with `&` followed by a word is a command. The daemon handles
-it; it never reaches the model. A mistyped or unknown command gets a usage reply.
+A message that starts with `/` followed by a word is a command. The daemon handles
+it; it never reaches the model. Typing `/` opens a menu of every command with its
+options and a description in plain English. A mistyped or unknown command gets a
+usage reply.
 
 | Command | Effect |
 |---|---|
-| `&close` | The same handoff as a context rollover: recap, new session, new channel, old channel closed. The user and the new session are both told it was at the user's request. |
-| `&close nosummary` | A new session and channel with nothing carried over: no recap, the router's recent-message context cleared. Running workers carry on and report to the new session. On a new session that still holds an unused recap, it discards the recap in place. |
-| `&effort low\|medium <message>` | Sends the message to the main session at that effort level. |
-| `&effort low\|medium` | Sets the level for the next message only. It is spent on the next message delivered, and kept if that delivery is refused. |
-| `&rules` | Lists the rules in force for this Clot, each with its file, and its open asks. Answered at once, also during a turn. |
-| `&rules undo` | Reverts the most recent rulebook edit made from chat through this Clot and shows what it reverted. Sent again, it steps one edit further back. It needs no further yes. |
-| `&memory` | Lists the global memories in force. Works in every Clot's channel, also during a turn. |
-| `&memory undo` | Reverts the most recent global memory change: an addition, a change or a deletion. Sent again, it steps one further back. |
-| `&spend` | Shows this week's estimated spend for this Clot (main session, each worker, triage) and for all Clots, the gate in force and the account's utilization. Answered at once, also during a turn. |
-| `&calendar undo` | Reverses this Clot's most recent calendar change: removes an event it added, puts back what it changed, or recreates one it removed from the copy the daemon kept. Sent again, it steps one further back. |
+| `/close` | The same handoff as a context rollover: recap, new session, a note in the same chat. The user and the new session are both told it was at the user's request. |
+| `/close nosummary` | A new session with nothing carried over: no recap, the router's recent-message context cleared. Running workers carry on and report to the new session. On a new session that still holds an unused recap, it discards the recap in place. |
+| `/effort low\|medium <message>` | Sends the message to the main session at that effort level. |
+| `/effort low\|medium` | Sets the level for the next message only. It is spent on the next message delivered, and kept if that delivery is refused. |
+| `/rules` | Lists the rules in force for this Clot, each with its file, and its open asks. Answered at once, also during a turn. |
+| `/rules undo` | Reverts the most recent rulebook edit made from chat through this Clot and shows what it reverted. Sent again, it steps one edit further back. It needs no further yes. |
+| `/memory` | Lists the global memories in force. Works in every Clot's chat, also during a turn. |
+| `/memory undo` | Reverts the most recent global memory change: an addition, a change or a deletion. Sent again, it steps one further back. |
+| `/spend` | Shows this week's estimated spend for this Clot (main session, each worker, triage) and for all Clots, the gate in force and the account's utilization. Answered at once, also during a turn. |
+| `/calendar undo` | Reverses this Clot's most recent calendar change: removes an event it added, puts back what it changed, or recreates one it removed from the copy the daemon kept. Sent again, it steps one further back. |
 
-A `&close` sent during a turn waits for the turn to end. On a session with no turns
+A `/close` sent during a turn waits for the turn to end. On a session with no turns
 yet and no recap, it does nothing.
 
 The user usually reads on a phone and cannot open files, so thinking and plans go
@@ -603,7 +606,7 @@ asking, and asks only for what is high on any one.
     outsider's text started, the Clot may only add events, at most 3 a day per
     Clot, and change or remove only events a Clot added. Every add, change and
     removal is logged with what it replaced and posted, with the event's id, and
-    `&calendar undo` reverses the most recent one; a removed event is created
+    `/calendar undo` reverses the most recent one; a removed event is created
     again only once the calendar confirms it is gone, so one whose removal did
     not happen is not made twice, and the kept copy stays until it is put back. The calendar's feed can lag by
     hours, so `calendar_list` also shows the Clots' changes of the last two days
@@ -613,13 +616,12 @@ asking, and asks only for what is high on any one.
     in a team account, and every private or team write in a turn an outsider's
     text started, goes to the write reviewer, which runs it or makes it an ask;
     in such a turn, a destructive write on something no Clot's own write
-    created asks without the reviewer. Each write that runs is posted, with `&composio undo` where it has an inverse
+    created asks without the reviewer. Each write that runs is posted, with `/composio undo` where it has an inverse
     (stage 2e specification).
 - **High, an ask:**
   - adding, replacing or removing a standing rule;
   - sending an email, through send review: the daemon shows the email and sends it
-    only on the user's yes. A daemon-wide switch turns send review off, leaving
-    drafts and standing rules;
+    only on the user's yes. Drafts and standing rules do not need it;
   - a comment, review or reply that reaches a person on any source, except a
     Composio write in a private or team account, which its audience decides;
   - every Composio write in a `public` account, and, whatever the audience, every
@@ -641,35 +643,45 @@ asking, and asks only for what is high on any one.
 ### Asks
 
 One component puts every question to the user. Each ask has a kind, and the kind
-decides its channel, what an exact reply does, what any other reply does, and when
-it is withdrawn:
+decides its buttons, what a message typed in the chat does, and when it is
+withdrawn:
 
-| Kind | Channel | Exact yes | Exact no | Any other reply | Withdrawn when |
-|---|---|---|---|---|---|
-| Rule change (a standing rule, or any edit from an outsider's turn) | `<clot>-rule` | applies it | declines it | repeats the question | never |
-| Email to send | `<clot>-mail` | sends it | drops it; `draft` saves it as a draft instead | goes to the main session as the user's feedback, and the review closes | its review window passes |
-| Merge | `<clot>-ask` | merges | declines | goes to the main session as the user's feedback, and the ask closes | the pull request gets a new commit, or closes |
-| Choice | `<clot>-choice` | `1`, `2`, `one`, `two`, `first` or `second` decide it; `your pick` or `go ahead` take the Clot's pick | none | goes to the main session as a turn of the user's own, with the choice attached, and the choice closes | never: the timeout decides it |
+| Kind | Allow | Block | A message typed in the Clot's chat | Withdrawn when |
+|---|---|---|---|---|
+| Rule change (a standing rule, or any edit from an outsider's turn) | Approve: applies it | Decline: declines it | repeats the question | never |
+| Email to send | Send: sends it. Edit: the user's new body replaces the draft, then it is sent, and the main session gets a note listing what changed | Don't send: drops it | goes to the main session as the user's feedback, and the review closes | never |
+| Merge | Approve: merges | Decline: declines | goes to the main session as the user's feedback, and the ask closes | the pull request gets a new commit, or closes |
+| Choice | Either option as a button, the Clot's pick marked | none | goes to the main session as a turn of the user's own, with the choice attached, and the choice closes | never: the deadline decides it |
 
 What every ask shares:
 
-- The daemon opens the channel in the Clot's category, mentions the user once and
-  shows exactly what would be done. The ask is listed in `clots-waiting`
-  (section 6).
-- A reply is matched exactly, after lowercasing and removing punctuation. A yes is
-  `yes`, `sure`, `do that` or `yeah`; a no is `no`, `dont` or `not at all`. An
-  exact reply never reaches the model.
-- The tool returns at once and the Clot does not wait. The outcome is posted in
-  the live channel and placed as a note in front of the main session's next turn.
-  The channel is deleted when the answer has been carried out, and the ask leaves
-  `clots-waiting`.
-- An ask is closed exactly once, whichever comes first: the reply, the timeout, or
-  the withdrawal.
+- The daemon opens the ask as a card in the Clot's chat and as an entry on the
+  Waiting for you page (section 6), and shows exactly what would be done. A push
+  notification tells the user.
+- An ask is answered with its buttons, in the chat or on Waiting for you. Nothing
+  typed is read as a yes or a no. A message the user types in the Clot's chat while
+  one of its asks is open is handled as the table says. An answer never reaches
+  the model.
+- **Every ask has a deadline**, its opening time plus `askTimeoutMinutes` in
+  `clots.config.json` (default 10), one setting for every kind. A choice whose
+  deadline passes goes with the Clot's pick (below). Every other ask is **blocked**:
+  the rule is not applied, the email is not sent, the merge is not made, the memory
+  question is answered no. After a restart, deadlines that have passed close at
+  once.
+- **Timer states**, shown on each ask: calm above 5 minutes, calling from 5 to 1
+  minutes, urgent under 1 minute. The Waiting for you summary counts the asks
+  under 1 minute as urgent.
+- The tool returns at once and the Clot does not wait. The outcome is posted in the
+  chat as a note and placed as a note in front of the main session's next turn.
+  When the answer has been carried out, the ask leaves Waiting for you. An answer
+  to an ask that has already closed returns how it ended, which the app shows.
+- An ask is closed exactly once, whichever comes first: the answer, the deadline,
+  or the withdrawal.
 - **Silence never approves an ask.** An ask is withdrawn when what it would act on
   changes, so a yes always means what the user saw. A withdrawn ask leaves
-  `clots-waiting`, its channel is deleted, and the main session gets a note, so it
-  can ask again if that still makes sense.
-- Open asks survive a restart. One whose channel is gone is closed as withdrawn.
+  Waiting for you, its outcome shows in the chat as a note, and the main session
+  gets a note, so it can ask again if that still makes sense.
+- Open asks survive a restart.
 
 ### Choices
 
@@ -677,22 +689,20 @@ When there are meaningfully different ways to do something, the main session put
 two options to the user with the daemon tool `ask_choice(question, options, pick)`,
 naming its own pick.
 
-- The daemon opens a choice ask, which lists the deadline in `clots-waiting`. The
-  main session's turn ends, so it stays free for other events.
-- **No reply within 10 minutes** (or `choiceTimeoutMinutes` in `clots.config.json`): the daemon
-  starts a turn telling the main session the user appears to be busy, and to go
-  with its pick. The Clot posts which option it took and that a reply switches it.
+- The daemon opens a choice ask, which shows its deadline on its card and on
+  Waiting for you. The main session's turn ends, so it stays free for other events.
+- **No answer by the deadline**: the daemon starts a turn telling the main session
+  the user appears to be busy, and to go with its pick. The Clot posts which option
+  it took and that a message in the chat switches it.
 - **The daemon rates no option.** An option is a sentence the model wrote, so
   there is nothing to rate. The axes hold at each tool call instead: when the pick
   leads to a high step, such as sending an email or merging, that call becomes an
   ask, and the Clot has done everything up to it.
 - That timeout turn carries none of the user's authority, as a worker's report
   does not.
-- **A late answer for the other option**, in the live channel, is an ordinary
+- **A late answer for the other option**, typed in the chat, is an ordinary
   message: the main session redirects or replaces the worker, and closes the pull
   request made for the first option.
-- After a restart, a choice whose deadline has passed is decided by the timeout
-  at once.
 
 ### Enforcement
 
@@ -707,7 +717,7 @@ naming its own pick.
   Calendar, which has no key, through Composio's managed sign-in. The one exception is email:
   the daemon reads the user's own mailboxes, and sends as the user only text the
   user approved word for word: a standing `email_reply`, from the address the
-  mail came to, or an email the user approved in its review channel.
+  mail came to, or an email the user approved on its ask.
 - **Knowing its own work**: the daemon reads the account's login from the token
   at startup. That is how an event the Clot caused itself is recognised (section
   3).
@@ -758,7 +768,8 @@ The guard's lists, and the ways of hiding a command it refuses, are tested again
 a table of commands that must pass and a table that must be refused, as the lock
 is. What the guard cannot see, such as a `curl` to an address of the worker's
 choosing, rests on the worker's instructions (section 18).
-- **Secrets** are entered through the `clots` CLI, never through chat.
+- **Secrets** are entered in the web app's Keys settings or through the `clots` CLI,
+  never through chat. The app shows only the last 4 characters of a key.
 
 ### The lock
 
@@ -813,7 +824,7 @@ instruction hidden in that text can do.
 - A worker's brief is written by the main session. Text from an event that the
   brief quotes stays wrapped and labelled as untrusted, and the worker's system
   prompt states that its instructions are the brief's own words.
-- A suspected injection is flagged to the user in the Clot's channel and never
+- A suspected injection is flagged to the user in the Clot's chat and never
   reaches the Clot.
 - Text from an event that looks like a command is not one: an event cannot close
   a session or set an effort level.
@@ -848,7 +859,7 @@ together, as a single digest turn when there are two or more.
 Usage is read from the SDK's rate-limit events and its usage call (five-hour and
 seven-day utilization, with their reset times). The daemon keeps a spend log of
 every model call's estimated cost, per Clot with each worker on its own line;
-`&spend` shows the week, and the user is warned once when a Clot's weekly spend
+`/spend` shows the week, and the user is warned once when a Clot's weekly spend
 passes a configured figure.
 
 ## 9. Intake
@@ -939,28 +950,49 @@ Out of scope: driving native desktop applications.
 
 ## 11. Onboarding
 
-A Clot is opt-in per project. `clots add`, run inside a project folder on the PC,
-registers the repository with the daemon. The daemon clones it, builds the
-container and creates the Discord category and first channel.
+A Clot is opt-in per project. It is created in the web app, on the desktop, in the
+New Clot flow:
 
-The new Clot then walks the user through a fixed checklist in its channel:
-bindings for each source, webhook URLs to paste into each service, scoped
-credentials, watch recipes, browser logins, the usage schedule.
+1. **Icon, name and repository.** A name is shown exactly as typed ("Truecast",
+   "Encryptify"): letters, digits and hyphens, starting with a letter, up to 31
+   characters, capitals kept. The container, its volumes and its rule file are named
+   by the Clot's slug, the name in lower case, and a name is free only when its
+   slug is: a Clot named `Truecast` and one named `truecast` are the same Clot. The
+   daemon checks that the name is free and a valid container name, and that
+   `clots-dot-dev` can reach the repository; if an invitation is pending it accepts
+   it with its own token, and if there is none the step shows how to invite
+   `clots-dot-dev`.
+2. **Tools.** The shared Composio accounts are listed first; Add a tool connects a
+   new one, scoped to this Clot (section 9). An inbox is added the same way.
+3. **Create.** The daemon writes the config entry, clones the repository and builds
+   the container, sending its progress (cloning, building, starting). A failure
+   shows its log with a way to retry. When the container runs, the user lands in
+   the new Clot's chat.
 
-Onboarding must leave the Clot fully set up. Each item is verified by a real test
-(a test webhook received, a test email seen, a branch pushed and a pull request
-opened with the Clot's own token, a login confirmed in its browser). The Clot does
-not declare itself ready until every item passes. Checklist state is saved so
-onboarding can be resumed.
+The Clot's first message is one line ("<name> is ready. Three steps finish its
+setup.") and the onboarding checklist as a card in the chat: the GitHub webhook,
+each tool's connection, and a branch pushed with the Clot's own token. Each step
+has a done or not-done mark and ticks itself as the step is done.
+
+Onboarding must leave the Clot fully set up. Each item is verified by a real test:
+GitHub's ping received at the webhook, each tool's connection active, a branch
+pushed with the Clot's own token. The Clot does not declare itself ready until
+every item passes. The steps are fetched from the daemon and kept current while any
+is open, so onboarding resumes after a reload.
+
+The webhook step shows the address to send to and the secret, each behind a Copy
+button. The secret is never in the message text, which would sit in the chat history
+in the database and in push previews: the message carries only the repository and
+the address, and the card asks the daemon for the secret when Copy is pressed.
 
 ## 12. Failure handling
 
 - **Daemon crash or power loss**: systemd restarts the daemon. The queue and state
   are in SQLite with write-ahead logging. Sessions resume from disk. An event that
   was stored is picked up from the step it had reached; events that were being
-  held are released at once; open asks stay open and can still be answered; a
-  choice whose 10 minutes passed while the daemon was down is decided by the
-  timeout at once; workers that were in a turn are resumed, and those waiting for a
+  held are released at once; open asks stay open and can still be answered; an
+  ask whose deadline passed while the daemon was down is closed at once, a choice
+  by the timeout and any other ask as blocked; workers that were in a turn are resumed, and those waiting for a
   place keep their order.
 - **Daemon starting**: the intake port is taken before anything else is read or
   changed, and deliveries are stored from that moment. A second daemon finds the
@@ -974,10 +1006,12 @@ onboarding can be resumed.
 - **Paused at restart**: a usage-limit pause that expired while the daemon was down
   is resumed at startup like one that expires while it is running.
 - **Limit during a handoff**: a usage limit hit while the recap is being written
-  pauses the Clot like any other. A `&close` is retried after the reset; a context
+  pauses the Clot like any other. A `/close` is retried after the reset; a context
   rollover is retried after the next turn.
 - **Failing watch**: back off, then report to the user after repeated failures.
-- **Chat platform unreachable**: outbound messages queue.
+- **Web app or phone unreachable**: everything is stored, so the chat is complete
+  when the user returns. An ask whose deadline passes meanwhile is closed: a choice
+  by the Clot's pick, any other as blocked.
 - **Usage limit**: section 8, gate 1.
 
 ## 13. Stack
@@ -989,7 +1023,10 @@ onboarding can be resumed.
 - SQLite for the queue, events, bindings and spend log.
 - Plain YAML files in a git repository of their own for the rulebook.
 - Node's built-in HTTP server for intake, behind Tailscale Funnel.
-- discord.js for Discord, behind the chat adapter interface.
+- Next.js (App Router), React and Tailwind CSS for the web app, an npm workspace
+  beside the daemon, with shadcn/ui components; `web-push` for notifications. The
+  app talks to the daemon only through its UI API and is published to the tailnet
+  by `tailscale serve`.
 - An IMAP library with IDLE support.
 - Docker; one image built for arm64 and x64, on Debian trixie with Node 24 and
   npm for the Clot's own work. Claude Code comes from its native installer and
@@ -1001,13 +1038,15 @@ onboarding can be resumed.
 ## 14. Testing
 
 - Unit tests for pure logic: pre-filters, routing, gates, the five-word check,
-  schedules, channel naming, reply matching, the hold's timing, each daemon tool's
-  rating on the axes, the gates by kind of turn with the outsider exception, reply
-  matching for each kind of ask, closing an ask exactly once when a reply races
-  the timeout or a withdrawal, a merge ask withdrawn by a new commit, the choice's
-  timeout on a fake clock, the worker queue and
-  its limit, the `clots-waiting` message, and the undo of every action that is
-  applied with one.
+  schedules, command parsing, the hold's timing, each daemon tool's
+  rating on the axes, the gates by kind of turn with the outsider exception,
+  answering each kind of ask, a message typed during an open ask, each kind's
+  deadline on a fake clock (a choice taking the Clot's pick, every other kind
+  blocked, deadlines that passed during a restart), closing an ask exactly once when
+  an answer races the deadline or a withdrawal, a merge ask withdrawn by a new
+  commit, the worker queue and its limit, the Waiting for you list, the UI API's
+  handlers and schemas, the conversation store, the config store, and the undo of
+  every action that is applied with one.
 - The lock's command checker and the worker guard are each tested against two
   tables: commands that must pass and commands that must be refused. A command
   added to an approved list brings its ways of writing, executing or sending into
@@ -1015,11 +1054,13 @@ onboarding can be resumed.
 - Source adapters tested against recorded real payloads.
 - Model steps sit behind an interface. The pipeline is tested with fakes. A small
   labelled set of events scores the triage and router prompts whenever they change.
-- End-to-end tests with a fake chat adapter, fake worker sessions and a fake
-  source.
+- End-to-end tests with fake worker sessions and a fake source, and Playwright tests
+  of the web app against the daemon at desktop and phone sizes, in both themes, with
+  accessibility checks.
 - Live checks: a GitHub issue reaches an open pull request with no reply from the
-  user; a choice times out and the Clot goes with its pick; an ask is listed in
-  `clots-waiting`, answered, and leaves the list.
+  user; a choice times out and the Clot goes with its pick; any other ask blocks at
+  its deadline; an ask appears on Waiting for you, is answered there or in the chat,
+  and leaves the list; a push notification reaches the phone and opens the ask.
 - On the Pi: a memory and build-time check with both Clots and three workers
   running.
 
@@ -1111,7 +1152,19 @@ Each stage gets its own specification and plan.
    always-on x64 machine arrives. Onboarding (section 11), with Composio's
    connections in its checklist, is not part of this stage; it will be built in
    the web UI (`.superpowers/specs/2026-11-22-clots-stage-3-pi-deployment-design.md`).
-4. **Browser and live view.**
+4. **The web UI**, built in two parts, each with its own specification and plan:
+   - **4a. Web UI**: a web app that is the only way to use the Clots: a chat with
+     each Clot, every ask and choice with its deadline and timer, the Waiting for
+     you page, worker cards, `/` commands, settings, the New Clot flow with its
+     onboarding checklist, connecting Composio tools and inboxes, and push
+     notifications to an iPhone's home-screen app. It adds the conversation store,
+     the UI API and hot-reloaded configuration
+     (`.superpowers/specs/2026-11-23-clots-stage-4a-web-ui-design.md`).
+   - **4b. Claritee and Clapboards**: a small markup and script language Clots write
+     in their replies, rendered as widgets, and single-page sites a Clot publishes
+     and edits live, shown in the side pane
+     (`.superpowers/specs/2026-11-23-clots-stage-4b-claritee-clapboards-design.md`).
+5. **Browser and live view.**
 
 ### Stage 1 scope
 
@@ -1183,8 +1236,7 @@ If any of these fails, stop and bring the finding to the user before continuing.
 
 - Native desktop applications.
 - Voice.
-- iMessage: it needs a Mac to relay, and the Pi cannot do it. The chat adapter
-  interface leaves room for it.
+- iMessage: it needs a Mac to relay, and the Pi cannot do it.
 - Waking the PC over the network: unnecessary now that the Pi hosts the Clots.
 
 ## 18. Known risks
@@ -1206,7 +1258,15 @@ If any of these fails, stop and bring the finding to the user before continuing.
   collaborator's pull request does. The Clots' token cannot change workflow files,
   but the scripts CI runs are the worker's to change.
 - Two Clots and three workers on an 8 GB Pi is unmeasured, and the containers
-  have no memory cap. Stage 3's check on the Pi runs exactly that load.
+  have no memory cap. Stage 3's check on the Pi runs exactly that load. The web app
+  adds about 150 MB.
+- iOS web push needs the app installed to the home screen and has been unreliable
+  after iOS updates; notifications are the only way the user hears from a Clot while
+  away.
+- The web app is reachable only on the tailnet, so the phone needs Tailscale
+  connected. Asks can only be answered in the app: if it is down, every ask blocks
+  at its deadline. The default 10-minute deadline is short for an email the user
+  wants to think about; the setting is global.
 - Acting without asking means a wrong low action is noticed later: a pre-filter
   that drops too much, a pull request built on the wrong option. Each is posted
   with its undo, which is what keeps this acceptable.

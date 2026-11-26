@@ -163,6 +163,17 @@ describe("Rulebook", () => {
     rulebook = new Rulebook(dir, ["graphite"], (file, problem) => invalid.push({ file, problem }));
   });
 
+  it("keeps a Clot with capitals in its name in a file named by its slug", () => {
+    rulebook = new Rulebook(dir, ["Truecast"], (file, problem) => invalid.push({ file, problem }));
+    rulebook.ensure();
+    write("truecast.yaml", "triage: Be brief." + String.fromCharCode(10));
+    rulebook.load();
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith(".yaml")).sort()).toEqual(["global.yaml", "truecast.yaml"]);
+    expect(rulebook.pathOf("Truecast")).toBe(path.join(dir, "truecast.yaml"));
+    expect(rulebook.guidance("Truecast")).toBe("Be brief.");
+    expect(invalid).toEqual([]);
+  });
+
   it("creates the folder's starter files, which load as no rules", () => {
     rulebook.ensure();
     rulebook.load();

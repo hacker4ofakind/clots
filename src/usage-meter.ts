@@ -134,7 +134,7 @@ export class UsageMeter {
     return this.inFlight;
   }
 
-  /** Whether the on-demand call is currently failing, so that `&spend` can say the reading is unavailable. */
+  /** Whether the on-demand call is currently failing, so that `/spend` can say the reading is unavailable. */
   get failing(): boolean {
     return this.failures > 0;
   }

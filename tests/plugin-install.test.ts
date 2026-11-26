@@ -88,6 +88,6 @@ describe("the configuring-the-daemon skill", () => {
   });
 
   it("states the keys that can never be changed", () => {
-    for (const key of ["home", "publicUrl", "discord", "image"]) expect(CONFIGURING).toContain(`\`${key}\``);
+    for (const key of ["home", "publicUrl", "ui", "image"]) expect(CONFIGURING).toContain(`\`${key}\``);
   });
 });

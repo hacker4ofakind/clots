@@ -8,46 +8,45 @@ import { Store } from "../src/store.js";
 let store: Store;
 beforeEach(() => {
   store = new Store(":memory:");
-  store.upsertClot("graphite", "cat-1");
+  store.upsertClot("graphite");
 });
 
 describe("Store", () => {
   it("creates a clot, not paused", () => {
-    expect(store.getClot("graphite")).toEqual({ name: "graphite", categoryId: "cat-1", pausedUntil: null });
+    expect(store.getClot("graphite")).toEqual({ name: "graphite", pausedUntil: null });
   });
 
   it("keeps one active session per clot", () => {
-    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: null });
-    store.createSession({ id: "s2", clot: "graphite", channelId: "ch-2", seed: "recap" });
-    expect(store.activeSession("graphite")).toMatchObject({ id: "s2", channelId: "ch-2", seed: "recap", started: false });
-    expect(store.sessionByChannel("ch-1")).toMatchObject({ id: "s1", active: false });
+    store.createSession({ id: "s1", clot: "graphite", seed: null });
+    store.createSession({ id: "s2", clot: "graphite", seed: "recap" });
+    expect(store.activeSession("graphite")).toMatchObject({ id: "s2", seed: "recap", started: false });
   });
 
   it("rejects a duplicate inbox id", () => {
-    const msg = { id: "m1", clot: "graphite", channelId: "ch-1", text: "hi", receivedAt: 1 };
+    const msg = { id: "m1", clot: "graphite", text: "hi", receivedAt: 1 };
     expect(store.enqueue(msg)).toBe(true);
     expect(store.enqueue(msg)).toBe(false);
   });
 
   it("returns pending messages in arrival order", () => {
-    store.enqueue({ id: "m1", clot: "graphite", channelId: "ch-1", text: "first", receivedAt: 1 });
-    store.enqueue({ id: "m2", clot: "graphite", channelId: "ch-1", text: "second", receivedAt: 2 });
+    store.enqueue({ id: "m1", clot: "graphite", text: "first", receivedAt: 1 });
+    store.enqueue({ id: "m2", clot: "graphite", text: "second", receivedAt: 2 });
     expect(store.nextPending("graphite")?.text).toBe("first");
     store.setInboxStatus("m1", "running");
     expect(store.nextPending("graphite")?.text).toBe("second");
   });
 
   it("requeues running messages after a crash", () => {
-    store.enqueue({ id: "m1", clot: "graphite", channelId: "ch-1", text: "first", receivedAt: 1 });
+    store.enqueue({ id: "m1", clot: "graphite", text: "first", receivedAt: 1 });
     store.setInboxStatus("m1", "running");
     expect(store.requeueRunning("graphite")).toBe(1);
     expect(store.nextPending("graphite")?.id).toBe("m1");
   });
 
   it("records why a session was started", () => {
-    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: null });
+    store.createSession({ id: "s1", clot: "graphite", seed: null });
     expect(store.activeSession("graphite")!.seedReason).toBe("context");
-    store.createSession({ id: "s2", clot: "graphite", channelId: "ch-2", seed: "recap", seedReason: "user" });
+    store.createSession({ id: "s2", clot: "graphite", seed: "recap", seedReason: "user" });
     expect(store.activeSession("graphite")!.seedReason).toBe("user");
   });
 
@@ -70,7 +69,7 @@ describe("Store", () => {
   });
 
   it("drops a session's seed", () => {
-    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: "recap" });
+    store.createSession({ id: "s1", clot: "graphite", seed: "recap" });
     store.clearSeed("s1");
     expect(store.activeSession("graphite")!.seed).toBeNull();
   });
@@ -82,8 +81,8 @@ describe("Store", () => {
   });
 
   it("remembers what a cut-off turn was for, and forgets it when the session carries on", () => {
-    store.upsertClot("kinds", "cat-9");
-    store.createSession({ id: "k1", clot: "kinds", channelId: "ch-k", seed: null });
+    store.upsertClot("kinds");
+    store.createSession({ id: "k1", clot: "kinds", seed: null });
     expect(store.activeSession("kinds")).toMatchObject({ interrupted: false, interruptedKind: "message" });
     store.setInterrupted("k1", true, "event");
     expect(store.activeSession("kinds")).toMatchObject({ interrupted: true, interruptedKind: "event" });
@@ -92,8 +91,8 @@ describe("Store", () => {
   });
 
   it("marks inbox rows as messages unless told they are events", () => {
-    store.enqueue({ id: "m1", clot: "graphite", channelId: "ch-1", text: "hi", receivedAt: 1 });
-    store.enqueue({ id: "event:d-1", clot: "graphite", channelId: "ch-1", text: "<event>", receivedAt: 2, kind: "event" });
+    store.enqueue({ id: "m1", clot: "graphite", text: "hi", receivedAt: 1 });
+    store.enqueue({ id: "event:d-1", clot: "graphite", text: "<event>", receivedAt: 2, kind: "event" });
     expect(store.nextPending("graphite")!.kind).toBe("message");
     store.setInboxStatus("m1", "done");
     expect(store.nextPending("graphite")!.kind).toBe("event");
@@ -197,15 +196,11 @@ describe("Store", () => {
       const raw = new Database(file);
       raw.prepare("UPDATE events SET status = 'asking' WHERE id = 'd-1'").run();
       raw.prepare("UPDATE events SET status = 'steered' WHERE id = 'd-2'").run();
-      raw.prepare("INSERT INTO asks (event_id, clot, channel_id) VALUES ('d-1', 'graphite', 'ask-1')").run();
       raw.close();
 
       const reopened = new Store(file);
       expect(reopened.getEvent("d-1")!.status).toBe("received");
       expect(reopened.getEvent("d-2")).toMatchObject({ status: "dropped", note: "fed into a turn" });
-      expect(reopened.steeringAskChannels()).toEqual(["ask-1"]);
-      reopened.clearSteeringAsks();
-      expect(reopened.steeringAskChannels()).toEqual([]);
       reopened.close();
     });
   });
@@ -230,21 +225,22 @@ describe("Store", () => {
 });
 
 describe("Store, stage 2b", () => {
-  const ask = (clot: string, channelId: string) => ({ kind: "rule", clot, channelId, channelName: `${clot}-rule`, payload: { x: 1 }, summary: "s", openedAt: 0, deadline: null, dedupe: channelId, outsider: false });
+  const ask = (clot: string, dedupe: string) => ({ kind: "rule", clot, payload: { x: 1 }, summary: "s", openedAt: 0, deadline: null, dedupe, outsider: false });
 
   it("keeps asks until they are closed, closes each exactly once, and never reuses an ID", () => {
     const store = new Store(":memory:");
     const first = store.createAsk(ask("graphite", "ch-1"));
     store.createAsk(ask("graphite", "ch-2"));
     store.createAsk(ask("other", "ch-3"));
-    expect(store.openAsks("graphite").map((a) => a.channelId)).toEqual(["ch-1", "ch-2"]);
-    expect(store.openAsks().map((a) => a.channelId)).toEqual(["ch-1", "ch-2", "ch-3"]);
-    expect(store.askByChannel("ch-1")).toMatchObject({ id: first, clot: "graphite", payload: { x: 1 }, state: "posting" });
-    expect(store.moveAsk(first, "open", "busy")).toBe(false);
-    expect(store.moveAsk(first, "posting", "open")).toBe(true);
+    expect(store.openAsks("graphite").map((a) => a.dedupe)).toEqual(["ch-1", "ch-2"]);
+    expect(store.openAsks().map((a) => a.dedupe)).toEqual(["ch-1", "ch-2", "ch-3"]);
+    expect(store.askById(first)).toMatchObject({ id: first, clot: "graphite", payload: { x: 1 }, state: "open" });
+    expect(store.moveAsk(first, "busy", "open")).toBe(false);
+    expect(store.moveAsk(first, "open", "busy")).toBe(true);
+    expect(store.moveAsk(first, "busy", "open")).toBe(true);
     expect(store.closeAsk(first, "graphite", null, { onlyOpen: true })).toBe(true);
     expect(store.closeAsk(first, "graphite", null)).toBe(false);
-    expect(store.askByChannel("ch-1")).toBeUndefined();
+    expect(store.askById(first)).toBeUndefined();
     const last = store.openAsks().at(-1)!.id;
     store.closeAsk(last, "other", null);
     expect(store.createAsk(ask("other", "ch-4"))).toBeGreaterThan(last);
@@ -304,10 +300,10 @@ describe("Store, stage 2b", () => {
 
   it("remembers which event an inbox row and a cut-off turn belong to", () => {
     const store = new Store(":memory:");
-    store.upsertClot("graphite", "cat");
-    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: null });
-    store.enqueue({ id: "event:d-1", clot: "graphite", channelId: "ch-1", text: "x", receivedAt: 0, kind: "event", eventId: "d-1" });
-    store.enqueue({ id: "m1", clot: "graphite", channelId: "ch-1", text: "hi", receivedAt: 1 });
+    store.upsertClot("graphite");
+    store.createSession({ id: "s1", clot: "graphite", seed: null });
+    store.enqueue({ id: "event:d-1", clot: "graphite", text: "x", receivedAt: 0, kind: "event", eventId: "d-1" });
+    store.enqueue({ id: "m1", clot: "graphite", text: "hi", receivedAt: 1 });
     expect(store.nextPending("graphite")).toMatchObject({ id: "event:d-1", eventId: "d-1" });
     store.setInboxStatus("event:d-1", "done");
     expect(store.nextPending("graphite")).toMatchObject({ id: "m1", eventId: null });
@@ -393,9 +389,9 @@ describe("workers", () => {
   });
 
   it("gives back an inbox row of kind worker with its worker", () => {
-    store.createSession({ id: "s1", clot: "graphite", channelId: "ch-1", seed: null });
-    store.enqueue({ id: "worker:a:1", clot: "graphite", channelId: "ch-1", text: "report", receivedAt: 1, kind: "worker", workerId: "a" });
+    store.createSession({ id: "s1", clot: "graphite", seed: null });
+    store.enqueue({ id: "worker:a:1", clot: "graphite", text: "report", receivedAt: 1, kind: "worker", workerId: "a" });
     expect(store.nextPending("graphite")).toMatchObject({ kind: "worker", workerId: "a", text: "report" });
-    expect(store.enqueue({ id: "worker:a:1", clot: "graphite", channelId: "ch-1", text: "report", receivedAt: 1, kind: "worker", workerId: "a" })).toBe(false);
+    expect(store.enqueue({ id: "worker:a:1", clot: "graphite", text: "report", receivedAt: 1, kind: "worker", workerId: "a" })).toBe(false);
   });
 });

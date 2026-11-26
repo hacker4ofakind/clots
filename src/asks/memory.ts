@@ -1,6 +1,6 @@
+import { labelOf } from "../clot-name.js";
 import type { AskKind } from "../asks.js";
-import { memoryChannelName } from "../chat/names.js";
-import { matchYesNo } from "../events/reply.js";
+import { blockedLine } from "./common.js";
 
 export interface MemoryPayload {
   file: string;
@@ -10,20 +10,9 @@ export interface MemoryPayload {
   approved?: string;
 }
 
-export const MEMORY_REPLIES = [
-  "Reply with one of:",
-  "- `yes`, `sure`, `do that` or `yeah` to give it to every Clot",
-  "- `no`, `dont` or `not at all` to decline it; the home Clot's copy is put back",
-].join("\n");
-
-const MEMORY_RETRY = `I couldn't match that reply.\n\n${MEMORY_REPLIES}`;
-
-/** Shows a memory as a code block, in which nothing is a mention or formatting. A fence in the text is broken up. */
-export const block = (text: string) => `\`\`\`md\n${text.replace(/```/g, "`​``")}\n\`\`\``;
-
 /**
  * A global memory the home Clot wrote in a turn an outsider's text started. Every Clot would
- * trust it from then on, so it is put to the user first: a yes applies it as any other change,
+ * trust it from then on, so it is put to the user first: allowing it applies it as any other change,
  * a no puts the home Clot's copy back. Anything else repeats the question.
  */
 /** The reason given when the home Clot changed the file again: a new question about the new text follows, so the copy stays. */
@@ -38,26 +27,34 @@ export function memoryKind(d: {
 }): AskKind<MemoryPayload> {
   return {
     kind: "memory",
-    channelName: memoryChannelName,
-    render: (_clot, p) => {
-      const what =
-        p.approved === undefined
-          ? `wrote a new global memory, \`${p.file}\`, in a turn an outsider's text started:\n\n${block(p.text)}`
-          : `changed the global memory \`${p.file}\`, in a turn an outsider's text started. As it is now:\n\n${block(p.approved)}\n\nAs it would be:\n\n${block(p.text)}`;
-      return `${what}\n\nIf you say yes, every Clot gets it.\n\n${MEMORY_REPLIES}`;
-    },
+    answers: ["allow", "block"],
+    view: (clot, p) => ({
+      heading: `Allow ${labelOf(clot)} to give every Clot a memory?`,
+      shortHeading: "Allow a global memory?",
+      rows: [{ label: "File", value: p.file }, { label: "Source", value: "A turn an outsider's text started" }],
+      body: p.text,
+      ...(p.approved === undefined ? {} : { previous: p.approved }),
+      labels: { allow: "Allow", block: "Decline" },
+      warning: "Every Clot would trust it from then on.",
+    }),
     texts: {
       filed: "Put to the user.",
       already: "Already with the user.",
       full: (n) => `Not asked: ${n} global memories already wait for the user.`,
       notAsked: () => "The user could not be asked just now.",
     },
-    async onReply(ask, text, io) {
-      const answer = matchYesNo(text);
-      if (answer === undefined) return io.repeat(MEMORY_RETRY);
+    async onAnswer(ask, answer, io) {
+      if (answer.action !== "allow" && answer.action !== "block") return;
       if (!io.setBusy()) return;
-      const { note, line } = await d.resolve(ask.payload, answer);
-      await io.close(note, line);
+      const { note, line } = await d.resolve(ask.payload, answer.action === "allow" ? "yes" : "no");
+      await io.close(answer.action === "allow" ? "approved" : "declined", note, line);
+    },
+
+    // Silence never approves: an unanswered memory is answered no, so the home Clot's copy is put back.
+    async onDeadline(ask, io) {
+      if (!io.setBusy()) return;
+      const { note, line } = await d.resolve(ask.payload, "no");
+      await io.close("timed_out", note, `${blockedLine(ask)} ${line}`);
     },
 
     // An outsider's text never goes in force without a yes: a question that ends any other way puts
@@ -65,11 +62,12 @@ export function memoryKind(d: {
     async interrupted(ask, io) {
       // A yes carried out before the stop stands, and is said so.
       if (d.inForce(ask.payload)) {
-        await io.close(`The user approved the global memory ${ask.payload.file}. It is now in every Clot's memory.`, `Approved. Global memory \`${ask.payload.file}\` is in force for every Clot.`);
+        await io.close("approved", `The user approved the global memory ${ask.payload.file}. It is now in every Clot's memory.`, `Approved. Global memory \`${ask.payload.file}\` is in force for every Clot.`);
         return;
       }
       d.restore(ask.payload);
       await io.close(
+        "failed",
         `The daemon stopped while carrying out the user's answer about the global memory ${ask.payload.file}. It is not in force, and your copy was put back. Write it again only if the user asks.`,
         `The daemon stopped while carrying out your answer, so global memory \`${ask.payload.file}\` is not in force and the home Clot's copy was put back.`,
       );

@@ -1,0 +1,19 @@
+[Unit]
+Description=Clots web app
+After=clots.service network-online.target
+Wants=clots.service network-online.target
+
+[Service]
+Type=simple
+User=clots
+WorkingDirectory=/home/clots/clots/web
+# Its own small environment: the shared secret and where the daemon's API is, never the daemon's whole .env.
+# deploy/update.sh writes it from .env.
+EnvironmentFile=/home/clots/clots/data/web.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

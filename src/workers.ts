@@ -4,11 +4,10 @@ import { describeGate, type GateState } from "./gates.js";
 import { modelLabel, WORKER_MODELS } from "./models.js";
 import type { BookArgs } from "./spend.js";
 import type { Store, WorkerRow } from "./store.js";
-import type { Effort, TurnActivity, WorkerModel } from "./types.js";
+import type { Effort, WorkerModel } from "./types.js";
 import { FROM_MAIN, prLink, ReportBuffer, workerBranch, workerPrompt } from "./worker-turn.js";
 
 const MINUTE = 60_000;
-const PROGRESS_MS = 20 * MINUTE;
 const TIME_LIMIT_MS = 90 * MINUTE;
 const RETRY_MS = [1 * MINUTE, 5 * MINUTE, 15 * MINUTE];
 const RESTART_PACE_MS = 30_000;
@@ -49,11 +48,10 @@ export interface WorkersDeps {
   after(ms: number, fn: () => void): () => void;
   /** Starts the Clot's drain, so a row stored for its main session runs. */
   kick(clot: string): void;
-  /** Pauses the Clot until the usage limit resets, posting the notice in its channel. */
+  /** Pauses the Clot until the usage limit resets, posting the notice in its chat. */
   pause(clot: string, resetsAt: number): Promise<void>;
-  /** Posts in the Clot's live channel. Never throws. */
-  say(clot: string, text: string): Promise<void>;
-  postActivity(clot: string, activity: TurnActivity): Promise<void>;
+  /** Puts the workers a turn started in the Clot's chat as one card, once per turn. The card follows their state by itself. */
+  announce(clot: string, turnId: string): Promise<void>;
   /** What the scarce and lead-in gates say now. Absent: no gate. */
   gate?: () => GateState;
   timeZone?: string;
@@ -92,8 +90,19 @@ export class Workers {
 
   constructor(private d: WorkersDeps) {}
 
+  /** The zone the gate's wording uses, changed in the configuration. */
+  setTimeZone(timeZone: string): void {
+    this.d.timeZone = timeZone;
+  }
+
+  /** Changes how many worker turns run at once, from the next one that starts. */
+  setLimit(limit: number): void {
+    this.d.limit = limit;
+    this.wake();
+  }
+
   /** The main session's start_session. Returns the text the tool gives back. */
-  async start(clot: string, a: { title: string; brief: string; model: WorkerModel; effort: Effort; urgent: boolean; gateOk: boolean; outsider?: boolean }): Promise<string> {
+  async start(clot: string, a: { title: string; brief: string; model: WorkerModel; effort: Effort; urgent: boolean; gateOk: boolean; outsider?: boolean; turnId?: string }): Promise<string> {
     const { store } = this.d;
     const title = a.title.trim();
     if (title.length < 3 || title.length > 80) return "Refused: the title must be 3 to 80 characters.";
@@ -105,7 +114,9 @@ export class Workers {
     const id = this.d.newId();
     const home = this.d.repoOf(clot) === null;
     const branch = workerBranch(title, this.d.random);
-    store.createWorker({ id, clot, title, brief: a.brief, model: a.model, effort: a.effort, branch, base: null, worktree: home ? `/workspace/workers/${id}` : `/workspace/worktrees/${id}`, urgent: a.urgent, gateOk: a.gateOk, outsider: a.outsider === true });
+    store.createWorker({ id, clot, title, brief: a.brief, model: a.model, effort: a.effort, branch, base: null, worktree: home ? `/workspace/workers/${id}` : `/workspace/worktrees/${id}`, urgent: a.urgent, gateOk: a.gateOk, outsider: a.outsider === true, turnId: a.turnId ?? null });
+    // The card goes up with the first worker of a turn, before any of them can say anything.
+    if (a.turnId !== undefined) await this.d.announce(clot, a.turnId).catch(() => undefined);
     store.queueWorker(id);
     const label = modelLabel(a.model, a.effort);
     const short = shortId(id);
@@ -113,7 +124,6 @@ export class Workers {
     // Under a gate a worker the daemon did not mark as allowed waits in the queue until the gate lifts.
     if (this.heldByGate(store.getWorker(id)!)) {
       const why = describeGate(this.gate(), this.d.timeZone ?? "UTC", this.d.now());
-      await this.d.say(clot, `Queued: ${title} (${label}). Usage is tight (${why}); it starts when that lifts.`);
       return `Queued worker ${short} on branch ${branch}: usage is tight (${why}). It starts when that lifts.`;
     }
     if (this.canStartNow()) {
@@ -121,7 +131,6 @@ export class Workers {
       if (failure !== undefined) return `Not started: ${failure}.`;
       return `Started worker ${short} on branch ${branch}. Its report reaches you as a turn of its own.`;
     }
-    await this.d.say(clot, `Queued: ${title} (${label}). ${this.live.size} workers are already running; it starts when one finishes.`);
     return `Queued worker ${short} on branch ${branch}: ${this.live.size} workers are running. It starts when a place is free.`;
   }
 
@@ -150,7 +159,6 @@ export class Workers {
     this.d.store.setWorker(w.id, { status: "stopped" });
     await this.endLive(w.id);
     await this.d.container.removeWorktree(w.clot, w.worktree).catch((error) => console.error(`[${w.clot}] removing worker ${w.id}'s worktree failed:`, error));
-    await this.d.say(w.clot, `Stopped: ${w.title}`);
     this.dispatch();
     return `Stopped worker ${shortId(w.id)}. Its branch${w.prUrl ? " and pull request stay" : " stays"}.`;
   }
@@ -341,7 +349,6 @@ export class Workers {
         store.setWorker(w.id, { base });
         if (await cancelled(true)) return undefined;
         worker = store.getWorker(w.id)!;
-        await this.d.say(w.clot, `Started: ${w.title} (${modelLabel(w.model, w.effort)})`);
       } else if (await this.closedOnGithub(w)) {
         return "its pull request was merged or closed";
       }
@@ -350,7 +357,6 @@ export class Workers {
       if (await cancelled(false)) return undefined;
       this.live.delete(w.id);
       store.setWorker(w.id, { status: "failed", failure: reason });
-      await this.d.say(w.clot, `Worker failed: ${w.title}`);
       this.dispatch();
       return reason;
     }
@@ -383,11 +389,6 @@ export class Workers {
       },
     });
     slot.cancel.push(
-      this.d.every(PROGRESS_MS, () => {
-        if (this.live.get(w.id) !== slot) return;
-        const step = slot.lastStep ?? slot.buffer.lastLine();
-        void this.d.say(w.clot, `Still on it: ${w.title}. Latest: ${step || "starting"}`);
-      }),
       this.d.after(TIME_LIMIT_MS, () => {
         slot.timedOut = true;
         slot.handle?.stop();
@@ -437,15 +438,13 @@ export class Workers {
           return;
         }
         this.toMainAndSet(w, rowId, `[Worker ${shortId(id)}, ${name}, failed: its session could not be started.]`, { status: "failed", failure: "its session could not be started", retries });
-        await this.d.say(w.clot, `Worker failed: ${w.title}`);
-        return;
+          return;
       }
 
       if (slot.timedOut || !result.ok) {
         const reason = slot.timedOut ? "ran past 90 minutes" : "its session ended with an error";
         this.toMainAndSet(w, rowId, `[Worker ${shortId(id)}, ${name}, failed: ${reason}.]`, { status: "idle", started, retries: 0, idleSince: this.d.now() });
-        await this.d.say(w.clot, `Worker failed: ${w.title}`);
-        return;
+          return;
       }
 
       const report = slot.buffer.report();
@@ -461,8 +460,6 @@ export class Workers {
         return;
       }
       this.toMainAndSet(w, rowId, `[Report from worker ${shortId(id)}, ${name}. Written by your worker, not by the user.]\n${report}`, change);
-      await this.d.say(w.clot, `Finished: ${w.title}`);
-      if (result.activity && result.activity.files.length + result.activity.commands.length > 0) await this.d.postActivity(w.clot, result.activity).catch(() => undefined);
     } finally {
       const now = store.getWorker(id)!;
       if (now.status === "idle" && store.hasWorkerMessages(id) && now.retries === 0) store.queueWorker(id);
@@ -476,7 +473,7 @@ export class Workers {
     const session = store.activeSession(w.clot);
     store.inTransaction(() => {
       store.setWorker(w.id, change);
-      if (session) store.enqueue({ id: rowId, clot: w.clot, channelId: session.channelId, text, receivedAt: this.d.now(), kind: "worker", workerId: w.id, outsider: store.getWorker(w.id)!.outsider });
+      if (session) store.enqueue({ id: rowId, clot: w.clot, text, receivedAt: this.d.now(), kind: "worker", workerId: w.id, outsider: store.getWorker(w.id)!.outsider });
     });
     this.d.kick(w.clot);
   }

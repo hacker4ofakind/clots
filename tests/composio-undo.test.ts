@@ -58,7 +58,7 @@ beforeEach(() => {
 const run = (account: string, slug: string, args: Record<string, unknown>) => actions.run(ctx, { account, tool: slug, args });
 const executions = () => api.of("execute").map((c) => c.replace(/^execute:\S+ /, ""));
 
-describe("&composio undo", () => {
+describe("/composio undo", () => {
   it("archives a Linear issue the Clot created, using the ID from the result", async () => {
     await run("linear:proton", LINEAR.createIssue, { team_id: "t", title: "x" });
     expect(await undo.undo("graphite")).toBe("Undone (linear:proton): archived the Linear issue it created.");

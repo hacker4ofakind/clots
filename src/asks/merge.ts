@@ -1,6 +1,6 @@
-import type { AskKind, AskRow, Asks } from "../asks.js";
-import { mergeChannelName } from "../chat/names.js";
-import { matchYesNo } from "../events/reply.js";
+import { labelOf } from "../clot-name.js";
+import type { AskKind, AskResult, AskRow, Asks } from "../asks.js";
+import { blockedLine, minutes, waitedMinutes } from "./common.js";
 import { checkSummary, getDefaultBranch, getPullRequest, isNumber, isRepo, isSha, mergePullRequest, type CheckCounts } from "../github-api.js";
 
 export interface MergePayload {
@@ -21,7 +21,7 @@ export interface MergePayload {
 }
 
 export const MERGE_FILED =
-  "Put to the user in a separate channel. Do not wait for the answer, and do not say it is merged. A yes merges it; you will be told the outcome, and any other reply comes to you as a message from the user.";
+  "Put to the user in your chat. Do not wait for the answer, and do not say it is merged. Allowing it merges it; you will be told the outcome, and any text the user types in the chat comes to you as a message from them.";
 
 export interface MergeKindDeps {
   token: string;
@@ -43,23 +43,27 @@ function checksLine(checks: CheckCounts | null): string {
 export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
   /** Whether GitHub says it is merged; undefined when it cannot be read, so the outcome stays unknown. */
   const readMerged = async (p: MergePayload): Promise<boolean | undefined> => (await getPullRequest(d.token, p.repo, p.number, d.fetchFn).catch(() => undefined))?.merged;
-  const unknown = (p: MergePayload): [string, string] => [`Whether ${name(p)} was merged is not known: GitHub did not answer clearly, and the pull request could not be read afterwards. Check it on GitHub before asking again.`, `Whether ${name(p)} was merged is not known; check it on GitHub.`];
-  const merged = (p: MergePayload): [string, string] => [`The user approved merging ${name(p)}, and it was squash-merged. Its worker closes when GitHub reports the pull request closed.`, `Merged ${name(p)}.`];
-  const unclear = (p: MergePayload): [string, string] => [`GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`, `GitHub did not answer clearly about merging ${name(p)}; it is not merged.`];
-  const stopped = (p: MergePayload): [string, string] => [`The daemon stopped while merging ${name(p)}; it is not merged. Ask again if it should be.`, `The daemon stopped while merging ${name(p)}; it is not merged.`];
+  const unknown = (p: MergePayload): [AskResult, string, string] => ["failed", `Whether ${name(p)} was merged is not known: GitHub did not answer clearly, and the pull request could not be read afterwards. Check it on GitHub before asking again.`, `Whether ${name(p)} was merged is not known; check it on GitHub.`];
+  const merged = (p: MergePayload): [AskResult, string, string] => ["approved", `The user approved merging ${name(p)}, and it was squash-merged. Its worker closes when GitHub reports the pull request closed.`, `Merged ${name(p)}.`];
+  const unclear = (p: MergePayload): [AskResult, string, string] => ["failed", `GitHub did not answer clearly; the pull request is not merged. Ask again if it should be.`, `GitHub did not answer clearly about merging ${name(p)}; it is not merged.`];
+  const stopped = (p: MergePayload): [AskResult, string, string] => ["failed", `The daemon stopped while merging ${name(p)}; it is not merged. Ask again if it should be.`, `The daemon stopped while merging ${name(p)}; it is not merged.`];
 
   return {
     kind: "merge",
-    channelName: mergeChannelName,
-    lead: (p) => (p.outsider ? "From an outsider's report." : undefined),
-    render: (_clot, p) =>
-      [
-        `asks to merge ${name(p)}, "${p.title}" (${p.url}), at commit ${p.headSha.slice(0, 7)}.`,
-        `Into ${p.base}: ${p.files} file${p.files === 1 ? "" : "s"} changed, +${p.additions} −${p.deletions}.`,
-        checksLine(p.checks),
-        "",
-        "yes merges it (squash); no leaves it open.",
-      ].join("\n"),
+    answers: ["allow", "block"],
+    view: (clot, p) => ({
+      heading: `Allow ${labelOf(clot)} to merge a pull request?`,
+      shortHeading: "Allow merging a pull request?",
+      rows: [
+        { label: "Pull request", value: `${name(p)}, "${p.title}"`, href: p.url },
+        { label: "Into", value: p.base },
+        { label: "Changes", value: `${p.files} file${p.files === 1 ? "" : "s"}, +${p.additions} −${p.deletions}` },
+        { label: "Commit", value: p.headSha.slice(0, 7) },
+        { label: "Checks", value: checksLine(p.checks).replace(/^Checks: /, "") },
+      ],
+      labels: { allow: "Merge", block: "Don't merge" },
+      ...(p.outsider ? { warning: "From an outsider's report." } : {}),
+    }),
     texts: {
       filed: MERGE_FILED,
       already: "Merging this pull request is already with the user, waiting for their answer.",
@@ -67,18 +71,13 @@ export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
       notAsked: (reason) => `The user could not be asked just now${reason ? ` (${reason})` : ""}. Suggest the merge in your reply instead.`,
     },
 
-    async onReply(ask, text, io) {
+    async onAnswer(ask, answer, io) {
       const p = ask.payload;
-      const answer = matchYesNo(text);
-      if (answer === "no") {
-        await io.close(`The user declined merging ${name(p)}; it stays open. Do not ask again unless the user asks.`, `Not merged: ${name(p)} stays open.`);
+      if (answer.action === "block") {
+        await io.close("declined", `The user declined merging ${name(p)}; it stays open. Do not ask again unless the user asks.`, `Not merged: ${name(p)} stays open.`);
         return;
       }
-      if (answer === undefined) {
-        const message = `[The user's reply to your ask to merge ${name(p)}, "${p.title}". It was not merged, and the ask is closed:]\n${text}`;
-        await io.close(null, `Your reply about merging ${name(p)} was passed on; it is not merged.`, { inbox: { id: `merge-feedback:${ask.id}`, text: message, kind: "message", outsider: p.outsider } });
-        return;
-      }
+      if (answer.action !== "allow") return;
       if (!io.setBusy()) return;
       const done = await mergePullRequest(d.token, p.repo, p.number, p.headSha, d.fetchFn);
       if (done.ok) {
@@ -88,8 +87,20 @@ export function mergeKind(d: MergeKindDeps): AskKind<MergePayload> {
         const state = await readMerged(p);
         await io.close(...(state === undefined ? unknown(p) : state ? merged(p) : unclear(p)));
       } else {
-        await io.close(`GitHub refused the merge: ${done.message.replace(/\.$/, "")}.`, `GitHub refused to merge ${name(p)}: ${done.message}`);
+        await io.close("failed", `GitHub refused the merge: ${done.message.replace(/\.$/, "")}.`, `GitHub refused to merge ${name(p)}: ${done.message}`);
       }
+    },
+
+    async onFeedback(ask, text, io) {
+      const p = ask.payload;
+      const message = `[The user's reply to your ask to merge ${name(p)}, "${p.title}". It was not merged, and the ask is closed:]
+${text}`;
+      await io.close("feedback", null, `Your reply about merging ${name(p)} was passed on; it is not merged.`, { inbox: { id: `merge-feedback:${ask.id}`, text: message, kind: "message", outsider: p.outsider } }, "You answered in chat.");
+    },
+
+    async onDeadline(ask, io) {
+      const p = ask.payload;
+      await io.close("timed_out", `The user did not answer your ask to merge ${name(p)} within ${minutes(waitedMinutes(ask))}, so it was not merged. Do not ask again unless the user asks.`, blockedLine(ask));
     },
 
     async interrupted(ask: AskRow<MergePayload>, io) {
