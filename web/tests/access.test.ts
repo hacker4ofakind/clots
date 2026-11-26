@@ -20,6 +20,13 @@ describe("checkAccess", () => {
     expect(checkAccess({ headers: headers({ ...ok, host: "evil.example.com" }), owner: "me@example.com", serveHost: "box.tail1234.ts.net" })).toMatchObject({ ok: false, status: 403 });
     expect(checkAccess({ headers: headers({ ...ok, host: "127.0.0.1:3000" }), owner: "me@example.com", serveHost: "box.tail1234.ts.net" })).toMatchObject({ ok: false, status: 403 });
   });
+  it("takes the development login only when the request carries none, and still checks the host", () => {
+    const base = { owner: "me@example.com", serveHost: "localhost", devLogin: "me@example.com" };
+    expect(checkAccess({ headers: headers({ host: "localhost:3000" }), ...base }).ok).toBe(true);
+    expect(checkAccess({ headers: headers({ host: "localhost:3000", "tailscale-user-login": "x@example.com" }), ...base })).toMatchObject({ ok: false, status: 403 });
+    expect(checkAccess({ headers: headers({ host: "evil.example.com" }), ...base })).toMatchObject({ ok: false, status: 403 });
+    expect(checkAccess({ headers: headers({ host: "localhost:3000" }), owner: "me@example.com", serveHost: "localhost" })).toMatchObject({ ok: false, status: 403 });
+  });
   it("fails closed when ui.owner is not set", () => {
     expect(checkAccess({ headers: headers(ok), owner: undefined, serveHost: "box.tail1234.ts.net" })).toMatchObject({ ok: false, status: 503 });
     expect(checkAccess({ headers: headers(ok), owner: "", serveHost: "box.tail1234.ts.net" })).toMatchObject({ ok: false, status: 503 });
@@ -29,7 +36,7 @@ describe("checkAccess", () => {
 describe("proxy", () => {
   beforeEach(() => vi.resetModules());
   const load = async (identity: { owner?: string; serveHost?: string }) => {
-    vi.doMock("@/lib/identity", () => ({ getIdentity: async () => identity, daemonUrl: () => "http://x" }));
+    vi.doMock("@/lib/identity", () => ({ getIdentity: async () => identity, devLogin: () => undefined, daemonUrl: () => "http://x" }));
     return (await import("../proxy")).proxy;
   };
   const request = (h: Record<string, string>) => new NextRequest("http://127.0.0.1:3000/waiting", { headers: h });

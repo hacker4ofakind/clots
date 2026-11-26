@@ -8,6 +8,8 @@ export interface AccessInput {
   owner: string | undefined;
   /** The host the app is served on (the machine's tailnet name), or undefined when unknown. */
   serveHost: string | undefined;
+  /** Development only: the login to take when the request carries none (a browser cannot send `Tailscale-User-Login`). */
+  devLogin?: string | undefined;
 }
 
 /** The host without its port, lower case. */
@@ -24,7 +26,7 @@ export function bareHost(host: string | null): string {
 export function checkAccess(input: AccessInput): Access {
   const { owner, serveHost } = input;
   if (owner === undefined || owner.trim() === "") return { ok: false, status: 503, reason: "ui.owner is not set in clots.config.json" };
-  const login = input.headers.get("tailscale-user-login");
+  const login = input.headers.get("tailscale-user-login") ?? input.devLogin ?? null;
   if (login === null || login.trim().toLowerCase() !== owner.trim().toLowerCase()) return { ok: false, status: 403, reason: "not the owner" };
   if (serveHost === undefined || bareHost(input.headers.get("host")) !== serveHost.toLowerCase()) return { ok: false, status: 403, reason: "wrong host" };
   return { ok: true, login };

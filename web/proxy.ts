@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { checkAccess } from "@/lib/access";
-import { getIdentity } from "@/lib/identity";
+import { devLogin, getIdentity } from "@/lib/identity";
 import { accessDeniedHtml, notSetUpHtml } from "@/lib/status-document";
 
 /** The site-wide content security policy. Scripts need the per-request nonce. */
@@ -23,7 +23,7 @@ export function contentSecurityPolicy(nonce: string, dev: boolean): string {
 
 export async function proxy(request: NextRequest): Promise<NextResponse> {
   const identity = await getIdentity();
-  const access = checkAccess({ headers: request.headers, owner: identity.owner, serveHost: identity.serveHost });
+  const access = checkAccess({ headers: request.headers, owner: identity.owner, serveHost: identity.serveHost, devLogin: devLogin() });
   if (!access.ok) {
     const html = access.status === 503 ? notSetUpHtml() : accessDeniedHtml();
     return new NextResponse(html, { status: access.status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } });

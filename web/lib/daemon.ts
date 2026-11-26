@@ -1,7 +1,7 @@
 import "server-only";
 import { headers } from "next/headers";
 import { checkAccess } from "@/lib/access";
-import { daemonUrl, getIdentity } from "@/lib/identity";
+import { daemonUrl, devLogin, getIdentity } from "@/lib/identity";
 
 /** Thrown when the daemon answers with an error status. */
 export class DaemonError extends Error {
@@ -19,7 +19,7 @@ export class DaemonError extends Error {
  */
 export async function assertOwner(h?: Headers): Promise<void> {
   const identity = await getIdentity();
-  const access = checkAccess({ headers: h ?? (await headers()), owner: identity.owner, serveHost: identity.serveHost });
+  const access = checkAccess({ headers: h ?? (await headers()), owner: identity.owner, serveHost: identity.serveHost, devLogin: devLogin() });
   if (!access.ok) throw new DaemonError(access.status, { error: access.reason });
 }
 

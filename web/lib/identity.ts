@@ -11,6 +11,9 @@ let cached: { at: number; value: Identity } | undefined;
 /** Where the daemon's UI API listens. */
 export const daemonUrl = (): string => process.env.CLOTS_DAEMON_URL ?? "http://127.0.0.1:8788";
 
+/** Development only: the login a request without `Tailscale-User-Login` is taken to come from (`CLOTS_UI_DEV_OWNER`). Never set in production. */
+export const devLogin = (): string | undefined => (process.env.NODE_ENV !== "production" ? process.env.CLOTS_UI_DEV_OWNER : undefined);
+
 /**
  * The owner and serve host, read from the daemon and kept for 60 seconds. A test-only override from the
  * environment is ignored in production. When the daemon cannot be reached the owner is unknown, which
