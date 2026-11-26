@@ -93,7 +93,10 @@ test("an SVG, a PNG, a JPEG, a WebP and an ICO each become the Clot's icon, what
 test("a file that is not an image, and one that is too big, say so in plain words and leave the icon alone", async ({ page }) => {
   const dialog = await open(page);
   await dialog.getByLabel("Icon file").setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("just some words in a file") });
-  await expect(dialog.getByRole("alert")).toHaveText("That file couldn't be read as an image. Try another one.");
+  await expect(dialog.getByRole("alert")).toHaveText("That file isn't an image Clots can use. Use an SVG, PNG, JPG, WebP or ICO.");
+  // A real GIF (a format the picker does not take) gets the same words, so the accepted formats are always in the message.
+  await dialog.getByLabel("Icon file").setInputFiles({ name: "anim.gif", mimeType: "image/gif", buffer: Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64") });
+  await expect(dialog.getByRole("alert")).toHaveText("That file isn't an image Clots can use. Use an SVG, PNG, JPG, WebP or ICO.");
   await dialog.getByLabel("Icon file").setInputFiles({ name: "big.png", mimeType: "image/png", buffer: Buffer.alloc(3 * 1024 * 1024, 1) });
   await expect(dialog.getByRole("alert")).toHaveText("That image is too large. An icon can be up to 2 MB.");
   await expect(dialog.getByRole("radio", { name: "sliders" })).toHaveAttribute("data-state", "on");

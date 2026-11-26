@@ -4,8 +4,8 @@ import { readableError } from "@/lib/readable-error";
 /** The daemon refuses larger pictures; saying so here saves the upload. */
 const MAX_BYTES = 2 * 1024 * 1024;
 
-/** What a file that is not a picture at all gets, from the file dialog (which already offers only pictures). */
-export const UNREADABLE = "That file couldn't be read as an image. Try another one.";
+/** What a file that is not a picture at all gets, from the file dialog (which already offers only pictures); it says what is accepted, since it takes the footer hint's place. */
+export const UNREADABLE = "That file isn't an image Clots can use. Use an SVG, PNG, JPG, WebP or ICO.";
 /** What a pasted thing that is not a picture gets: the only place the accepted types need saying. */
 export const NOT_A_PICTURE = "Paste an image, or upload an SVG, PNG, JPG, WebP or ICO.";
 const TOO_LARGE = "That image is too large. An icon can be up to 2 MB.";

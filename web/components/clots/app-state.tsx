@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTheme } from "next-themes";
 import { toast } from "sonner";
-import type { AnswerResponse, AskAnswerBody, AskSnapshot, ClotSummary, UiPrefs } from "@clots/ui-api-schemas";
+import { uiPrefsSchema, type AnswerResponse, type AskAnswerBody, type AskSnapshot, type ClotSummary, type UiPrefs } from "@clots/ui-api-schemas";
 import { api, ApiFailure } from "@/lib/api-client";
 import { useStream, type StreamEvent, type StreamStatus } from "@/lib/stream";
 
@@ -36,10 +36,14 @@ export function useAppState(): AppStateValue {
   return value;
 }
 
-export function AppStateProvider({ initial, children }: { initial: { clots: ClotSummary[]; asks: AskSnapshot[]; prefs: UiPrefs }; children: ReactNode }) {
+export function AppStateProvider({ initial, children }: { initial: { clots: ClotSummary[]; asks: AskSnapshot[]; prefs: UiPrefs | undefined }; children: ReactNode }) {
   const [clots, setClots] = useState(initial.clots);
   const [asks, setAsks] = useState(initial.asks);
-  const [prefs, setPrefs] = useState(initial.prefs);
+  // Until the daemon has said what the preferences are, the defaults stand in for them on screen but are never applied: a daemon that was
+  // down at load must not turn the saved theme into "system".
+  const [prefs, setPrefsValue] = useState(initial.prefs ?? uiPrefsSchema.parse({}));
+  const [prefsKnown, setPrefsKnown] = useState(initial.prefs !== undefined);
+  const setPrefs = useCallback((next: UiPrefs) => (setPrefsValue(next), setPrefsKnown(true)), []);
   const listeners = useRef(new Set<(event: StreamEvent) => void>());
   const resyncs = useRef(new Set<() => void>());
   const active = useRef<string | undefined>(undefined);
@@ -49,9 +53,10 @@ export function AppStateProvider({ initial, children }: { initial: { clots: Clot
 
   // The theme and the content width are preferences kept by the daemon, so they follow the user across devices.
   useEffect(() => {
+    if (!prefsKnown) return;
     setTheme(prefs.theme);
     document.documentElement.dataset.width = prefs.contentWidth;
-  }, [prefs.theme, prefs.contentWidth, setTheme]);
+  }, [prefsKnown, prefs.theme, prefs.contentWidth, setTheme]);
 
   const refresh = useCallback(async () => {
     const seen = meanwhile.current;

@@ -3,9 +3,10 @@
 import { Suspense, lazy, useMemo, type ComponentType } from "react";
 import Image from "next/image";
 import type { IconProps } from "@phosphor-icons/react";
-import { CubeIcon, HouseIcon } from "@phosphor-icons/react";
+import { HouseIcon, SlidersIcon } from "@phosphor-icons/react";
 import type { ClotIcon as ClotIconValue } from "@clots/ui-api-schemas";
 import { cn } from "@/lib/utils";
+import { DEFAULT_ICON } from "./new-clot-state";
 
 /** The colours the picker offers, "red" being the brand's Rose. A Clot saved with "green" before keeps it. */
 export const ICON_COLORS = ["ink", "red", "orange", "amber", "teal", "blue", "violet", "pink"] as const;
@@ -24,7 +25,7 @@ function phosphorByName(name: string): ComponentType<IconProps> | undefined {
   if (!/^[A-Z][A-Za-z0-9]{0,40}$/.test(name)) return undefined;
   let icon = loaded.get(name);
   if (!icon) {
-    icon = lazy(() => import(`@phosphor-icons/react/dist/csr/${name}`).then((m: Record<string, ComponentType<IconProps>>) => ({ default: m[name] ?? HouseIcon }))) as unknown as ComponentType<IconProps>;
+    icon = lazy(() => import(`@phosphor-icons/react/dist/csr/${name}`).then((m: Record<string, ComponentType<IconProps>>) => ({ default: m[name] ?? SlidersIcon })).catch(() => ({ default: SlidersIcon }))) as unknown as ComponentType<IconProps>;
     loaded.set(name, icon);
   }
   return icon;
@@ -50,9 +51,10 @@ export function ClotIcon({ icon, home, active = false, size = 24, tile, label }:
   if (icon && "upload" in icon) {
     return <Image src={`/api/d/clots/icons/${encodeURIComponent(icon.upload)}${active ? "?variant=active" : ""}`} alt={label ?? ""} width={tile ?? size + 8} height={tile ?? size + 8} unoptimized className="rounded-tile-sm object-contain" style={{ width: tile ?? size + 8, height: tile ?? size + 8, maxWidth: "none" }} />;
   }
-  const color = icon && "phosphor" in icon ? colorVar(icon.color) : "currentColor";
   const weight = active ? "bold" : "regular";
-  const fallback = home ? <HouseIcon size={size} weight={weight} color={color} aria-hidden /> : <CubeIcon size={size} weight={weight} color={color} aria-hidden />;
+  // No icon at all (or a name that is not an icon): Home keeps its house, every other Clot the default, in the default's colour.
+  const fallback = home ? <HouseIcon size={size} weight={weight} color="currentColor" aria-hidden /> : <SlidersIcon size={size} weight={weight} color={colorVar(DEFAULT_ICON.color)} aria-hidden />;
+  const color = icon && "phosphor" in icon ? colorVar(icon.color) : "currentColor";
   if (Named) {
     return (
       <Suspense fallback={<span style={{ width: size, height: size }} className="inline-block" aria-hidden />}>

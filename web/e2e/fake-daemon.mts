@@ -116,9 +116,11 @@ const githubFetch = (async (input: string | URL | Request) => {
   if (url.endsWith("/user")) return jsonResponse(200, { login: "clots-dot-dev" });
   return jsonResponse(404, {});
 }) as typeof fetch;
-const addClot = async (name: string, repoUrl: string) => {
+const addClot = async (name: string, repoUrl: string, icon?: unknown) => {
   if (!NAMES.some((n) => sameName(n, name))) NAMES.push(name);
-  if (!(config.clots as { name: string }[]).some((c) => c.name === name)) (config.clots as { name: string; repoUrl: string }[]).push({ name, repoUrl });
+  const known = (config.clots as { name: string; icon?: unknown }[]).find((c) => c.name === name);
+  if (known) (icon !== undefined && (known.icon = icon));
+  else (config.clots as { name: string; repoUrl: string; icon?: unknown }[]).push({ name, repoUrl, ...(icon === undefined ? {} : { icon }) });
 };
 const dropClot = (name: string) => {
   NAMES.splice(0, NAMES.length, ...NAMES.filter((n) => n !== name));
@@ -161,7 +163,8 @@ const creator = new ClotCreator({
   fetchFn: githubFetch,
   emit: (e) => void bus.emit("clot.build", e),
   start: async (def, step) => {
-    await addClot(def.name, def.repoUrl);
+    // The creator saved the Clot, icon included, before starting it; the list reads the fake's own copy.
+    await addClot(def.name, def.repoUrl, (configStore.current.clots.find((c) => c.name === def.name) as { icon?: unknown } | undefined)?.icon);
     try {
       await buildSteps(def, step);
     } catch (error) {
@@ -207,6 +210,10 @@ registerPrefsRoutes(api, { store, emit: (prefs) => void bus.emit("config.changed
 store.onWorkerChange((w) => w.turnId !== null && bus.emit("workers.updated", { clot: w.clot, turnId: w.turnId }));
 registerPushRoutes(api, { push: new Push({ store: store.push, now: () => Date.now(), send: async () => ({ status: 201 }) }), subscriptions: store.push, publicKey: () => "BPlaceholderKeyForTests", now: () => Date.now() });
 let server = await api.listen(PORT);
+// Sockets of the daemon, so a test can cut them the way a killed process does (a reset, not a goodbye).
+const live = new Set<import("node:net").Socket>();
+const track = (s: http.Server) => s.on("connection", (sock) => (live.add(sock), sock.on("close", () => live.delete(sock))));
+track(server);
 
 // The test's own controls.
 const control = http.createServer(async (req, res) => {
@@ -235,7 +242,12 @@ const control = http.createServer(async (req, res) => {
   else if (url === "/slow") slowMs = data.ms ?? 0;
   else if (url === "/sent") out = sent;
   else if (url === "/stop") await api.close();
-  else if (url === "/start") server = await api.listen(PORT);
+  else if (url === "/start") { if (!server.listening) (server = await api.listen(PORT), track(server)); }
+  // The daemon killed outright: every connection is reset and the listener is gone, with no chance to end a stream.
+  else if (url === "/kill") {
+    for (const sock of live) sock.resetAndDestroy();
+    await api.close();
+  }
   res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(out));
 });
 control.listen(PORT + 1, "127.0.0.1");

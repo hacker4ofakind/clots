@@ -92,7 +92,7 @@ describe("icons", () => {
 
   it("reads a file by its own bytes and refuses what is not an image, in plain words", async () => {
     await expect(processIcon(Buffer.from("MZ not an image at all"))).rejects.toThrow(IconError);
-    await expect(processIcon(Buffer.from("MZ not an image at all"))).rejects.toThrow(/couldn't be read as an image/);
+    await expect(processIcon(Buffer.from("MZ not an image at all"))).rejects.toThrow(/isn't an image Clots can use/);
     await expect(processIcon(Buffer.alloc(3 * 1024 * 1024, 1))).rejects.toThrow(/up to 2 MB/);
   });
 

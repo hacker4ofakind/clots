@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { clearAsks, expectNoSeriousViolations, openAsk } from "./helpers";
+import { clearAsks, control, expectNoSeriousViolations, openAsk } from "./helpers";
 
 // These run in the "phone" project: a 412 by 915 touch device.
 
@@ -19,6 +19,18 @@ test("the tab bar is on Clots and Waiting for you, and gone in a chat, which has
   await expect(page.getByRole("link", { name: "Clots" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Attach an image" })).toBeHidden();
   await expect(page.getByRole("button", { name: "Info" })).toBeHidden();
+});
+
+test("the Clots list gives every Clot an icon (the same default as the rail) and shows a reply's start as plain words", async ({ page, request }) => {
+  await control(request, "/say", { clot: "Truecast", text: "Fixed [#71](https://github.com/octo/truecast/pull/71) with **care**, see `npm test`" });
+  await page.goto("/clots");
+  const row = page.getByRole("link", { name: /Truecast/ });
+  await expect(row).toContainText("Fixed #71 with care, see npm test");
+  await expect(row).not.toContainText("](");
+  // No row has an empty tile: Truecast and Encryptify were made without an icon, Home keeps its house.
+  const rows = page.getByRole("region", { name: "Clots" }).locator("li");
+  await expect(rows.first()).toBeVisible();
+  for (const li of await rows.all()) await expect(li.locator("a > span").first().locator("svg, img")).toHaveCount(1);
 });
 
 test("a Waiting for you row shows only Block and Allow", async ({ page, request }) => {

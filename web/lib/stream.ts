@@ -14,14 +14,14 @@ export type StreamStatus = "connecting" | "up" | "down";
 
 const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 30_000;
-/** The app sends a ping every 10 seconds when nothing else is said; this long with nothing at all means the stream is dead, not quiet. */
-const SILENCE_MS = 30_000;
+/** The app sends a ping every 2 seconds when nothing else is said; this long with nothing at all means the stream is dead, not quiet. Short, because a proxy in front can swallow the end of a broken stream, and then the missing pings are the only sign. */
+const SILENCE_MS = 5000;
 
 /**
  * The daemon's event stream, through the app's own route. It reconnects on its own with a wait that grows from
  * 1 second to 30, asking for what it missed with the last event ID it saw. Each time it opens (the first time
  * too, since the page's data may be older than the stream), `onOpen` says to fetch the open screen again.
- * A `resync` event says the same. A stream that goes silent (the app's route pings every 10 seconds) is dropped and reopened the
+ * A `resync` event says the same. A stream that goes silent (the app's route pings every 2 seconds) is dropped and reopened the
  * same way as one that errors, so a connection that died without a word still shows the banner.
  */
 export function useStream(handlers: { onEvent: (event: StreamEvent) => void; onOpen: () => void }): StreamStatus {
@@ -53,9 +53,19 @@ export function useStream(handlers: { onEvent: (event: StreamEvent) => void; onO
       source?.close();
       const es = new EventSource(last === undefined ? "/api/stream" : `/api/stream?last=${encodeURIComponent(last)}`);
       source = es;
-      const heard = () => {
+      // The watchdog looks at the clock when it fires, so a timer that runs late (a background tab) cannot drop a stream that kept talking.
+      let lastHeard = Date.now();
+      const arm = (wait: number) => {
         clearTimeout(watchdog);
-        watchdog = setTimeout(() => lost(es), SILENCE_MS);
+        watchdog = setTimeout(() => {
+          const quiet = Date.now() - lastHeard;
+          if (quiet >= SILENCE_MS) lost(es);
+          else arm(SILENCE_MS - quiet);
+        }, wait);
+      };
+      const heard = () => {
+        lastHeard = Date.now();
+        arm(SILENCE_MS);
       };
       heard();
       es.addEventListener("ping", heard);

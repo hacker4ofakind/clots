@@ -10,7 +10,8 @@ export interface Build {
   log?: string;
 }
 
-export const DEFAULT_ICON: ClotIcon = { phosphor: "Sliders", color: "red" };
+/** What a Clot has when it was made without choosing an icon: the same everywhere (the rail, the phone's list, Settings, the picker). */
+export const DEFAULT_ICON = { phosphor: "Sliders", color: "red" } satisfies ClotIcon;
 
 /** The icon as one address parameter: "Sliders.ink", or "upload.<id>". */
 export function iconToParam(icon: ClotIcon): string {

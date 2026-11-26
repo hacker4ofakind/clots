@@ -10,7 +10,7 @@ const MAX_BYTES = 2 * 1024 * 1024;
 
 export class IconError extends Error {}
 
-export const UNREADABLE = "That file couldn't be read as an image. Try another one.";
+export const UNREADABLE = "That file isn't an image Clots can use. Use an SVG, PNG, JPG, WebP or ICO.";
 
 /** What an upload really is, from its first bytes (never from its name or the type the browser gave). */
 export function sniff(data: Buffer): "png" | "jpeg" | "webp" | "svg" | "ico" | undefined {

@@ -7,7 +7,7 @@ const failure = (status: number, error: string) => new ApiFailure(status, { erro
 describe("readableError", () => {
   it("passes on a sentence the daemon wrote for a person", () => {
     expect(readableError(failure(400, "There is a Clot named Home already."), "x")).toBe("There is a Clot named Home already.");
-    expect(readableError(failure(409, "That file couldn't be read as an image. Try another one."), "x")).toContain("couldn't be read");
+    expect(readableError(failure(409, "That file isn't an image Clots can use. Use an SVG, PNG, JPG, WebP or ICO."), "x")).toContain("isn't an image");
   });
 
   it("never shows codes, status lines, error names or stacks", () => {

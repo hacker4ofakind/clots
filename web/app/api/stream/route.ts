@@ -7,8 +7,12 @@ export const runtime = "nodejs";
 
 /** The daemon says something (a heartbeat at least) every 20 seconds; this long without a byte and its end of the stream is taken as gone. */
 const UPSTREAM_SILENCE_MS = 50_000;
-/** While the stream is quiet the browser is told every so often that the app itself is alive, so it can tell a dead stream from a quiet one. */
-const PING_EVERY_MS = 10_000;
+/**
+ * While the stream is quiet the browser is told every couple of seconds that the app itself is alive, so it can tell a dead stream from a quiet
+ * one. The ping is also what lets it notice a break fast when something between the browser and this route (a proxy) swallows the end of the
+ * stream: the pings stop, and the browser gives up on the silence (see SILENCE_MS in lib/stream.ts).
+ */
+const PING_EVERY_MS = 2_000;
 
 const encoder = new TextEncoder();
 const PING = encoder.encode("event: ping\ndata: {}\n\n");

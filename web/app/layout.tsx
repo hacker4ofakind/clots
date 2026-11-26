@@ -3,6 +3,7 @@ import { Rethink_Sans, Red_Hat_Mono } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
+import { uiPrefs } from "@/lib/ui-prefs";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -33,9 +34,13 @@ export const viewport: Viewport = {
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   const nonce = (await headers()).get("x-nonce") ?? undefined;
+  // The daemon's theme is the one source of truth. The theme script below reads the browser's copy first, so that copy is made to say the
+  // same before it runs: whatever an old visit left there, the first paint (and a page outside the app's shell) shows the chosen theme.
+  const theme = (await uiPrefs())?.theme;
   return (
     <html lang="en" suppressHydrationWarning className={cn("h-full antialiased", sans.variable, mono.variable)}>
       <body className="min-h-full">
+        {theme === undefined ? null : <script nonce={nonce} suppressHydrationWarning dangerouslySetInnerHTML={{ __html: `try{localStorage.setItem("theme",${JSON.stringify(theme)})}catch(e){}` }} />}
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange nonce={nonce}>
           <TooltipProvider>{children}</TooltipProvider>
           <Toaster position="bottom-right" />

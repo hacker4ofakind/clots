@@ -160,7 +160,7 @@ describe("ICO icons", () => {
       { size: 16, data: good },
     ]);
     expect((await sharp(await icoToPng(file)).metadata()).width).toBe(16);
-    await expect(processIcon(ico([{ size: 64, data: Buffer.from("junk junk junk junk junk junk junk junk junk junk junk junk") }]))).rejects.toThrow(/couldn't be read as an image/);
+    await expect(processIcon(ico([{ size: 64, data: Buffer.from("junk junk junk junk junk junk junk junk junk junk junk junk") }]))).rejects.toThrow(/isn't an image Clots can use/);
   });
 
   it("does not take a cursor or a file whose directory points past its end", async () => {
@@ -182,7 +182,7 @@ describe("other uploads, by their own bytes", () => {
   });
 
   it("says plainly what is wrong with a file that is not an image, a data URL that is not one, and one that is too big", async () => {
-    await expect(processIcon(Buffer.from("just some text"))).rejects.toThrow("That file couldn't be read as an image. Try another one.");
+    await expect(processIcon(Buffer.from("just some text"))).rejects.toThrow("That file isn't an image Clots can use. Use an SVG, PNG, JPG, WebP or ICO.");
     expect(() => bytesOfDataUrl("not a data url")).toThrow(IconError);
     expect(() => bytesOfDataUrl("data:image/svg+xml,%E0%A4%A")).toThrow(IconError);
     await expect(processIcon(Buffer.alloc(3 * 1024 * 1024))).rejects.toThrow("That image is too large. An icon can be up to 2 MB.");
@@ -217,6 +217,6 @@ describe("the upload route", () => {
   it("answers a file that is not an image with a plain sentence", async () => {
     const res = await post(`data:text/plain;base64,${Buffer.from("hello there, this is text").toString("base64")}`);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "That file couldn't be read as an image. Try another one." });
+    expect(await res.json()).toEqual({ error: "That file isn't an image Clots can use. Use an SVG, PNG, JPG, WebP or ICO." });
   });
 });

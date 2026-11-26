@@ -73,12 +73,12 @@ describe("useStream", () => {
     expect(FakeSource.all).toHaveLength(3);
   });
 
-  it("goes down when the stream says nothing at all for 30 seconds, and comes back when it reopens", () => {
+  it("goes down when the stream says nothing at all for 5 seconds (a proxy swallowed its end), and comes back when it reopens", () => {
     const { result, onOpen } = mount();
     act(() => live().open());
-    act(() => void vi.advanceTimersByTime(29_000));
+    act(() => void vi.advanceTimersByTime(4000));
     expect(result.current).toBe("up");
-    act(() => void vi.advanceTimersByTime(2_000));
+    act(() => void vi.advanceTimersByTime(1500));
     expect(result.current).toBe("down");
     act(() => void vi.advanceTimersByTime(1000));
     act(() => live().open());
@@ -90,7 +90,7 @@ describe("useStream", () => {
     const { result, onEvent } = mount();
     act(() => live().open());
     for (let i = 0; i < 6; i++) {
-      act(() => void vi.advanceTimersByTime(10_000));
+      act(() => void vi.advanceTimersByTime(2000));
       act(() => live().emit(i % 2 === 0 ? "ping" : "clot.state", '{"clot":"home"}', String(i)));
     }
     expect(result.current).toBe("up");

@@ -206,6 +206,7 @@
   --input: oklch(0.37 0.01 18.67);
   --tile: oklch(0.32 0.01 18.67);
   /* The design lightens the hover in dark, which takes white text on it to 3.9:1; it stays the light theme's darker value (AA needs 4.5:1). */
+  --primary-hover: oklch(0.63 0.21 18.67);
   --primary-soft: oklch(0.29 0.07 18.67);
   --primary-ink: oklch(0.78 0.14 18.67);
   --highlight-soft: oklch(0.29 0.05 175.02);
