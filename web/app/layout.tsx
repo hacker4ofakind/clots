@@ -24,6 +24,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   viewportFit: "cover",
   interactiveWidget: "resizes-content",
+  // The browser's chrome colour has to be a plain colour, not a CSS variable: these are the page background token (`--background`) in each theme.
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#faf6f6" },
     { media: "(prefers-color-scheme: dark)", color: "#141011" },

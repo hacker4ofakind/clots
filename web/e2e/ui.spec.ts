@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { clearAsks, control, gotoLive } from "./helpers";
 
 test.beforeEach(async ({ page }) => {
@@ -18,7 +18,7 @@ test("the composer: the send button fills once there is text, Enter sends, Shift
   await box.press("Enter");
   const mine = page.locator('[data-message-kind="user"]').filter({ hasText: "one" });
   await expect(mine).toHaveCount(1);
-  await expect(mine.locator("..")).not.toContainText(/\d{1,2}:\d{2}/);
+  await expect(mine).not.toContainText(/\d{1,2}:\d{2}/);
 });
 
 test("the attach button is a plus, and pasting an image attaches it", async ({ page }) => {
@@ -40,7 +40,7 @@ test("the slash menu is exactly as wide as the composer, wherever the content wi
     await page.getByRole("radiogroup", { name: "Content width" }).getByRole("radio", { name: width }).click();
     await gotoLive(page, "/c/Truecast");
     await page.getByLabel("Message Truecast").fill("/");
-    const menu = await page.getByRole("listbox", { name: "Commands" }).boundingBox();
+    const menu = await page.locator('[data-slot="command"]').boundingBox();
     const composer = await page.getByLabel("Message Truecast").locator("xpath=ancestor::div[contains(@class,'rounded-composer')]").boundingBox();
     expect(Math.abs(menu!.width - composer!.width)).toBeLessThan(2);
     expect(Math.abs(menu!.x - composer!.x)).toBeLessThan(2);
@@ -49,26 +49,65 @@ test("the slash menu is exactly as wide as the composer, wherever the content wi
   await page.getByRole("radiogroup", { name: "Content width" }).getByRole("radio", { name: "Wide" }).click();
 });
 
-test("the info pane has no close or full-screen button; dragging its grip to the far left fills the page and to the right edge closes it", async ({ page }) => {
-  await page.goto("/c/Truecast");
-  await page.getByRole("button", { name: "Info", exact: true }).click();
-  const pane = page.getByRole("complementary", { name: /Info about Truecast/ });
-  await expect(pane).toBeVisible();
-  await expect(pane.getByRole("button")).toHaveCount(0);
+/** The side pane's width in pixels. */
+const paneWidth = (page: Page) => page.getByRole("complementary", { name: /Info about/ }).evaluate((el) => (el.parentElement ?? el).getBoundingClientRect().width);
+
+/** Drags the pane's grip to a horizontal position and lets go. */
+async function dragGrip(page: Page, to: number, o: { release?: boolean } = {}): Promise<void> {
   const grip = page.getByRole("separator", { name: "Resize the side pane" });
   const box = (await grip.boundingBox())!;
   const y = box.y + box.height / 2;
   await page.mouse.move(box.x + box.width / 2, y);
   await page.mouse.down();
-  await page.mouse.move(120, y, { steps: 8 });
-  await page.mouse.up();
-  await expect(page.locator('[data-page="container"]')).toBeHidden();
-  const wide = (await grip.boundingBox())!;
-  await page.mouse.move(wide.x + wide.width / 2, wide.y + wide.height / 2);
+  await page.mouse.move(to, y, { steps: 10 });
+  if (o.release !== false) await page.mouse.up();
+}
+
+test("the info pane has no close or full-screen button, opens at 300px, and its grip makes the width follow the pointer all the way", async ({ page }) => {
+  await page.goto("/c/Truecast");
+  await page.getByRole("button", { name: "Info", exact: true }).click();
+  const pane = page.getByRole("complementary", { name: /Info about Truecast/ });
+  await expect(pane).toBeVisible();
+  await expect(pane.getByRole("button")).toHaveCount(0);
+  await expect.poll(() => paneWidth(page)).toBeCloseTo(300, -1);
+
+  // Dragging toward the right narrows it smoothly, with no dead zone: the pane tracks the pointer down to a narrow strip.
+  const edge = 1280;
+  const seen: number[] = [];
+  const grip = page.getByRole("separator", { name: "Resize the side pane" });
+  const box = (await grip.boundingBox())!;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + box.width / 2, y);
   await page.mouse.down();
-  await page.mouse.move(1270, wide.y + wide.height / 2, { steps: 8 });
+  for (const x of [1100, 1150, 1180, 1200, 1215]) {
+    await page.mouse.move(x, y, { steps: 3 });
+    seen.push(Math.round(await paneWidth(page)));
+  }
+  // Each step of the pointer moved the pane, and what is shown is what the pointer leaves: edge minus pointer, within a few pixels.
+  expect(seen.every((w, i) => i === 0 || w < seen[i - 1]!)).toBe(true);
+  expect(Math.abs(seen[0]! - (edge - 1100))).toBeLessThan(8);
+  expect(Math.abs(seen[4]! - (edge - 1215))).toBeLessThan(8);
+  // Let go before the closing mark (here the pane is still about 65px, under it) closes it; the mark is a share of the page.
   await page.mouse.up();
   await expect(pane).toHaveCount(0);
+
+  // Opening it again always starts at 300px.
+  await page.getByRole("button", { name: "Info", exact: true }).click();
+  await expect.poll(() => paneWidth(page)).toBeCloseTo(300, -1);
+
+  // Letting go with a pane that is narrow but past the mark keeps that width; opening after closing resets it.
+  await dragGrip(page, 1000);
+  await expect.poll(() => paneWidth(page)).toBeGreaterThan(240);
+  const kept = await paneWidth(page);
+  expect(Math.abs(kept - (edge - 1000))).toBeLessThan(8);
+  await page.getByRole("button", { name: "Info", exact: true }).click();
+  await expect(pane).toHaveCount(0);
+  await page.getByRole("button", { name: "Info", exact: true }).click();
+  await expect.poll(() => paneWidth(page)).toBeCloseTo(300, -1);
+
+  // The far left makes it the whole width.
+  await dragGrip(page, 60);
+  await expect(page.locator('[data-page="container"]')).toBeHidden();
 });
 
 test("General settings: the theme and content width change at once, and Save keeps the rest", async ({ page }) => {

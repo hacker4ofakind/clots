@@ -34,7 +34,7 @@ export function Timer({ deadline, prefix, className }: { deadline: number; prefi
   const view = timerView(deadline, now);
   const label = view.state === "closing" ? "Closing" : `${view.state === "urgent" ? "Urgent: " : view.state === "calling" ? "Soon: " : ""}${prefix ?? "Blocks in"} ${view.text}`;
   return (
-    <span data-timer={view.state} suppressHydrationWarning className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-caption font-semibold tabular-nums", STYLE[view.state], className)}>
+    <span data-timer={view.state} suppressHydrationWarning className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-caption leading-normal font-semibold tabular-nums", STYLE[view.state], className)}>
       <ClockIcon size={16} aria-hidden />
       {/* The text depends on the time, which the server and the browser read at different moments. */}
       <span aria-hidden suppressHydrationWarning>

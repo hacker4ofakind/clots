@@ -31,6 +31,7 @@ These four have their own code in the daemon, so their entries are strict: any k
 ```
 
 - `verificationToken` (notion) is optional. `checkoutCompleted` (stripe) adds the checkout-completed event; default `false`. `leadTimes` are like `"24h"`, `"90m"`, `"2d"`; the calendars share the monthly polling allowance, so the daemon refuses a total that would pass it.
+- `apiKey` (linear, notion, stripe) is only there when the person connects with a key. A built-in toolkit that signs in through Composio (the brief says so: "Composio's own sign-in (no key)") has no `apiKey` in its entry.
 - A built-in toolkit's events already have their shape: no recipe, and the daemon refuses one.
 
 ## PostHog

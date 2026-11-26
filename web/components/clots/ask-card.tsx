@@ -12,12 +12,13 @@ import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
 import { Timer, useNow } from "./timer";
 import { timerView } from "@/lib/timer";
+import { CodeBlock } from "./code-block";
 import { useAnswer } from "./use-answer";
 
 /** What a card that has ended shows: one quiet line, as the activity lines do. */
 export function AskOutcome({ text }: { text: string }) {
   return (
-    <p className="flex items-center gap-2 py-1 text-caption text-muted-foreground" data-ask-outcome>
+    <p className="flex items-center gap-2 text-label leading-normal font-normal text-muted-foreground" data-ask-outcome>
       <CheckCircleIcon size={16} aria-hidden />
       {text}
     </p>
@@ -62,7 +63,7 @@ export function AskCard({ card, focus }: { card: AskCardData; focus?: boolean })
 
 function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }) {
   const { connection } = useAppState();
-  const { busy, error, outcome, send } = useAnswer(snapshot.id);
+  const { busy, error, outcome, send, retry } = useAnswer(snapshot.id);
   const view = snapshot.view;
   const [body, setBody] = useState(view.body ?? "");
   const now = useNow(snapshot.deadline);
@@ -81,11 +82,13 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
       data-ask-id={snapshot.id}
       data-ask-state={snapshot.state}
       tabIndex={-1}
-      className={cn("gap-3 px-4 py-4 shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring md:gap-3.5 md:px-5 md:py-5", focus && "ring-2 ring-ring")}
+      className={cn("gap-3 px-4 py-4 shadow-card outline-none focus-visible:ring-2 focus-visible:ring-ring md:gap-3.5 md:px-5 md:py-5", focus && "ring-2 ring-ring")}
     >
       <div className="flex items-start justify-between gap-3">
-        <h3 className="text-dialog-title text-pretty max-md:hidden">{view.heading}</h3>
-        <h3 className="text-dialog-title text-pretty md:hidden">{view.shortHeading}</h3>
+        <h2 className="text-dialog-title text-pretty md:text-section md:leading-normal">
+          <span className="max-md:hidden">{view.heading}</span>
+          <span className="md:hidden">{view.shortHeading}</span>
+        </h2>
         <Timer deadline={snapshot.deadline} prefix="Blocks in" className="hidden shrink-0 md:inline-flex" />
       </div>
       {view.warning ? <p className="text-caption text-muted-foreground">{view.warning}</p> : null}
@@ -94,19 +97,19 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
         {view.previous !== undefined ? (
           <div>
             <p className="mb-1 text-caption text-muted-foreground">Now</p>
-            <pre className="max-h-40 overflow-auto rounded-control bg-muted p-3 font-mono text-code whitespace-pre-wrap">{view.previous}</pre>
+            <CodeBlock className="max-h-40">{view.previous}</CodeBlock>
           </div>
         ) : null}
         {view.bodyEditable ? (
           <div>
-            <Label htmlFor={`ask-body-${snapshot.id}`} className="mb-1.5 text-caption font-semibold text-foreground-soft">
+            <Label htmlFor={`ask-body-${snapshot.id}`} className="mb-1.5 text-caption leading-normal font-semibold text-foreground-soft">
               Message, editable
             </Label>
-            <Textarea id={`ask-body-${snapshot.id}`} value={body} onChange={(e) => setBody(e.target.value)} disabled={working || outcome !== undefined} className="h-37.5 resize-none text-[16px] leading-relaxed md:h-26 md:text-body" />
+            <Textarea id={`ask-body-${snapshot.id}`} value={body} onChange={(e) => setBody(e.target.value)} disabled={working || outcome !== undefined} className="h-37.5 resize-none px-3 py-2.5 text-base leading-[1.6] md:h-26 md:text-ui dark:border-transparent dark:bg-muted" />
             {edited ? <p className="mt-1 text-caption text-muted-foreground">Your changes are sent, and {snapshot.clot} is told what you changed.</p> : null}
           </div>
         ) : view.body !== undefined ? (
-          <pre className="max-h-72 overflow-auto rounded-control bg-muted p-3 font-mono text-code whitespace-pre-wrap">{view.body}</pre>
+          <CodeBlock>{view.body}</CodeBlock>
         ) : null}
       </div>
       {outcome !== undefined ? <p className="text-body text-muted-foreground">{outcome}</p> : null}
@@ -116,8 +119,11 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
         </p>
       ) : null}
       {error ? (
-        <p role="alert" className="text-body text-primary-ink">
+        <p role="alert" className="flex flex-wrap items-center gap-x-3 text-body text-primary-ink">
           {error}
+          <Button type="button" variant="link" size="xs" disabled={connection === "down" || working} onClick={() => void retry()} className="h-auto p-0 text-primary-ink">
+            Retry
+          </Button>
         </p>
       ) : null}
       {view.options ? (
@@ -137,7 +143,7 @@ function OpenAsk({ snapshot, focus }: { snapshot: AskSnapshot; focus?: boolean }
           </Button>
           <Button size="lg" disabled={off} onClick={allow} className="h-11 flex-1 md:h-9 md:flex-none">
             {working ? <Spinner /> : null}
-            {error ? "Retry" : labels.allow}
+            {labels.allow}
           </Button>
         </div>
       )}

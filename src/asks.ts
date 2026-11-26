@@ -21,7 +21,7 @@ export type AskTimer = "calm" | "calling" | "urgent";
 
 /** What a card shows of an ask. The web app lays it out; the daemon only says what is in it. */
 export interface AskView {
-  /** "Allow Home to send an email?" */
+  /** "Send an email from Home?" */
   heading: string;
   /** The same on a phone: "Allow sending an email?" */
   shortHeading: string;
@@ -384,6 +384,9 @@ export class Asks {
     const snapshot = this.snapshot(ask);
     const closedAt = this.d.now();
     const answerKey = this.keys.get(ask.id) ?? null;
+    // However it ended, the Clot's session learns how: an ask that closes with no note and no row handed over still leaves one,
+    // so that no outcome is only in the chat.
+    if (note === null && o.inbox === undefined && line !== null) note = `Your question to the user (${ask.summary}) ended: ${line}`;
     if (!this.d.store.closeAsk(ask.id, ask.clot, note, { inbox: o.inbox, onlyOpen: o.onlyOpen, also: o.also, history: { view: snapshot?.view ?? null, outcome, closedAt, answerKey } })) return false;
     for (const cancel of this.timers.get(ask.id) ?? []) cancel();
     this.timers.delete(ask.id);

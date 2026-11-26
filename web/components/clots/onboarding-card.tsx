@@ -53,7 +53,7 @@ function CopyField({ label, value, load, masked }: { label: string; value?: stri
  * the address to send to and the secret behind a Copy button; the daemon gives the secret only when it is pressed.
  */
 export function OnboardingCard({ message }: { message: MessageView }) {
-  const { subscribe } = useAppState();
+  const { subscribe, onResync } = useAppState();
   const data = (message.data ?? {}) as { repo?: string; webhookUrl?: string };
   const [steps, setSteps] = useState<Step[]>();
   const load = useCallback(async () => {
@@ -68,9 +68,17 @@ export function OnboardingCard({ message }: { message: MessageView }) {
   useEffect(() => {
     void load();
     if (allDone) return;
-    const timer = setInterval(() => document.visibilityState === "visible" && void load(), 5000);
-    return () => clearInterval(timer);
+    // GitHub's ping reaches the daemon without any event the page hears, so a step that is still open is asked about every few seconds
+    // (a page in the background too), and at once when the page comes back.
+    const timer = setInterval(() => void load(), 4000);
+    const back = () => document.visibilityState === "visible" && void load();
+    document.addEventListener("visibilitychange", back);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", back);
+    };
   }, [load, allDone]);
+  useEffect(() => onResync(() => void load()), [onResync, load]);
   useEffect(() => subscribe((e) => (e.type === "integration.status" || e.type === "workers.updated" || e.type === "clot.state") && void load()), [subscribe, load]);
 
   return (

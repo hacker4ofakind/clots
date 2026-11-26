@@ -5,7 +5,8 @@ import { toast } from "sonner";
 import { PlusIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, ApiFailure } from "@/lib/api-client";
+import { api } from "@/lib/api-client";
+import { readableError } from "@/lib/readable-error";
 import { useIntegrations, useToolkitNames, type Job, type ToolRow } from "@/lib/integrations";
 import { IntegrationDialog, type AddedInfo } from "./integration-dialog";
 import { sameName, type HeldTool } from "./new-clot-state";
@@ -59,7 +60,7 @@ export function ToolsStep({ name, exists, held, onHeld, problem }: { name: strin
       const { jobId } = await api<{ jobId: string }>(`/integrations/tools/${encodeURIComponent(tool.id)}/reconnect`, { method: "POST", body: {} });
       setDialog({ open: true, edit: tool.id, resume: jobId });
     } catch (e) {
-      toast(e instanceof ApiFailure ? e.message : "That tool could not be reconnected.");
+      toast(readableError(e, "That tool could not be reconnected."));
     }
   };
 
@@ -69,7 +70,7 @@ export function ToolsStep({ name, exists, held, onHeld, problem }: { name: strin
       toast(`Removed ${nameOf(tool.toolkit)}`);
       reload();
     } catch (e) {
-      toast(e instanceof ApiFailure ? e.message : "That tool could not be removed.");
+      toast(readableError(e, "That tool could not be removed."));
     }
   };
 
@@ -89,7 +90,7 @@ export function ToolsStep({ name, exists, held, onHeld, problem }: { name: strin
         {overview === undefined
           ? [0, 1, 2].map((i) => (
               <div key={i} className="flex w-23 flex-col items-center gap-2">
-                <Skeleton className="size-14 rounded-[14px]" />
+                <Skeleton className="size-14 rounded-tile-lg" />
                 <Skeleton className="h-3 w-12" />
               </div>
             ))
@@ -114,7 +115,7 @@ export function ToolsStep({ name, exists, held, onHeld, problem }: { name: strin
           <ToolTile key={tool.jobId} toolkit={tool.toolkit.slug} name={tool.toolkit.name} logo={tool.toolkit.logo} status={tool.state === "failed" ? "failed" : "active"} clot={name} onEdit={() => setDialog({ open: true, retool: tool })} onRemove={() => dropHeld(tool)} />
         ))}
         <div className="flex w-23 flex-col items-center gap-2 text-caption font-normal text-muted-foreground">
-          <Button variant="outline" aria-label="Add a tool" className="size-14 rounded-[14px] border-dashed border-input p-0 text-muted-foreground" onClick={() => setDialog({ open: true })}>
+          <Button variant="outline" aria-label="Add a tool" className="size-14 rounded-tile-lg border-dashed border-input p-0 text-muted-foreground" onClick={() => setDialog({ open: true })}>
             <PlusIcon size={24} />
           </Button>
           Add

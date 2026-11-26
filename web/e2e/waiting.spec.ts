@@ -39,7 +39,7 @@ test("Open in chat goes to the Clot's chat and the ask's card", async ({ page, r
   await openAsk(request, { kind: "email", clot: "Truecast" });
   await page.locator("[data-ask-row]").first().getByRole("button", { name: "Open in chat" }).click();
   await expect(page).toHaveURL(/\/c\/Truecast\?ask=\d+/);
-  await expect(page.getByRole("region", { name: "Allow Truecast to send an email?" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Send an email from Truecast?" })).toBeVisible();
 });
 
 test("the timer counts down, and turns calling then urgent", async ({ page, request }) => {

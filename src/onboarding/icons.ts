@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { icoToPng, looksLikeIco } from "./ico.js";
 
 /** Stored icons are never larger than this on a side. */
 const SIZE = 256;
@@ -9,15 +10,52 @@ const MAX_BYTES = 2 * 1024 * 1024;
 
 export class IconError extends Error {}
 
-/** What an upload really is, from its first bytes. ICO is not read here: the browser converts it, or it is refused. */
+export const UNREADABLE = "That file couldn't be read as an image. Try another one.";
+
+/** What an upload really is, from its first bytes (never from its name or the type the browser gave). */
 export function sniff(data: Buffer): "png" | "jpeg" | "webp" | "svg" | "ico" | undefined {
   if (data.length > 8 && data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "png";
   if (data.length > 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "jpeg";
   if (data.length > 12 && data.subarray(0, 4).toString("latin1") === "RIFF" && data.subarray(8, 12).toString("latin1") === "WEBP") return "webp";
-  if (data.length > 4 && data[0] === 0 && data[1] === 0 && data[2] === 1 && data[3] === 0) return "ico";
-  const head = data.subarray(0, 512).toString("utf8").trimStart().toLowerCase();
-  if (head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) return "svg";
+  if (looksLikeIco(data)) return "ico";
+  // An SVG may start with a byte order mark, an XML declaration, comments and a doctype before its root element.
+  const head = data.subarray(0, 2048).toString("utf8").replace(/^﻿/, "").trimStart().toLowerCase();
+  if (head.startsWith("<svg") || ((head.startsWith("<?xml") || head.startsWith("<!--") || head.startsWith("<!doctype svg")) && /<svg[\s>]/.test(head))) return "svg";
   return undefined;
+}
+
+/**
+ * An SVG made safe to draw: no scripts, no embedded pages, no event handlers, no style imports, and no reference to anything
+ * outside the file (only `#id` links and small embedded PNG, JPEG or WebP pictures stay). An image is only ever stored as the
+ * PNG drawn from it, so this is a second wall, not the first. Throws an IconError for markup that declares entities.
+ */
+export function sanitiseSvg(svg: string): string {
+  if (/<!ENTITY/i.test(svg)) throw new IconError(UNREADABLE);
+  return svg
+    .replace(/<!DOCTYPE[^>]*>/gi, "")
+    .replace(/<(script|foreignObject|iframe|object|embed|animate|set)\b[\s\S]*?(<\/\1\s*>|\/>)/gi, "")
+    .replace(/<\/?(script|foreignObject|iframe|object|embed)\b[^>]*>/gi, "")
+    .replace(/\s(?:on[a-z]+)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/\s((?:xlink:)?href)\s*=\s*("([^"]*)"|'([^']*)')/gi, (all, _name, _quoted, double: string | undefined, single: string | undefined) => {
+      const value = (double ?? single ?? "").trim();
+      return value.startsWith("#") || /^data:image\/(png|jpe?g|webp);base64,[a-z0-9+/=\s]+$/i.test(value) ? all : "";
+    })
+    .replace(/@import[^;]*;?/gi, "")
+    .replace(/url\(\s*(?!['"]?#)[^)]*\)/gi, "none");
+}
+
+/**
+ * The bytes inside a data URL, whichever way the browser wrote them: base64 (what a file read gives, SVG included) or percent
+ * encoded text. Throws an IconError when it is not a data URL at all.
+ */
+export function bytesOfDataUrl(dataUrl: string): Buffer {
+  const match = /^data:[^,]*?(;base64)?,([\s\S]*)$/i.exec(dataUrl);
+  if (!match) throw new IconError(UNREADABLE);
+  try {
+    return match[1] ? Buffer.from(match[2]!, "base64") : Buffer.from(decodeURIComponent(match[2]!), "utf8");
+  } catch {
+    throw new IconError(UNREADABLE);
+  }
 }
 
 type Pixels = { data: Buffer; width: number; height: number };
@@ -73,18 +111,27 @@ export interface ProcessedIcon {
 
 /** Checks an upload and makes the stored icon and its active variant, as PNGs. An SVG is drawn to pixels first, so no markup is ever stored or served. */
 export async function processIcon(data: Buffer): Promise<ProcessedIcon> {
-  if (data.length > MAX_BYTES) throw new IconError("An icon can be at most 2 MB.");
+  if (data.length > MAX_BYTES) throw new IconError("That image is too large. An icon can be up to 2 MB.");
   const kind = sniff(data);
-  if (kind === undefined) throw new IconError("An icon is a PNG, JPEG, WebP or SVG image.");
-  if (kind === "ico") throw new IconError("ICO files cannot be read here. Save the icon as PNG and upload that.");
+  if (kind === undefined) throw new IconError(UNREADABLE);
   try {
-    const image = sharp(data, { density: kind === "svg" ? 300 : 72, limitInputPixels: 40_000_000 }).resize(SIZE, SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).ensureAlpha();
+    let source: Buffer = data;
+    let density = 72;
+    if (kind === "ico") source = await icoToPng(data);
+    if (kind === "svg") {
+      // Drawn big enough to stay sharp when it is scaled to the icon size, whatever size the file says it is.
+      source = Buffer.from(sanitiseSvg(data.toString("utf8").replace(/^﻿/, "")), "utf8");
+      const meta = await sharp(source, { density: 72, limitInputPixels: false }).metadata();
+      density = Math.min(2400, Math.max(1, Math.round((72 * 512) / Math.max(meta.width ?? 1, meta.height ?? 1, 1))));
+    }
+    const image = sharp(source, { density, limitInputPixels: 40_000_000 }).rotate().resize(SIZE, SIZE, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } }).ensureAlpha();
     const { data: raw, info } = await image.raw().toBuffer({ resolveWithObject: true });
     const pixels = { data: raw, width: info.width, height: info.height };
     const toPng = (buf: Buffer) => sharp(buf, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
     return { normal: await toPng(raw), active: await toPng(activeVariant(pixels)) };
-  } catch {
-    throw new IconError("That image could not be read.");
+  } catch (error) {
+    if (error instanceof IconError) throw error;
+    throw new IconError(UNREADABLE);
   }
 }
 

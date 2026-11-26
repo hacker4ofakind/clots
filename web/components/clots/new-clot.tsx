@@ -12,6 +12,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiFailure } from "@/lib/api-client";
+import { readableError } from "@/lib/readable-error";
 import { useAppState } from "./app-state";
 import { BuildProgress } from "./build-progress";
 import { ClotIcon } from "./clot-icon";
@@ -38,9 +39,8 @@ function FieldLabel({ htmlFor, children }: { htmlFor?: string; children: string 
 /** The errors a failed create or edit carried, as the form's fields. */
 function fieldErrors(e: unknown): { errors: Errors & { toolJobs?: string }; text?: string } {
   if (!(e instanceof ApiFailure)) return { errors: {}, text: "That could not be done." };
-  if (e.unreachable) return { errors: {}, text: "The daemon cannot be reached." };
   const errors = (e.body as { errors?: Errors & { toolJobs?: string } } | null)?.errors ?? {};
-  return { errors, text: Object.keys(errors).length === 0 ? e.message : undefined };
+  return { errors, text: Object.keys(errors).length === 0 ? readableError(e, "That could not be done.") : undefined };
 }
 
 /**
@@ -179,7 +179,7 @@ export function NewClot() {
       }
       go("tools");
     } catch (e) {
-      setErrors({ repo: e instanceof ApiFailure && e.unreachable ? "The daemon cannot be reached." : "That could not be checked." });
+      setErrors({ repo: e instanceof ApiFailure && e.unreachable ? readableError(e, "") : "That could not be checked." });
     } finally {
       setChecking(false);
     }

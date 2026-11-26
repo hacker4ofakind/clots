@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { ABANDON_AFTER_MS, JobError, OAUTH_READY_AFTER_MS, TOOLKIT_CACHE_MS } from "../src/integrations/jobs.js";
-import { keyNameIn, makeJobs, OPTIONS, posthogScript, settle, slackScript } from "./helpers/integrations.js";
+import { ABANDON_AFTER_MS, authFor, authOfEntry, JobError, OAUTH_READY_AFTER_MS, TOOLKIT_CACHE_MS } from "../src/integrations/jobs.js";
+import { toolkitMeta } from "./fake-composio.js";
+import { keyNameIn, makeJobs, OPTIONS, posthogScript, settle, slackScript, type Script } from "./helpers/integrations.js";
 
 const composioEntries = (h: ReturnType<typeof makeJobs>) => ((h.config.json().sources as { composio?: Record<string, unknown>[] } | undefined)?.composio ?? []) as Record<string, unknown>[];
 const states = (h: ReturnType<typeof makeJobs>, jobId: string) => h.events.filter((e) => e.jobId === jobId).map((e) => e.state);
@@ -31,10 +32,13 @@ describe("the toolkit list", () => {
     expect(h.api.of("listToolkits")).toHaveLength(2);
   });
 
-  it("shows a built-in toolkit with the way its entry connects, whatever Composio lists first", async () => {
+  it("shows every toolkit, built in or not, with the way Composio says it connects", async () => {
     const h = makeJobs();
-    h.api.toolkitList = [{ slug: "linear", name: "Linear", auth: "oauth" }];
-    expect((await h.jobs.toolkits())[0]!.auth).toBe("key");
+    h.api.toolkitList = [
+      { slug: "linear", name: "Linear", auth: "oauth" },
+      { slug: "posthog", name: "PostHog", auth: "key" },
+    ];
+    expect((await h.jobs.toolkits()).map((t) => t.auth)).toEqual(["oauth", "key"]);
   });
 
   it("does not keep a failed read", async () => {
@@ -43,6 +47,70 @@ describe("the toolkit list", () => {
     await expect(h.jobs.toolkits()).rejects.toThrow("down");
     h.api.toolkitList = [{ slug: "slack", name: "Slack", auth: "oauth" }];
     expect(await h.jobs.toolkits()).toHaveLength(1);
+  });
+});
+
+const linearScript: Script = async (tools) => {
+  await tools.save_integration({ entry: { toolkit: "linear" } });
+};
+
+describe("how a toolkit connects", () => {
+  const info = (slug: string) => toolkitMeta(slug).info;
+
+  it("is a sign-in for a toolkit whose sign-in Composio manages and that asks for nothing first, whether or not the daemon built it in", () => {
+    for (const slug of ["linear", "notion", "stripe", "googlecalendar", "slack"]) expect(authFor(info(slug)), slug).toBe("oauth");
+  });
+
+  it("is a key for a toolkit that has only key schemes", () => {
+    expect(authFor(info("posthog"))).toBe("key");
+  });
+
+  it("is nothing for a toolkit that needs no connection, and a refusal for one that needs an OAuth app of its own", () => {
+    expect(authFor({ slug: "hackernews", name: "Hacker News", managed: [], schemes: [], noAuth: true })).toBe("none");
+    expect(authFor({ slug: "x", name: "X", managed: [], schemes: [{ scheme: "OAUTH2", required: [], optional: [], creationRequired: ["client_id", "client_secret"] }] })).toEqual({ error: expect.stringContaining("needs an OAuth app of your own") });
+  });
+
+  it("leaves a tool that exists the way its entry connects", () => {
+    expect(authOfEntry({ toolkit: "linear", apiKey: "LINEAR_PROTON_KEY" }, info("linear"))).toBe("key");
+    expect(authOfEntry({ toolkit: "posthog", fields: { generic_api_key: "POSTHOG_SHARED_KEY" } }, info("posthog"))).toBe("key");
+    expect(authOfEntry({ toolkit: "linear" }, info("linear"))).toBe("oauth");
+  });
+
+  it("takes Linear, added from the dialog, to the sign-in step, with a link from Composio and no key", async () => {
+    const h = makeJobs();
+    h.state.script = linearScript;
+    const jobId = await h.jobs.configure({ toolkit: "linear", ...OPTIONS } as never);
+    await settle();
+    expect(states(h, jobId)).toEqual(["working", "oauth"]);
+    expect(h.jobs.get(jobId)).toMatchObject({ state: "oauth", link: expect.stringContaining("https://connect.example/link/") });
+    expect(h.inputs[0]!.prompt).toContain("Composio's own sign-in (no key)");
+    expect(h.inputs[0]!.prompt).not.toMatch(/.env key is named/);
+    expect(h.api.of("linkManaged")).toEqual(["linkManaged:linear:shared"]);
+    expect(composioEntries(h)).toHaveLength(0);
+
+    [...h.api.connections.values()][0]!.status = "active";
+    await h.jobs.tick();
+    expect(h.jobs.get(jobId).state).toBe("active");
+    expect(composioEntries(h)).toEqual([{ toolkit: "linear", account: "shared", audience: "private", shared: true }]);
+  });
+
+  it("keeps PostHog on the key step", async () => {
+    const h = makeJobs();
+    h.state.script = posthogScript;
+    const jobId = await h.jobs.configure({ toolkit: "posthog", ...OPTIONS } as never);
+    await settle();
+    expect(h.jobs.get(jobId).state).toBe("key");
+    expect(h.api.of("linkManaged")).toEqual([]);
+  });
+
+  it("does not change how a Linear tool that uses a key connects when its settings are edited", async () => {
+    const h = makeJobs({ env: "LINEAR_PROTON_KEY=lin_secret\n", extra: { sources: { composio: [{ toolkit: "linear", account: "proton", shared: true, audience: "team", apiKey: "LINEAR_PROTON_KEY" }] } } });
+    h.state.script = async (tools) => void (await tools.save_integration({ entry: { toolkit: "linear", apiKey: "LINEAR_PROTON_KEY" }, instructions: "1. Open Linear.\n2. Settings, API, Create key." }));
+    const jobId = await h.jobs.configure({ toolkit: "linear", ...OPTIONS, replaces: "linear:proton" } as never);
+    await settle();
+    expect(h.inputs[0]!.prompt).toContain("LINEAR_PROTON_KEY");
+    expect(h.api.of("linkManaged")).toEqual([]);
+    expect(h.jobs.get(jobId).state).toBe("active");
   });
 });
 

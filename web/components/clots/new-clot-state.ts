@@ -10,7 +10,7 @@ export interface Build {
   log?: string;
 }
 
-export const DEFAULT_ICON: ClotIcon = { phosphor: "Sliders", color: "ink" };
+export const DEFAULT_ICON: ClotIcon = { phosphor: "Sliders", color: "red" };
 
 /** The icon as one address parameter: "Sliders.ink", or "upload.<id>". */
 export function iconToParam(icon: ClotIcon): string {

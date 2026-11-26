@@ -3,7 +3,7 @@
 import type { ComponentType } from "react";
 import { ArrowCounterClockwiseIcon, ArrowsClockwiseIcon, CalendarBlankIcon, CreditCardIcon, FolderSimpleIcon, LightningIcon, ListChecksIcon, TerminalWindowIcon, XIcon, type IconProps } from "@phosphor-icons/react";
 import type { CommandInfo } from "@clots/ui-api-schemas";
-import { cn } from "@/lib/utils";
+import { Command, CommandItem, CommandList } from "@/components/ui/command";
 
 /** A command matches what was typed as a prefix, or else as letters in order. Returns what to show in bold, or undefined for no match. */
 export function fuzzy(name: string, query: string): { score: number; bold: number[] } | undefined {
@@ -53,27 +53,38 @@ function Highlight({ text, bold }: { text: string; bold: number[] }) {
 
 /**
  * The commands that match what is typed after the slash. It is exactly as wide as the composer under it (the caller places it
- * above the composer's own box), lists every match with its icon, name, options and what it does, and marks the chosen one.
+ * above the composer's own box), lists every match with its icon, name, options and what it does, and marks the chosen one. The text
+ * box keeps the focus and decides which command is chosen (arrow keys, Tab, Enter); the menu only shows it, and a click chooses.
+ * Matching is the fuzzy one above, so the list does its own filtering. A phone's rows leave the description out.
  */
-export function SlashMenu({ matches, selected, onChoose }: { matches: Match[]; selected: number; onChoose: (name: string) => void }) {
+export function SlashMenu({ matches, selected, onSelect, onChoose }: { matches: Match[]; selected: number; onSelect: (index: number) => void; onChoose: (name: string) => void }) {
   return (
-    <div role="listbox" aria-label="Commands" className="absolute inset-x-0 bottom-full z-20 mb-2 max-h-80 overflow-y-auto rounded-menu border bg-popover p-1.5 shadow-pop">
-      {matches.map(({ command, bold }, i) => (
-        <div
-          key={command.name}
-          role="option"
-          aria-selected={i === selected}
-          onMouseDown={(e) => (e.preventDefault(), onChoose(command.name))}
-          className={cn("flex cursor-pointer items-center gap-3 rounded-lg px-3 text-body max-md:h-12 max-md:text-[15px] md:grid md:grid-cols-[16px_150px_minmax(0,1fr)_auto] md:gap-2.5 md:py-2.25", i === selected && "bg-muted")}
-        >
-          <CommandIcon name={command.name} />
-          <span className="font-mono text-code">
-            /<Highlight text={command.name} bold={bold} />
-          </span>
-          <span className="text-label font-normal text-muted-foreground max-md:ml-auto md:truncate">{command.options}</span>
-          <span className="hidden truncate text-right text-label font-normal text-muted-foreground md:block">{command.description}</span>
-        </div>
-      ))}
-    </div>
+    <Command
+      shouldFilter={false}
+      loop
+      label="Commands"
+      value={matches[selected]?.command.name ?? ""}
+      onValueChange={(name) => onSelect(Math.max(0, matches.findIndex((m) => m.command.name === name)))}
+      className="absolute inset-x-0 bottom-full z-20 mb-2 h-auto border p-1.5 shadow-menu"
+    >
+      <CommandList label="Commands">
+        {matches.map(({ command, bold }) => (
+          <CommandItem
+            key={command.name}
+            value={command.name}
+            onMouseDown={(e) => e.preventDefault()}
+            onSelect={() => onChoose(command.name)}
+            className="min-h-9.5 gap-3 rounded-lg px-3 py-1.5 text-body data-[selected=true]:bg-muted max-md:h-12 max-md:text-chat md:grid md:grid-cols-[16px_150px_minmax(0,1fr)_auto] md:gap-2.5 [&>svg:last-child]:hidden"
+          >
+            <CommandIcon name={command.name} />
+            <span className="font-mono text-code">
+              /<Highlight text={command.name} bold={bold} />
+            </span>
+            <span className="text-label leading-normal font-normal text-muted-foreground max-md:ml-auto md:truncate">{command.options}</span>
+            <span className="hidden truncate text-right text-label leading-normal font-normal text-muted-foreground md:block">{command.description}</span>
+          </CommandItem>
+        ))}
+      </CommandList>
+    </Command>
   );
 }

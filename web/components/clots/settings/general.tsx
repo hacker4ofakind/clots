@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { api, ApiFailure } from "@/lib/api-client";
+import { readableError } from "@/lib/readable-error";
+import { savedText } from "@/lib/setting-labels";
 import { useUnsavedGuard } from "@/lib/use-unsaved-guard";
 import { useAppState } from "../app-state";
 import { ConfirmDialog } from "../confirm-dialog";
@@ -78,10 +80,10 @@ export function GeneralSettings() {
       const res = await api<General & { applied: string[]; needsRestart: string[] }>("/settings/general", { method: "PUT", body: patch });
       setSaved(res);
       setForm(res);
-      toast(res.needsRestart.length > 0 ? `Saved. ${res.needsRestart.join(", ")} takes effect after a restart.` : "Saved");
+      toast(savedText(res.needsRestart));
     } catch (error) {
       if (error instanceof ApiFailure && error.status === 400) setErrors((error.body as { errors?: Record<string, string> }).errors ?? {});
-      else toast("Could not save: the daemon cannot be reached");
+      else toast(readableError(error, "Could not save. Try again."));
     } finally {
       setSaving(false);
     }
@@ -139,7 +141,7 @@ export function GeneralSettings() {
           <TimeInput id="timeout" label="Ask timeout" value={form.askTimeoutMinutes} onChange={(m) => set("askTimeoutMinutes", m)} />
         </FieldRow>
         <FieldRow label="Public URL" htmlFor="url" error={errors.publicUrl}>
-          <Input id="url" value={form.publicUrl} onChange={(e) => set("publicUrl", e.target.value)} className="w-75 font-mono text-code md:text-code" />
+          <Input id="url" value={form.publicUrl} onChange={(e) => set("publicUrl", e.target.value)} className="w-75 text-label font-normal md:text-label" />
         </FieldRow>
       </div>
       <ConfirmDialog open={leave.pending} onOpenChange={(open) => !open && leave.cancel()} title="Leave without saving?" description="Your changes to these settings will be lost." confirmLabel="Discard changes" cancelLabel="Keep editing" onConfirm={leave.proceed} />

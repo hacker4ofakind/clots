@@ -27,20 +27,32 @@ export class JobError extends Error {
   }
 }
 
-/** The built-in toolkits have entries of a fixed shape, which decides how they connect. */
 /** Whether the built-in toolkits' events come as webhooks: the calendar is polled by the daemon. */
 const BUILTIN_WEBHOOKS: Record<string, boolean> = { linear: true, notion: true, stripe: true, googlecalendar: false };
-const BUILTIN_AUTH: Record<string, ConnectAuth> = { linear: "key", notion: "key", stripe: "key", googlecalendar: "oauth" };
 
-/** How a toolkit connects from the dialog, or why it cannot: the daemon decides this, the configurer never does. */
-export function authFor(toolkit: string, info: ToolkitInfo): ConnectAuth | { error: string } {
-  const builtin = BUILTIN_AUTH[toolkit];
-  if (builtin !== undefined) return builtin;
+/**
+ * How a toolkit connects from the dialog, or why it cannot: the daemon decides this from what Composio says of the toolkit (the
+ * configurer never does, and neither does the toolkit's name: Linear signs in through Composio, PostHog takes a key). A sign-in that
+ * Composio manages and that asks for nothing first goes through it; otherwise a key scheme is a key.
+ */
+export function authFor(info: ToolkitInfo): ConnectAuth | { error: string } {
   if (info.noAuth === true) return "none";
   const sign = info.schemes.find((s) => s.scheme.startsWith("OAUTH") && info.managed.includes(s.scheme));
   if (sign !== undefined && sign.required.length === 0) return "oauth";
   if (info.schemes.some((s) => !s.scheme.startsWith("OAUTH"))) return "key";
   return { error: `${info.name} needs an OAuth app of your own, which this dialog cannot set up. Put an entry with oauthApp in clots.config.json.` };
+}
+
+/** Whether an entry connects with a key of its own (it names one in `apiKey` or `fields`). */
+const hasKey = (entry: Record<string, unknown>): boolean => entry.apiKey !== undefined || entry.fields !== undefined;
+
+/**
+ * How a tool that exists keeps connecting when its settings are edited: the way its entry already does, never a new one (a Linear
+ * entry that names a key stays a key entry, one that signs in stays a sign-in), so an edit cannot leave a key behind or drop one.
+ */
+export function authOfEntry(entry: Record<string, unknown>, info: ToolkitInfo): ConnectAuth {
+  if (hasKey(entry)) return "key";
+  return info.noAuth === true ? "none" : "oauth";
 }
 
 interface Job {
@@ -135,7 +147,7 @@ export class IntegrationJobs {
     if (fresh) return this.toolkitCache!.list;
     this.toolkitLoading ??= (async () => {
       try {
-        const list = (await this.d.api.listToolkits()).map((t): ToolkitSummaryView => ({ ...t, ...(BUILTIN_AUTH[t.slug] === undefined ? {} : { auth: BUILTIN_AUTH[t.slug]! }) }));
+        const list: ToolkitSummaryView[] = await this.d.api.listToolkits();
         this.toolkitCache = { at: this.d.now(), list };
         return list;
       } finally {
@@ -263,8 +275,6 @@ export class IntegrationJobs {
     } catch (e) {
       throw new JobError(404, `Composio could not describe ${body.toolkit}: ${message(e)}`);
     }
-    const auth = authFor(body.toolkit, info);
-    if (typeof auth !== "string") throw new JobError(400, auth.error);
 
     const replaces = body.replaces ?? job?.replaces;
     let current: Record<string, unknown> | undefined;
@@ -273,6 +283,9 @@ export class IntegrationJobs {
       if (current === undefined) throw new JobError(404, "The tool being edited is gone.");
       if (current.toolkit !== body.toolkit) throw new JobError(409, "That tool is for another service.");
     }
+    const decided = current === undefined ? authFor(info) : authOfEntry(current, info);
+    if (typeof decided !== "string") throw new JobError(400, decided.error);
+    const auth: ConnectAuth = decided;
 
     if (job === undefined) {
       const account = current === undefined ? this.accountFor(body.toolkit, body.clot) : String(current.account);
@@ -533,7 +546,7 @@ export class IntegrationJobs {
     const keyName = secretKeyOf(entry);
     if (entry.oauthApp !== undefined) throw new JobError(409, "This tool uses your own OAuth app: sign in again with /composio reconnect in a chat.");
     if (keyName === undefined && (entry.apiKey !== undefined || entry.fields !== undefined)) throw new JobError(409, "This tool uses several keys: replace them in Keys, then /composio reconnect in a chat.");
-    if (keyName === undefined && authFor(toolkit, info) === "none") throw new JobError(409, `${info.name} needs no connection.`);
+    if (keyName === undefined && authFor(info) === "none") throw new JobError(409, `${info.name} needs no connection.`);
     const auth: ConnectAuth = keyName !== undefined ? "key" : "oauth";
     const job: Job = {
       id: this.d.newId(),

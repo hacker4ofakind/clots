@@ -104,7 +104,7 @@ export function restartKind(d: {
       }
       if (answer.action !== "allow" || !io.setBusy()) return;
       // Waiting for the turns to end can take a long while: the answer does not wait for it.
-      void d.restartWhenIdle(() => io.close(null, "Restarting the daemon now.")).then(async (restarted) => {
+      void d.restartWhenIdle(() => io.close("The user approved the restart, and the daemon is restarting now.", "Restarting the daemon now.")).then(async (restarted) => {
         if (!restarted) await io.close("The restart was approved, but turns kept running too long, so it was not made. Ask again later.", "Restart not made: turns kept running. Ask again when they are done.");
       });
     },

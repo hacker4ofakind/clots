@@ -8,6 +8,7 @@ import { SdkRunner } from "./agent/runner.js";
 import { Clot } from "./clot.js";
 import { applyChangeLive, check, getAt, missingEnvKeys, parseKey } from "./config-edit.js";
 import { configKind, restartKind } from "./asks/config.js";
+import { announceSkipped } from "./skipped-notice.js";
 import { calendarPollingCalls, type Config, HOME_CLOT, isCalendar, type EmailAccount, legacyKeysIn, renamedKeysIn, type AccountBase, type NotionAccount } from "./config.js";
 import { ConfigStore } from "./config-store.js";
 import { registerSettingsRoutes } from "./ui-api/routes/settings.js";
@@ -783,7 +784,8 @@ await asks.sweep(true);
 asks.startTimers();
 setInterval(() => void asks.sweep(false).catch((error) => console.error("[asks] the hourly sweep failed:", error)), 60 * 60_000);
 
-for (const s of skippedAccounts) void tellHome(`The Composio entry \`${s.entry}\` in clots.config.json is not usable, so it is left out and everything else runs: ${s.problem}`).catch(() => undefined);
+// Once per distinct problem, kept across restarts; an entry that is fixed or removed is forgotten.
+void announceSkipped(store, configStore.skipped, tellHome).catch(() => undefined);
 
 if (clotLogin === "") console.warn("[events] could not read the Clots' GitHub login; events the Clots cause themselves will not be recognised");
 else console.log(`[events] the Clots act on GitHub as ${clotLogin}`);

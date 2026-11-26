@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMMAND_USAGE, parseCommand } from "../src/commands.js";
+import { COMMAND_LIST, COMMAND_USAGE, parseCommand } from "../src/commands.js";
 import { InputQueue } from "../src/agent/input-queue.js";
 import { isSuccessfulResult } from "../src/agent/turn-tracker.js";
 
@@ -112,4 +112,37 @@ it("reads /memory and /memory undo, and nothing else after /memory", () => {
   expect(parseCommand(" /Memory Undo")).toEqual({ kind: "memory", undo: true });
   expect(parseCommand("/memory forget it")).toEqual({ kind: "invalid", name: "memory" });
   expect(COMMAND_USAGE).toContain("`/memory`, `/memory undo`");
+});
+
+it("reads /close without summary as /close nosummary", () => {
+  expect(parseCommand("/close without summary")).toEqual({ kind: "close", summary: false });
+  expect(parseCommand("/close Without  Summary")).toEqual({ kind: "close", summary: false });
+  expect(parseCommand("/close without")).toEqual({ kind: "invalid", name: "close" });
+});
+
+describe("COMMAND_LIST, as the design draws the slash menu", () => {
+  it("has the commands in the design's order with its option hints and descriptions", () => {
+    expect(COMMAND_LIST.map((c) => [c.name, c.options, c.description])).toEqual([
+      ["effort", "low or medium", "Sets the effort for your next message"],
+      ["close", "optionally without summary", "Sums up this session and starts a new one"],
+      ["rules", "optionally undo", "Shows the rules in force, or reverts the last edit"],
+      ["memory", "optionally undo", "Shows global memories, or reverts the last change"],
+      ["spend", "", "This week’s spend and usage"],
+      ["calendar undo", "", "Reverses the last calendar change"],
+      ["composio undo", "", "Reverses the last Composio write"],
+      ["composio reconnect", "tool:account", "Signs a tool in again"],
+    ]);
+  });
+
+  it("says which commands need their option, and the ones that do not parse without it", () => {
+    expect(COMMAND_LIST.filter((c) => c.required).map((c) => c.name)).toEqual(["effort", "composio reconnect"]);
+    for (const c of COMMAND_LIST.filter((c) => !c.required)) expect(parseCommand(`/${c.name}`).kind, c.name).not.toBe("invalid");
+    expect(parseCommand("/effort").kind).toBe("invalid");
+    expect(parseCommand("/composio reconnect").kind).toBe("invalid");
+  });
+
+  it("keeps rules and memory undo reachable although the list folds them into one entry", () => {
+    expect(parseCommand("/rules undo")).toEqual({ kind: "rules", undo: true });
+    expect(parseCommand("/memory undo")).toEqual({ kind: "memory", undo: true });
+  });
 });

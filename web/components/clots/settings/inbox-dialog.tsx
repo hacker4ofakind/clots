@@ -11,7 +11,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { api, ApiFailure } from "@/lib/api-client";
+import { api } from "@/lib/api-client";
+import { readableReasons } from "@/lib/readable-error";
 import { clotLabel } from "@/lib/clots";
 import type { InboxRow } from "@/lib/integrations";
 import { useAppState } from "../app-state";
@@ -21,12 +22,7 @@ import { FieldRow } from "../field-row";
 const folders = (text: string): string[] => text.split(",").map((f) => f.trim()).filter(Boolean);
 
 /** What the daemon refused, in words: a failed save lists its reasons under `errors`. */
-function reason(e: unknown): string {
-  if (!(e instanceof ApiFailure)) return "Something went wrong.";
-  if (e.unreachable) return "The daemon cannot be reached.";
-  const errors = (e.body as { errors?: unknown } | null)?.errors;
-  return Array.isArray(errors) && errors.length > 0 ? errors.map(String).join(" ") : e.message;
-}
+const reason = (e: unknown): string => readableReasons(e, "The inbox could not be saved. Check the details and try again.");
 
 /**
  * Adds an inbox, or edits one (`inbox` given): the address, which picks the provider's icon (Gmail or a plain envelope), the

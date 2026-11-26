@@ -105,7 +105,8 @@ export function Rail() {
 
   return (
     <nav aria-label="Clots" className="hidden w-17 shrink-0 flex-col items-center gap-1 py-2.5 md:flex">
-      <div className="flex min-h-0 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden [scrollbar-width:none]">
+      {/* The list scrolls, and a scroller clips what is outside it: the padding keeps the active tile's 1px border (and a dragged tile) inside it. */}
+      <div className="-my-1 flex min-h-0 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden px-1.5 py-1 [scrollbar-width:none]">
         <Reorder.Group axis="y" values={order} onReorder={setOrder} className="flex flex-col items-center gap-1">
           {ordered.map((clot) => (
             <Reorder.Item key={clot.name} value={clot.name} onDragEnd={() => void save(order)} className="cursor-grab active:cursor-grabbing" whileDrag={{ scale: 1.05 }}>
@@ -123,7 +124,7 @@ export function Rail() {
       <div className="mt-auto flex flex-col items-center gap-1">
         <RailLink href="/waiting" label="Waiting for you" active={pathname.startsWith("/waiting")}>
           <BellIcon size={24} weight={pathname.startsWith("/waiting") ? "bold" : "regular"} />
-          {waiting ? <span className="absolute right-2.5 top-[9px] size-2 rounded-full bg-highlight ring-2 ring-background" aria-label="Something is waiting" /> : null}
+          {waiting ? <span className="absolute top-2.25 right-2.5 size-2 rounded-full bg-highlight ring-2 ring-background" aria-label="Something is waiting" /> : null}
         </RailLink>
         <RailLink href="/settings/general" label="Settings" active={pathname.startsWith("/settings")}>
           <GearSixIcon size={24} weight={pathname.startsWith("/settings") ? "bold" : "regular"} />

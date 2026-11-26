@@ -7,7 +7,8 @@ import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, ApiFailure } from "@/lib/api-client";
+import { api } from "@/lib/api-client";
+import { readableError } from "@/lib/readable-error";
 import { useIntegrations, type Toolkit, type ToolRow } from "@/lib/integrations";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "../confirm-dialog";
@@ -66,7 +67,7 @@ export function PickStep({ clot, added, onPick }: { clot?: string; added: string
       for (const tool of inScope.get(toolkit.slug) ?? []) await api(`/integrations/tools/${encodeURIComponent(tool.id)}`, { method: "DELETE" });
       toast(`Removed ${toolkit.name}`);
     } catch (e) {
-      toast(e instanceof ApiFailure ? e.message : "The daemon cannot be reached.");
+      toast(readableError(e, "That tool could not be removed."));
     }
     reload();
   };
@@ -128,7 +129,7 @@ export function PickStep({ clot, added, onPick }: { clot?: string; added: string
               }) ??
                 SKELETON_WIDTHS.map((width, i) => (
                   <li key={i} aria-hidden className={ROW}>
-                    <Skeleton className="size-9 rounded-[9px] bg-muted-strong" />
+                    <Skeleton className="size-9 rounded-tile-sm bg-muted-strong" />
                     <Skeleton className={cn("h-3 bg-muted-strong", width)} />
                   </li>
                 ))}

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { ZodError } from "zod";
-import { loadConfigLeaving, type Config, type SkippedAccount } from "./config.js";
+import { loadConfigLeaving, migrateLegacy, type Config, type SkippedAccount } from "./config.js";
 import { readEnvFile, removeEnvKey, setEnvKey } from "./env-file.js";
 import type { LiveEnv } from "./live-env.js";
 
@@ -145,7 +145,10 @@ export class ConfigStore {
     this.config = next;
     this.skipped = skipped;
     this.d.onAdopt?.(next);
-    const changed = [...new Set([...Object.keys(prevRaw), ...Object.keys(raw)])].filter((key) => !same(prevRaw[key], raw[key]) || (RESOLVED[key] !== undefined && !same(RESOLVED[key]!(prev), RESOLVED[key]!(next))));
+    // A key under its old name counts as the key under its new name (a rename is not a change, and the old key leaving the file is not one).
+    const before = migrateLegacy(prevRaw) as Json;
+    const after = migrateLegacy(raw) as Json;
+    const changed = [...new Set([...Object.keys(before), ...Object.keys(after)])].filter((key) => !same(before[key], after[key]) || (RESOLVED[key] !== undefined && !same(RESOLVED[key]!(prev), RESOLVED[key]!(next))));
     const needsRestart = changed.filter((key) => RESTART_KEYS.includes(key));
     const applied: string[] = [];
     for (const key of changed.filter((k) => !RESTART_KEYS.includes(k))) {

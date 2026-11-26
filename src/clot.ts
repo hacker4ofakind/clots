@@ -725,9 +725,13 @@ ${request}`.slice(0, 1900), { kind: "note" }).catch(() => undefined);
     let recap: string | null = null;
     if (summary) {
       const parts: string[] = [];
+      // The notes the session has not read yet (how its asks ended) go into the recap turn: it is the session's last.
+      const recapNotes = this.takeNotes();
+      const recapNotesUpTo = this.liveNotes;
+      this.liveNotes = 0;
       const recapTurn = this.d.runner.startTurn({
         resume: old.id,
-        prompt: recapPrompt(reason, this.workerLines()),
+        prompt: recapPrompt(reason, this.workerLines(), recapNotes),
         effort: "medium",
         role: "main",
         model: OPUS,
@@ -748,6 +752,8 @@ ${request}`.slice(0, 1900), { kind: "note" }).catch(() => undefined);
         return "failed";
       }
       recap = parts.join("\n\n");
+      // The recap has them now; a note that arrived while it was written stays for the next session.
+      if (recapNotesUpTo > 0) store.clearNotes(name, recapNotesUpTo);
     } else {
       await conv.post(name, words.notice.replace(/ Writing a handoff.*$/, ""), { kind: "note" }).catch(() => undefined);
     }

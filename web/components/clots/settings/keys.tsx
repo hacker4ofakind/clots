@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { EyeIcon, EyeSlashIcon, KeyIcon, LockSimpleIcon, PencilSimpleIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import { EyeIcon, EyeSlashIcon, KeyIcon, PencilSimpleIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { Label } from "@/components/ui/label";
-import { api, ApiFailure } from "@/lib/api-client";
+import { api } from "@/lib/api-client";
+import { readableError } from "@/lib/readable-error";
+import { useAppState } from "../app-state";
 import { ConfirmDialog } from "../confirm-dialog";
 import { ListCard } from "../list-card";
 import { ConnectionRow } from "./connection-row";
@@ -20,8 +22,16 @@ interface KeyRow {
   protected: boolean;
 }
 
-/** The keys in .env: their names and last four characters. A value is only ever sent, never shown. */
-export function Keys() {
+/** The daemon's own keys cannot be changed from here: the buttons say so. */
+const OWN_KEY = "This key is the daemon's own. Change it in the .env file.";
+
+/**
+ * The keys in .env: their names and last four characters, each with Replace and Remove. A value is only ever sent, never shown. The
+ * list loads again when `version` changes (a tool was added or removed, which writes or drops its key) and when the daemon says
+ * its configuration changed.
+ */
+export function Keys({ version }: { version?: unknown }) {
+  const { subscribe } = useAppState();
   const [keys, setKeys] = useState<KeyRow[]>([]);
   const [editing, setEditing] = useState<{ name: string; replace: boolean }>();
   const [removing, setRemoving] = useState<string>();
@@ -30,7 +40,8 @@ export function Keys() {
   const [error, setError] = useState<string>();
 
   const load = useCallback(() => void api<KeyRow[]>("/keys").then(setKeys).catch(() => undefined), []);
-  useEffect(load, [load]);
+  useEffect(load, [load, version]);
+  useEffect(() => subscribe((event) => event.type === "config.changed" && load()), [subscribe, load]);
 
   const open = (next: { name: string; replace: boolean }) => (setEditing(next), setValue(""), setShow(false), setError(undefined));
   const save = async () => {
@@ -42,7 +53,7 @@ export function Keys() {
       setEditing(undefined);
       load();
     } catch (e) {
-      setError(e instanceof ApiFailure ? e.message : "The daemon cannot be reached.");
+      setError(readableError(e, "That key could not be saved."));
     }
   };
   const remove = async (name: string) => {
@@ -51,7 +62,7 @@ export function Keys() {
       toast(`Removed ${name}`);
       load();
     } catch (e) {
-      toast(e instanceof ApiFailure ? e.message : "The daemon cannot be reached.");
+      toast(readableError(e, "That key could not be removed."));
     }
   };
 
@@ -69,18 +80,12 @@ export function Keys() {
           <ListCard>
             {keys.map((key) => (
               <ConnectionRow key={key.name} data-key={key.name} icon={<KeyIcon size={20} aria-hidden />} label={key.name} mono meta={`•••• ${key.last4}`}>
-                {key.protected ? (
-                  <LockSimpleIcon size={18} aria-label="The daemon's own key" className="mx-2 text-muted-foreground" />
-                ) : (
-                  <>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Replace ${key.name}`} onClick={() => open({ name: key.name, replace: true })}>
-                      <PencilSimpleIcon />
-                    </Button>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Remove ${key.name}`} onClick={() => setRemoving(key.name)}>
-                      <TrashIcon />
-                    </Button>
-                  </>
-                )}
+                <Button variant="ghost" size="icon-sm" aria-label={`Replace ${key.name}`} title={key.protected ? OWN_KEY : undefined} disabled={key.protected} onClick={() => open({ name: key.name, replace: true })}>
+                  <PencilSimpleIcon />
+                </Button>
+                <Button variant="ghost" size="icon-sm" aria-label={`Remove ${key.name}`} title={key.protected ? OWN_KEY : undefined} disabled={key.protected} onClick={() => setRemoving(key.name)}>
+                  <TrashIcon />
+                </Button>
               </ConnectionRow>
             ))}
           </ListCard>

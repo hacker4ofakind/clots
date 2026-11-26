@@ -3,6 +3,7 @@
 import { CheckCircleIcon, CircleIcon, WarningIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { CodeBlock } from "./code-block";
 import type { Build } from "./new-clot-state";
 
 const ORDER = ["cloning", "building", "starting", "done"] as const;
@@ -19,7 +20,7 @@ export function BuildProgress({ name, build, moving, onRetry, onStartOver }: { n
         <p className="flex items-center gap-2 text-body text-primary-ink">
           <WarningIcon aria-hidden /> {moving ? `${name} could not be moved to the new repository.` : `${name} could not be created.`}
         </p>
-        <pre className="max-h-72 overflow-auto rounded-control bg-muted p-3 font-mono text-code whitespace-pre-wrap">{build.log}</pre>
+        <CodeBlock>{build.log}</CodeBlock>
         <div className="flex gap-2">
           <Button variant="outline" onClick={onStartOver}>
             {moving ? "Back to Clots" : "Start over"}

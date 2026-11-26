@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import type { ToolRow } from "@/lib/integrations";
 import { ConfirmDialog } from "./confirm-dialog";
+import { IconTile } from "./icon-tile";
 import { StatusDot } from "./status-dot";
 import { LogoImage } from "./tool-logo";
 
@@ -46,7 +47,7 @@ export function ToolTile({ toolkit, name, logo, icon, status, clot, onEdit, onRe
       {interactive ? (
         <ContextMenu>
           <ContextMenuTrigger asChild>
-            <Button variant="outline" aria-haspopup="menu" aria-label={`${name}, options`} onClick={open} className="size-14 rounded-[14px] border-input p-0 data-[state=open]:bg-muted dark:bg-primary-foreground dark:hover:bg-primary-foreground/90 dark:data-[state=open]:bg-primary-foreground/80">
+            <Button variant="outline" aria-haspopup="menu" aria-label={`${name}, options`} onClick={open} className="size-14 rounded-tile-lg border-input p-0 data-[state=open]:bg-muted dark:bg-primary-foreground dark:hover:bg-primary-foreground/90 dark:data-[state=open]:bg-primary-foreground/80">
               {face}
             </Button>
           </ContextMenuTrigger>
@@ -69,7 +70,9 @@ export function ToolTile({ toolkit, name, logo, icon, status, clot, onEdit, onRe
           </ContextMenuContent>
         </ContextMenu>
       ) : (
-        <span className="flex size-14 items-center justify-center rounded-[14px] border border-input bg-card dark:bg-primary-foreground">{face}</span>
+        <IconTile size="tool" tone="plain" className="dark:bg-primary-foreground">
+          {face}
+        </IconTile>
       )}
       {flag ? (
         <span className="absolute top-0 right-3">
@@ -77,7 +80,9 @@ export function ToolTile({ toolkit, name, logo, icon, status, clot, onEdit, onRe
           <span className="sr-only">{flag}</span>
         </span>
       ) : null}
-      <span className="line-clamp-2 max-w-full text-center break-words">{name}</span>
+      <span className="max-w-full truncate text-center" title={name}>
+        {name}
+      </span>
       {onRemove ? <ConfirmDialog open={confirming} onOpenChange={setConfirming} title={`Remove ${name} from ${clot}?`} description={`${clot} stops using it. You can connect it again later.`} confirmLabel="Remove" onConfirm={() => void onRemove()} /> : null}
     </div>
   );

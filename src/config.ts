@@ -60,11 +60,14 @@ export type Audience = (typeof AUDIENCES)[number];
 
 const composioFields = { ...accountFields, audience: z.enum(AUDIENCES).default("public") };
 
-/** One strict schema per toolkit the daemon knows; any other toolkit takes its triggers from the configuration. */
+/**
+ * One strict schema per toolkit the daemon knows; any other toolkit takes its triggers from the configuration. A built-in toolkit
+ * connects with a key (`apiKey`) or, with none, through Composio's own sign-in, whichever the toolkit offers when it is added.
+ */
 const COMPOSIO_TOOLKITS = {
-  linear: z.strictObject({ ...composioFields, toolkit: z.literal("linear"), apiKey: envKey }),
-  notion: z.strictObject({ ...composioFields, toolkit: z.literal("notion"), apiKey: envKey, verificationToken: envKey.optional() }),
-  stripe: z.strictObject({ ...composioFields, toolkit: z.literal("stripe"), apiKey: envKey, checkoutCompleted: z.boolean().default(false) }),
+  linear: z.strictObject({ ...composioFields, toolkit: z.literal("linear"), apiKey: envKey.optional() }),
+  notion: z.strictObject({ ...composioFields, toolkit: z.literal("notion"), apiKey: envKey.optional(), verificationToken: envKey.optional() }),
+  stripe: z.strictObject({ ...composioFields, toolkit: z.literal("stripe"), apiKey: envKey.optional(), checkoutCompleted: z.boolean().default(false) }),
   googlecalendar: z.strictObject({
     ...composioFields,
     toolkit: z.literal("googlecalendar"),
@@ -231,9 +234,9 @@ export interface ComposioAccount extends AccountBase {
   /** Stripe */
   checkoutCompleted?: boolean;
 }
-export type StripeAccount = ComposioAccount & { toolkit: "stripe"; apiKey: string; checkoutCompleted: boolean };
-export type LinearAccount = ComposioAccount & { toolkit: "linear"; apiKey: string };
-export type NotionAccount = ComposioAccount & { toolkit: "notion"; apiKey: string };
+export type StripeAccount = ComposioAccount & { toolkit: "stripe"; checkoutCompleted: boolean };
+export type LinearAccount = ComposioAccount & { toolkit: "linear" };
+export type NotionAccount = ComposioAccount & { toolkit: "notion" };
 export type CalendarAccount = ComposioAccount & { toolkit: "googlecalendar"; leadMinutes: number[]; pollMinutes: number };
 export const isCalendar = (a: ComposioAccount): a is CalendarAccount => a.toolkit === "googlecalendar";
 export interface Sources {
@@ -409,7 +412,7 @@ export function renamedKeysIn(json: unknown): [string, string][] {
 }
 
 /** `choiceTimeoutMinutes` is the old name of `askTimeoutMinutes`; the new one wins when both are there. */
-function migrateLegacy(json: unknown): unknown {
+export function migrateLegacy(json: unknown): unknown {
   if (typeof json !== "object" || json === null) return json;
   const file = { ...(json as Record<string, unknown>) };
   if ("choiceTimeoutMinutes" in file) {

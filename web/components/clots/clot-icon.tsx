@@ -48,7 +48,7 @@ export function NamedIcon({ name, size = 16, className }: { name: string; size?:
 export function ClotIcon({ icon, home, active = false, size = 24, tile, label }: { icon: ClotIconValue | undefined; home?: boolean; active?: boolean; size?: number; tile?: number; label?: string }) {
   const Named = useMemo(() => (icon && "phosphor" in icon ? phosphorByName(icon.phosphor) : undefined), [icon]);
   if (icon && "upload" in icon) {
-    return <Image src={`/api/d/clots/icons/${encodeURIComponent(icon.upload)}${active ? "?variant=active" : ""}`} alt={label ?? ""} width={tile ?? size + 8} height={tile ?? size + 8} unoptimized className="rounded-[9px] object-contain" style={{ width: tile ?? size + 8, height: tile ?? size + 8, maxWidth: "none" }} />;
+    return <Image src={`/api/d/clots/icons/${encodeURIComponent(icon.upload)}${active ? "?variant=active" : ""}`} alt={label ?? ""} width={tile ?? size + 8} height={tile ?? size + 8} unoptimized className="rounded-tile-sm object-contain" style={{ width: tile ?? size + 8, height: tile ?? size + 8, maxWidth: "none" }} />;
   }
   const color = icon && "phosphor" in icon ? colorVar(icon.color) : "currentColor";
   const weight = active ? "bold" : "regular";

@@ -43,6 +43,8 @@ export function AppStateProvider({ initial, children }: { initial: { clots: Clot
   const listeners = useRef(new Set<(event: StreamEvent) => void>());
   const resyncs = useRef(new Set<() => void>());
   const active = useRef<string | undefined>(undefined);
+  /** What the stream said about asks while a fetch of the lists was on its way: the fetch's answer may be older than that. */
+  const meanwhile = useRef({ running: 0, opened: new Set<number>(), closed: new Set<number>() });
   const { setTheme } = useTheme();
 
   // The theme and the content width are preferences kept by the daemon, so they follow the user across devices.
@@ -52,10 +54,21 @@ export function AppStateProvider({ initial, children }: { initial: { clots: Clot
   }, [prefs.theme, prefs.contentWidth, setTheme]);
 
   const refresh = useCallback(async () => {
+    const seen = meanwhile.current;
+    seen.running += 1;
     const [nextClots, nextAsks, nextPrefs] = await Promise.all([api<ClotSummary[]>("/clots"), api<AskSnapshot[]>("/asks"), api<UiPrefs>("/settings/ui")]).catch(() => [undefined, undefined, undefined] as const);
     if (nextClots) setClots(nextClots.map((c) => (c.name === active.current ? { ...c, unread: 0 } : c)));
-    if (nextAsks) setAsks(nextAsks);
+    // An ask the stream opened while the fetch was out stays, and one it closed stays closed, whatever the (older) answer says.
+    // (Copied now: the updater below runs later, after the sets have been cleared.)
+    const opened = new Set(seen.opened);
+    const closed = new Set(seen.closed);
+    if (nextAsks) setAsks((current) => [...nextAsks.filter((a) => !closed.has(a.id)), ...current.filter((a) => opened.has(a.id) && !nextAsks.some((n) => n.id === a.id))]);
     if (nextPrefs) setPrefs(nextPrefs);
+    seen.running -= 1;
+    if (seen.running === 0) {
+      seen.opened.clear();
+      seen.closed.clear();
+    }
   }, []);
 
   const onEvent = useCallback((event: StreamEvent) => {
@@ -72,6 +85,7 @@ export function AppStateProvider({ initial, children }: { initial: { clots: Clot
         break;
       }
       case "ask.opened":
+        if (meanwhile.current.running > 0) meanwhile.current.opened.add(event.data.id);
         setAsks((list) => (list.some((a) => a.id === event.data.id) ? list : [...list, event.data]));
         setClots((list) => list.map((c) => (c.name === event.data.clot ? { ...c, waiting: c.waiting + 1 } : c)));
         break;
@@ -79,6 +93,10 @@ export function AppStateProvider({ initial, children }: { initial: { clots: Clot
         setAsks((list) => list.map((a) => (a.id === event.data.id ? event.data : a)));
         break;
       case "ask.closed":
+        if (meanwhile.current.running > 0) {
+          meanwhile.current.closed.add(event.data.id);
+          meanwhile.current.opened.delete(event.data.id);
+        }
         setAsks((list) => list.filter((a) => a.id !== event.data.id));
         setClots((list) => list.map((c) => (c.name === event.data.clot ? { ...c, waiting: Math.max(0, c.waiting - 1) } : c)));
         break;

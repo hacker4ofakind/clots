@@ -10,10 +10,8 @@ export const splitMinutes = (total: number): { hours: number; minutes: number } 
 /** Two typed fields to minutes: more than 59 minutes roll into hours. */
 export const joinMinutes = (hours: number, minutes: number): number => hours * 60 + minutes;
 
-const pad = (n: number) => String(n).padStart(2, "0");
-
 /**
- * A duration as "00 h 15 m": two number fields of up to two digits with their units fixed between them, sharing one border and one
+ * A duration as "0 h 15 m": two number fields of up to two digits with their units fixed between them, sharing one border and one
  * focus ring. Arrow keys step by 1 (Shift by 10); right at a field's end moves to the other field; Backspace in an empty minutes
  * field goes back to hours; minutes above 59 roll into hours when the field is left. The value is in minutes.
  */
@@ -55,7 +53,7 @@ export function TimeInput({ value, onChange, label, id, disabled }: { value: num
         inputMode="numeric"
         aria-label={`${label}, ${which === "h" ? "hours" : "minutes"}`}
         disabled={disabled}
-        value={draft[which] ?? pad(n)}
+        value={draft[which] ?? String(n)}
         onFocus={(e) => e.currentTarget.select()}
         onKeyDown={(e) => step(which, e)}
         onChange={(e) => {
@@ -71,9 +69,9 @@ export function TimeInput({ value, onChange, label, id, disabled }: { value: num
           commit(hours, minutes);
           setDraft({});
         }}
-        className="h-full w-[2ch] flex-none p-0 text-center font-mono text-body tabular-nums"
+        className="h-full w-4.5 flex-none p-0 text-right text-body tabular-nums"
       />
-      <span className="mr-1 font-mono text-body text-muted-foreground" aria-hidden>
+      <span className="mr-1 text-body text-muted-foreground" aria-hidden>
         {unit}
       </span>
     </>

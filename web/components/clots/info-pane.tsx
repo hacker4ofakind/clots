@@ -6,7 +6,7 @@ import { ConnectionIcon } from "./connection-icon";
 export function InfoPane({ info }: { info: ClotInfo }) {
   return (
     <div className="flex flex-col gap-5.5">
-      <h2 className="text-section">Info</h2>
+      <h2 className="text-section leading-normal">Info</h2>
       <div className="flex items-center justify-between gap-3 text-body">
         <span className="text-label text-foreground-soft">Repository</span>
         {info.repository ? (

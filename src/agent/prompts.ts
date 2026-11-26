@@ -134,14 +134,20 @@ const RECAP_OPENING: Record<SeedReason, string> = {
   user: "The user has asked to close this session and start a fresh one, which will know only what you write now.",
 };
 
-export function recapPrompt(reason: SeedReason, workers: string[] = []): string {
+/**
+ * The prompt of the turn that writes a recap. `notes` are what the daemon has to tell the session since its last turn (how asks
+ * ended: sent, declined, blocked at the deadline, answered in the app): that turn is the last this session has, so it must
+ * not write the recap without them.
+ */
+export function recapPrompt(reason: SeedReason, workers: string[] = [], notes: string[] = []): string {
   const block = workersBlock(workers);
-  return `${block === undefined ? "" : `${block}\n\n`}${RECAP_OPENING[reason]} ${RECAP_BODY}`;
+  const since = notes.length === 0 ? undefined : `[Since your last turn:\n${notes.map((note) => `- ${note}`).join("\n")}]`;
+  return `${since === undefined ? "" : `${since}\n\n`}${block === undefined ? "" : `${block}\n\n`}${RECAP_OPENING[reason]} ${RECAP_BODY}`;
 }
 
 const RECAP_BODY = `Write a recap for it, as plain text under these headings:
 
-What happened
+What happened (including how each question put to the user ended: allowed, declined, blocked because no answer came in time, answered in the app, or withdrawn)
 What was done
 What was declined, and the user's reason
 Asks and choices still awaiting an answer

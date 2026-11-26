@@ -9,5 +9,5 @@ const TONES = {
 
 /** A small coloured dot: the state of a Clot, the "something is waiting" mark. */
 export function StatusDot({ tone, className }: { tone: keyof typeof TONES; className?: string }) {
-  return <span aria-hidden className={cn("inline-block size-[7px] shrink-0 rounded-full", TONES[tone], className)} />;
+  return <span aria-hidden className={cn("inline-block size-1.75 shrink-0 rounded-full", TONES[tone], className)} />;
 }

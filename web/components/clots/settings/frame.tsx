@@ -39,14 +39,14 @@ export function SettingsFrame({ children }: { children: ReactNode }) {
               key={page.href}
               href={page.href}
               aria-current={pathname === page.href ? "page" : undefined}
-              className={cn("rounded-control px-3 py-2 text-body text-foreground-soft hover:bg-muted", pathname === page.href && "bg-muted font-semibold text-foreground")}
+              className={cn("rounded-control px-3 py-2 text-ui text-foreground-soft hover:bg-muted", pathname === page.href && "bg-muted font-semibold text-foreground")}
             >
               {page.label}
             </Link>
           ))}
         </nav>
         <div className="min-w-0 flex-1 overflow-y-auto px-12 py-8">
-          <div className="content-width flex flex-col gap-5">{children}</div>
+          <div className={cn("flex w-full flex-col gap-5", pathname === "/settings/general" ? "max-w-170" : "max-w-180")}>{children}</div>
         </div>
       </div>
     </PhoneRedirect>

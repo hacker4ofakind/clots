@@ -57,7 +57,8 @@ shown:
 - **Commands start with `/`**, not `&`. The set is unchanged.
 - **Rollover keeps one chat per Clot.** A rollover adds a note to the same
   chat; the old messages stay visible to the user and are no longer in the
-  Clot's context. There are no session channels, read-only channels or
+  Clot's context. The turn that writes the recap is told how the session's
+  questions ended, and the recap says how each one ended. There are no session channels, read-only channels or
   channel pruning.
 - **`clots-waiting` becomes the Waiting for you page**, built from the open
   asks and choices.
@@ -149,8 +150,9 @@ conversation store, a set of SQLite tables, and emits a stream event.
 
 - `messages`: one row per item in a Clot's chat, with `kind`: `user`,
   `clot` (the main session's text), `activity` (the turn summary and
-  tool-activity lines), `note` (rollover, context limit, ask outcomes, daemon
-  notices such as a global memory applied), `ask` (points at the ask), and
+  tool-activity lines), `note` (rollover, context limit, daemon notices such as
+  a global memory applied or a tool left out of the configuration; never an ask's
+  outcome, which its card shows), `ask` (points at the ask), and
   `workers` (points at a turn's workers), and `onboarding` (a new Clot's first
   message, with its repository and webhook address as data). Each row has its
   session ID, so the UI can mark where a rollover happened.
@@ -166,7 +168,11 @@ conversation store, a set of SQLite tables, and emits a stream event.
 - **Mentions and pings** are gone; push notifications (section 8) take their
   place.
 - **Global memory posts**, standing rule notices, recipe notices and every other
-  daemon post become `note` messages in the right Clot's chat.
+  daemon post become `note` messages in the right Clot's chat. A Composio entry
+  the loader leaves out (for example its key is missing from `.env`) is announced
+  once per distinct problem, as a note in Home's chat in plain words; what was
+  told is kept in the store, so a restart does not repeat it, and an entry that
+  is fixed or removed is forgotten and told again if it breaks again.
 - Old Discord history is not imported.
 
 ## 6. Asks and choices
@@ -180,6 +186,14 @@ rule. What changes is how an ask is shown and answered.
   kind also takes `edit`: the new body replaces the draft before sending, and
   the main session gets a note listing what the user changed. An answer to an
   ask that already closed returns its outcome, which the UI shows as a toast.
+  A failed answer keeps the card with Retry, which sends the answer the user
+  chose, with the same idempotency key.
+- **Closing**: a closed ask shows its outcome exactly once, on its own card in
+  the chat (the card folds into the outcome); no separate note message is
+  posted. The Clot's session learns how every ask ended (whatever kind, however
+  it closed, a restart ask included) through a note that goes in front of its
+  very next turn of any kind, so what the user edited or decided reaches it
+  without the user saying so.
 - **Feedback**: a message sent in the Clot's chat while its ask is open is
   treated as that kind's "any other reply" (parent section 7), exactly as now.
 - **Deadline**: a timer in the gate ticker closes asks whose deadline passed: a
@@ -189,8 +203,8 @@ rule. What changes is how an ask is shown and answered.
   minutes, urgent under 1 minute. "Urgent" in the Waiting for you summary
   counts asks under 1 minute.
 - **Limits** (`maxProposals`, labelled "Open rule asks per Clot") are unchanged.
-- **Withdrawal** still closes an ask when what it acts on changes; the UI shows
-  the outcome as a note.
+- **Withdrawal** still closes an ask when what it acts on changes; the card
+  shows the outcome.
 
 ## 7. Screens
 
@@ -201,9 +215,12 @@ cannot show.
 ### Shell (desktop)
 
 - The rail, the page container and the optional side pane, as in the design
-  system's Layout section. Side pane width is dragged on its grip, saved per
-  Clot in UI preferences; dragging to the left edge makes it full width,
-  dragging to the right edge closes it. No close or full-screen buttons.
+  system's Layout section. The side pane opens at a fixed default width (300
+  px) every time; a caller may give its own (4b's Clapboard opens wider). It is
+  resized on its grip: dragging to the right narrows it continuously, with no
+  dead zone, and letting go below a threshold closes it; dragging to the left
+  widens it up to the full width. No width is remembered, so the next opening
+  starts at the default again. No close or full-screen buttons.
 - The rail has no logo. From the top: Home, every Clot (the list scrolls when
   they do not fit), New Clot, then at the bottom Waiting for you and Settings.
   Rail order is the Clots' order, changed by dragging in the rail (persisted
@@ -237,9 +254,18 @@ cannot show.
 - Composer: attach (a `+` button, desktop), text, send. Pasting an image attaches it on both
   desktop and phone. Enter sends, Shift+Enter adds a line. Images go to the
   Clot as image content in the prompt.
+- Content width applies to the messages and the composer; in the chat only, at
+  "wide" the horizontal padding equals the vertical padding.
 - Slash menu on `/`: every command with its options and description in plain
   English, fuzzy filtered, matched prefix in bold, as wide as the composer. On a
-  phone it has no descriptions.
+  phone it has no descriptions. The list, in this order, as on the canvas's
+  `Slash` artboard: `/effort` (low or medium), `/close` (optionally without
+  summary), `/rules` (optionally undo), `/memory` (optionally undo), `/spend`,
+  `/calendar undo`, `/composio undo`, `/composio reconnect` (tool:account); the
+  daemon supplies the text, and each command says whether it needs an argument
+  (`required`: `/effort` and `/composio reconnect`). A command with no required
+  argument runs on a single Enter; one that needs one is completed in the box
+  and waits for it.
 - Scrolling up loads older messages, across rollovers.
 
 ### Worker card
@@ -255,10 +281,13 @@ Each row links to its pull request once there is one.
   medium, narrow; default wide), start a new session at (`rolloverPercent`),
   workers at once (`maxWorkers`), open rule asks per Clot (`maxProposals`),
   ask timeout (`askTimeoutMinutes`, as the time input), public URL. Theme and
-  content width are segmented controls, the start-a-session, workers and rule-ask
+  content width are segmented controls (in the chat, Wide fills the page with
+  the same space at the sides as above and below the messages; Medium and
+  Narrow cap the width), the start-a-session, workers and rule-ask
   limits are steppers. Leaving a page with unsaved edits asks first. Save writes
-  and applies (section 10). Theme and content width are UI preferences, saved
-  at once.
+  and applies (section 10); the toast names the settings by their labels on the
+  page, never by key ("Saved. Ask timeout takes effect after a restart."). Theme
+  and content width are UI preferences, saved at once.
 - **Manage Clots**: one list, each Clot with its icon, name, repository (Home:
   "No repository"), its state alone (working, idle, paused with reason), and
   icon buttons Edit (opens the New Clot steps prefilled) and Delete; New Clot
@@ -268,8 +297,9 @@ Each row links to its pull request once there is one.
   back). Order is changed in the rail.
 - **Integrations**: Inboxes (email accounts: list, add, edit, remove), Composio
   (accounts: list with scope and audience, add, edit, remove) and Keys (the
-  `.env` keys: name, last 4 characters, replace, remove, add). Secret Storage
-  is absent.
+  `.env` keys: name, last 4 characters, replace, remove, add; the daemon's own
+  keys, which it refuses to change, show those buttons disabled with the reason).
+  Secret Storage is absent.
 
 ### Phone
 
@@ -278,8 +308,9 @@ Each row links to its pull request once there is one.
   inside the safe areas.
 - The chat has a back button and edge-swipe back, no header actions, no attach
   button.
-- Asks on Waiting for you show only Block and Allow (or the choice options);
-  tapping the row opens it in the chat.
+- Asks on Waiting for you show only the two answering buttons, named as on
+  desktop (Decline and Approve; Don't send and Send for an email), or the choice
+  options; tapping the row opens it in the chat.
 - On Waiting for you only: a one-time "Get a notification when a Clot needs you"
   row with one Turn on button, in `highlight-soft`, until notifications are
   allowed or dismissed.
@@ -287,6 +318,10 @@ Each row links to its pull request once there is one.
   waiting for you", or why it is paused) and a chevron; the screen is full bleed,
   with no rounded shell.
 - Settings, New Clot and integrations are not reachable from the phone.
+
+### Pages that say one thing
+
+The 404, the error page, the private page (403) and the setup page (503) share one layout: a tile icon, a short heading, one line of text and one primary action, centred on the page container's card (no rail), like the empty state of Waiting for you. 404 ("We can't find that page", Go to Waiting for you) is also what an unknown Clot shows; there it fills the shell's page container, so the rail stays. The error page ("Something went wrong") has Try again and a quiet Go to Waiting for you, and a small "Reference" with the error's digest when one exists. None of them ever shows an error message or a stack. Layouts: the Clots Web UI canvas, `NotFound` and `Error` (light, dark and phone).
 
 ## 8. Push notifications and the installed app
 
@@ -310,8 +345,19 @@ Each row links to its pull request once there is one.
 ## 9. Creating a Clot
 
 1. **Icon, name, repository.** The icon picker offers every Phosphor icon
-   (regular weight, searchable, eight colours) or an upload (SVG, PNG, JPG,
-   WebP, ICO, or pasted). A name is shown exactly as typed ("Truecast",
+   (regular weight, searchable, eight colours) or an upload (SVG, PNG, JPEG,
+   WebP, ICO, or pasted). The dialog has one fixed size whatever it shows, with
+   its footer pinned and the results scrolling inside it; it opens on a curated
+   grid of 24 icons with the search box reading "Search N icons" (N the real
+   count), and the default icon, Sliders in red, is pre-selected. An upload's
+   type is read from the file's own bytes, never its name or declared type; an
+   SVG is sanitised (no scripts, event handlers, external references) and
+   rasterised, an ICO is decoded in the daemon (its biggest frame), and only a
+   PNG is ever stored or served. A file that cannot be read says what is
+   accepted and what was wrong ("That file couldn't be read as an image. Try
+   another one."; "Paste an image, or upload an SVG, PNG, JPG, WebP or ICO."; "That
+   image is too large. An icon can be up to 2 MB."), in the footer so nothing
+   shifts. A name is shown exactly as typed ("Truecast",
    "Encryptify"): letters, digits and hyphens, starting with a letter, up to 31
    characters, capitals allowed. Docker names, volumes and rule files use its
    slug, the name in lower case, and the name is free only when its slug is: a
@@ -343,7 +389,9 @@ The Clot's first message is one line ("<name> is ready. Three steps finish its
 setup.") and the onboarding checklist (parent section 11) as a card at normal
 chat size: each step with a done or not-done mark, ticking itself as the step
 is done. Each is checked by a real test: the GitHub webhook (checked when
-GitHub's ping arrives), each tool's connection, and a branch pushed with the
+GitHub's ping arrives, which reaches the daemon without any stream event, so the
+card asks the daemon every few seconds while a step is open and ticks the moment
+the ping has landed), each tool's connection, and a branch pushed with the
 Clot's token. The webhook step shows the address to send to and the secret, each
 behind a Copy button. The secret is never in the message text (it would sit in
 the chat history in the database and in push previews): the message carries
@@ -380,6 +428,9 @@ or a worker is running). Changing only the icon saves at once.
   daemon's own `.env` tokens apply after a restart, and the UI says so. A key
   with no live handler is reported the same way, never ignored. A hand-edited
   repository for an existing Clot is not re-cloned; Edit does that.
+- **The old name**: a file that still has `choiceTimeoutMinutes` is read as
+  `askTimeoutMinutes`, also when it appears through a hand edit or a save from
+  the UI, which applies it live, drops the old key and carries the value over.
 - **`set_config`** (the Clot tool) always becomes a config ask: the user's yes
   saves and applies it at once, with no `daemon_restart`. Because changes now
   apply live, no key is changed by a Clot without a yes; `ui` joins the keys a
@@ -387,8 +438,7 @@ or a worker is running). Changing only the icon saves at once.
 - **Keys** are written to `.env` by name; the API never returns a value, only
   the last 4 characters. A key name is generated for new integrations
   (`<TOOLKIT>_<ACCOUNT>_KEY`).
-- **UI preferences** (theme, content width, side pane widths, notifications
-  dismissed) are stored in SQLite, so they follow the user across devices.
+- **UI preferences** (theme, content width, notifications dismissed) are stored in SQLite, so they follow the user across devices.
 - `discord` is removed from the config; `ui: { "owner": "<tailscale login>" }`
   is added.
 
@@ -412,7 +462,13 @@ or a worker is running). Changing only the icon saves at once.
    step-by-step instructions that fit the dialog. How a toolkit connects is the
    daemon's decision, not the session's, and a connection from the dialog holds
    one secret (the generated key); a toolkit that needs its own OAuth app is
-   refused at Finish with a pointer to the config file. Recipes are written by a
+   refused at Finish with a pointer to the config file. The daemon decides from
+   what Composio says about the toolkit alone, for every toolkit alike (Linear,
+   Notion and Stripe included): managed OAuth that asks for nothing first is a
+   sign-in; otherwise a key scheme is a key; no auth needs nothing; anything
+   else is refused. The session is told the result and cannot change it; editing
+   an existing tool keeps its way of connecting. A sign-in entry of a built-in
+   toolkit has no `apiKey`. Recipes are written by a
    Clot afterwards (2e any-toolkit design), not by the session. The dialog shows
    skeletons while it works.
 4. **Connect**: the daemon writes the entry once the connection is ready (for OAuth when it is active; for a key right after the key is saved) and reloads. For OAuth, it gets the
@@ -433,9 +489,16 @@ removing apply at once.
 ## 12. Error handling
 
 - **Daemon unreachable**: a banner over the page ("Can't reach the Clots
-  daemon. Retrying…") and reconnects with backoff; actions are disabled until
-  it is back.
+  daemon. Retrying…") and reconnects with backoff; the actions and the composer
+  are disabled until it is back, and the page refetches what it shows when it
+  returns.
 - **Stream gap**: `resync` makes the UI refetch the open screen.
+- **Error text**: the daemon's own wording reaches the user only when it is a
+  sentence a person can read; anything else becomes a plain line by kind of
+  failure, or the caller's own fallback. No raw error string is shown.
+- **A page fails to render**: the error page, "Something went wrong", with Try again (re-fetches and re-renders the page) and a link to Waiting for you; the error goes to the browser console and the server log, the screen shows only the digest as "Reference". A failure of the root layout shows the same page from `global-error`, with its own document, styles and theme.
+- **Unknown address or Clot**: the 404 page.
+- **Not the owner, or `ui.owner` missing**: the proxy answers 403 ("Clots is private") or 503 ("Clots is not set up", naming `ui.owner`) with the same page, styled by its own small stylesheet because the app's cannot load yet.
 - **Sending fails**: the message stays in the chat with Retry.
 - **Answering a closed ask**: a toast with how it ended.
 - **Invalid settings**: the error next to the field; nothing is saved.

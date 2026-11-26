@@ -538,6 +538,28 @@ describe("Clot", () => {
       expect(runner.calls[2].prompt).toContain("the user asked for a fresh one");
     });
 
+    it("/close gives the recap turn the notes about how asks ended, and does not give them to the new session again", async () => {
+      runner.script = [{}, { say: ["RECAP: built the footer."] }, {}];
+      await clot.onMessage(msg("do the thing"));
+      store.addNote("graphite", "The user did not answer your email to a@b.c within 10 minutes, so it was not sent.");
+
+      await clot.onMessage(msg("/close"));
+
+      expect(runner.calls[1].prompt).toContain("[Since your last turn:\n- The user did not answer your email to a@b.c within 10 minutes, so it was not sent.]");
+      expect(runner.calls[1].prompt).toContain("blocked because no answer came in time");
+      expect(store.notes("graphite")).toEqual([]);
+      await clot.onMessage(msg("carry on"));
+      expect(runner.calls[2].prompt).not.toContain("did not answer your email");
+    });
+
+    it("/close leaves the notes for the next try when the recap could not be written", async () => {
+      runner.script = [{}, { ok: false, say: [] }];
+      await clot.onMessage(msg("do the thing"));
+      store.addNote("graphite", "The user declined X.");
+      await clot.onMessage(msg("/close"));
+      expect(store.notes("graphite")).toHaveLength(1);
+    });
+
     it("/close nosummary starts from scratch: no recap turn, no seed, empty router context", async () => {
       await clot.onMessage(msg("do the thing"));
 

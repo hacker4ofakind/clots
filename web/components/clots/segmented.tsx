@@ -16,13 +16,13 @@ export interface SegmentedOption<T extends string> {
  */
 export function Segmented<T extends string>({ value, onValueChange, options, label }: { value: T; onValueChange: (value: T) => void; options: SegmentedOption<T>[]; label: string }) {
   return (
-    <ToggleGroup type="single" value={value} onValueChange={(next) => next && onValueChange(next as T)} aria-label={label} spacing={2} className="rounded-control border border-input bg-card p-0.5">
+    <ToggleGroup type="single" value={value} onValueChange={(next) => next && onValueChange(next as T)} aria-label={label} spacing={0.5} className="rounded-control border border-input bg-card p-0.5">
       {options.map((option) => (
         <ToggleGroupItem
           key={option.value}
           value={option.value}
           aria-label={option.icon ? option.label : undefined}
-          className="h-[30px] min-w-[34px] rounded-sm px-2.5 text-label font-medium text-muted-foreground data-[state=on]:bg-muted-strong data-[state=on]:text-foreground"
+          className="h-7.5 min-w-8.5 rounded-sm px-2.5 text-label font-medium text-muted-foreground data-[state=on]:bg-muted-strong data-[state=on]:text-foreground"
         >
           {option.icon ?? option.label}
         </ToggleGroupItem>

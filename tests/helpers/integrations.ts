@@ -11,11 +11,11 @@ import { FakeComposioApi } from "../fake-composio.js";
 export const COMPOSIO_KEY = "composio-test-key";
 
 /** A configuration with the Clot `graphite`, on a temp folder, and an .env that holds what loading needs. */
-export function makeConfigStore(o: { publicUrl?: boolean; extra?: Record<string, unknown> } = {}): { config: ConfigStore; dir: string; envFile: string; file: string } {
+export function makeConfigStore(o: { publicUrl?: boolean; extra?: Record<string, unknown>; env?: string } = {}): { config: ConfigStore; dir: string; envFile: string; file: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clots-integrations-"));
   const file = path.join(dir, "clots.config.json");
   const envFile = path.join(dir, ".env");
-  fs.writeFileSync(envFile, `CLAUDE_CODE_OAUTH_TOKEN=c\nCLOT_GITHUB_TOKEN=ghp_secret123\nGITHUB_WEBHOOK_SECRET=w\nCOMPOSIO_API_KEY=${COMPOSIO_KEY}\n`);
+  fs.writeFileSync(envFile, `CLAUDE_CODE_OAUTH_TOKEN=c\nCLOT_GITHUB_TOKEN=ghp_secret123\nGITHUB_WEBHOOK_SECRET=w\nCOMPOSIO_API_KEY=${COMPOSIO_KEY}\n${o.env ?? ""}`);
   fs.writeFileSync(
     file,
     JSON.stringify({ timeZone: "UTC", image: "i", ui: { owner: "me" }, home: true, ...(o.publicUrl === false ? {} : { publicUrl: "https://box.example.ts.net" }), clots: [{ name: "graphite", repoUrl: "https://github.com/o/r.git" }], ...o.extra }),
@@ -26,7 +26,7 @@ export function makeConfigStore(o: { publicUrl?: boolean; extra?: Record<string,
 export type Script = (tools: ConfigurerTools, input: ConfigurerInput) => Promise<void>;
 
 /** Everything a jobs test needs: the jobs over a real config store and the fake Composio, a fake clock, the recorded configurer input. */
-export function makeJobs(o: { publicUrl?: boolean } = {}) {
+export function makeJobs(o: { publicUrl?: boolean; extra?: Record<string, unknown>; env?: string } = {}) {
   const made = makeConfigStore(o);
   const api = new FakeComposioApi();
   const clock = { now: Date.UTC(2026, 10, 24, 9, 0, 0) };

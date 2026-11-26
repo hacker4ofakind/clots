@@ -46,22 +46,25 @@ export function OAuthStep({ toolkit, link, active, needsRestart, shownAt, readyA
         </>
       }
     >
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
-        <p className="text-chat font-semibold">You’re almost done!</p>
-        <p className="max-w-95 text-body text-muted-foreground">Sign in to {toolkit.name} and let Composio connect it. The sign-in opens in a new tab.</p>
-        <Button variant="outline" size="lg" className="px-4.5 text-chat" asChild>
-          <a href={link} target="_blank" rel="noopener noreferrer">
-            Sign in to {toolkit.name}
-            <ArrowSquareOutIcon />
-          </a>
-        </Button>
-        <p aria-live="polite" className="flex h-5 items-center gap-1.5 text-label font-normal text-muted-foreground">
-          {active ? (
-            <>
-              <CheckCircleIcon weight="fill" aria-hidden className="text-highlight-ink" /> {needsRestart ? "Connected. Restart the daemon to finish." : "Connected"}
-            </>
-          ) : null}
-        </p>
+      <div className="flex flex-1 flex-col items-center justify-center text-center">
+        {/* The block is centred on its own; the status line hangs below it, so a sign-in that completes does not move it. */}
+        <div className="relative flex flex-col items-center gap-4">
+          <p className="text-chat font-semibold">You’re almost done!</p>
+          <p className="max-w-95 text-body text-muted-foreground">Sign in to {toolkit.name} and let Composio connect it. The sign-in opens in a new tab.</p>
+          <Button variant="outline" size="lg" className="px-4.5 text-chat" asChild>
+            <a href={link} target="_blank" rel="noopener noreferrer">
+              Sign in to {toolkit.name}
+              <ArrowSquareOutIcon />
+            </a>
+          </Button>
+          <p aria-live="polite" className="absolute top-full mt-4 flex h-5 items-center gap-1.5 whitespace-nowrap text-label font-normal text-muted-foreground">
+            {active ? (
+              <>
+                <CheckCircleIcon weight="fill" aria-hidden className="text-highlight-ink" /> {needsRestart ? "Connected. Restart the daemon to finish." : "Connected"}
+              </>
+            ) : null}
+          </p>
+        </div>
       </div>
     </StepFrame>
   );

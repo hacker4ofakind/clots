@@ -22,7 +22,7 @@ export interface AskActionsProps {
 }
 
 /**
- * The buttons that answer an ask from Waiting for you, joined in one group: Decline, Open in chat, Approve, with the approving one
+ * The buttons that answer an ask from Waiting for you, in one bordered group with dividers: Decline, Open in chat, Approve, with the approving one
  * last and filled. An email adds Edit first. A choice shows its two options, the Clot's pick marked. Each button names its effect for
  * a screen reader.
  */
@@ -61,21 +61,21 @@ export function AskActions({ ask, busy, disabled, onAllow, onBlock, onPick, onOp
   }
 
   return (
-    <ButtonGroup aria-label="Answer">
+    <div role="group" aria-label="Answer" className="flex h-8.5 overflow-hidden rounded-control border border-input bg-card [&>button]:h-8 [&>button]:w-9 [&>button]:rounded-none [&>button]:border-0 [&>button+button]:border-l [&>button+button]:border-l-input">
       {onEdit ? (
-        <Button variant="outline" aria-label="Edit" disabled={off} onClick={onEdit} className="h-8 w-9">
+        <Button variant="ghost" aria-label="Edit" disabled={off} onClick={onEdit}>
           <PencilSimpleIcon />
         </Button>
       ) : null}
-      <Button variant="outline" aria-label={labels.block} disabled={off} onClick={onBlock} className="h-8 w-9">
+      <Button variant="ghost" aria-label={labels.block} disabled={off} onClick={onBlock}>
         <XIcon />
       </Button>
-      <Button variant="outline" aria-label="Open in chat" onClick={onOpen} className="h-8 w-9">
+      <Button variant="ghost" aria-label="Open in chat" onClick={onOpen}>
         <ArrowSquareOutIcon />
       </Button>
-      <Button aria-label={labels.allow} disabled={off} onClick={onAllow} className="h-8 w-9 border-primary">
+      <Button aria-label={labels.allow} disabled={off} onClick={onAllow}>
         {busy ? <Spinner /> : <CheckIcon />}
       </Button>
-    </ButtonGroup>
+    </div>
   );
 }

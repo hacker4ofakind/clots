@@ -20,9 +20,9 @@ export function TabBar() {
   if (pathname.startsWith("/c/") || keyboard) return null;
   const clotsActive = pathname.startsWith("/clots");
   const waitingActive = pathname.startsWith("/waiting");
-  const tab = "flex h-13 w-19 flex-col items-center justify-center gap-0.5 rounded-2xl text-[11px] font-semibold text-muted-foreground";
+  const tab = "flex h-13 w-19 flex-col items-center justify-center gap-0.5 rounded-2xl text-tab text-muted-foreground";
   return (
-    <nav aria-label="Pages" className="fixed bottom-[max(env(safe-area-inset-bottom),24px)] left-1/2 z-30 flex -translate-x-1/2 gap-1 rounded-[22px] bg-popover/90 p-1.5 shadow-pop ring-1 ring-border backdrop-blur-md md:hidden">
+    <nav aria-label="Pages" className="fixed bottom-[max(env(safe-area-inset-bottom),24px)] left-1/2 z-30 flex -translate-x-1/2 gap-1 rounded-bar bg-popover/92 p-1.5 shadow-bar ring-1 ring-border backdrop-blur-md md:hidden">
       <Link href="/clots" aria-current={clotsActive ? "page" : undefined} className={cn(tab, clotsActive && "bg-muted text-foreground")}>
         <Mark className="size-6" title="" />
         Clots

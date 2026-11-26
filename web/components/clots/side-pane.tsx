@@ -1,15 +1,17 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { cn } from "@/lib/utils";
-import { useAppState } from "./app-state";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { usePanelRef } from "react-resizable-panels";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 
 /** What a pane shows: the Clot's info now, a Clapboard later. */
 export interface PaneContent {
-  /** Which Clot's width it keeps. */
+  /** Which Clot opened it; the Info button uses it to tell its own pane from another one. */
   clot: string;
   /** Names the pane for a screen reader. */
   label: string;
+  /** The width it opens at, in pixels. Panes that need more room than the default give their own. */
+  width?: number;
   render: () => ReactNode;
 }
 
@@ -34,122 +36,60 @@ export function SidePaneProvider({ children }: { children: ReactNode }) {
   return <Context.Provider value={{ pane, open, close }}>{children}</Context.Provider>;
 }
 
-/** The pane's width as a share of the space beside the rail. Below the low mark it closes; above the high one it fills the space. */
-export const PANE_MIN = 0.14;
-export const PANE_MAX = 0.94;
-export const PANE_DEFAULT = 0.25;
-const STEP = 0.03;
+/** The width a pane opens at: the design's 300px. Every opening starts here, whatever the pane was dragged to before. */
+export const PANE_WIDTH = 300;
+/** Letting go with the pane narrower than this share of the space beside the rail (and never under the floor) closes it. */
+export const CLOSE_BELOW = 0.12;
+export const CLOSE_FLOOR = 96;
 
 /**
- * The page container and, when one is open, the side pane beside it. The pane is a column on the rail's background, not
- * part of the rounded page: its grip sits in the gap. Dragging the grip resizes it; dragging to the far left makes it
- * the whole width, to the right edge closes it. There are no close or full-screen buttons.
+ * The page container and, when one is open, the side pane beside it. The pane is a column on the rail's background, not part of
+ * the rounded page: its grip sits at its left edge. The two share one resizable group that stays mounted, so opening or closing a
+ * pane never rebuilds the page. Dragging the grip makes the pane follow the pointer all the way: to the far left it is the
+ * whole width, and letting go near the right edge closes it. There are no close or full-screen buttons.
  */
 export function PaneLayout({ children }: { children: ReactNode }) {
   const { pane, close } = useSidePane();
-  const { prefs, updatePrefs } = useAppState();
-  const area = useRef<HTMLDivElement>(null);
-  const saved = pane ? (prefs.paneWidths[pane.clot] ?? PANE_DEFAULT) : PANE_DEFAULT;
-  const [fraction, setFraction] = useState(saved);
-  const [dragging, setDragging] = useState(false);
-  const latest = useRef(fraction);
+  const panel = usePanelRef();
+  const isOpen = pane !== undefined;
+  const width = useRef(PANE_WIDTH);
+  width.current = pane?.width ?? PANE_WIDTH;
+  const [opened, setOpened] = useState(false);
 
-  // A saved width that changed (another tab, another Clot's pane) replaces the one shown.
-  const savedKey = `${pane?.clot}:${saved}`;
-  const [seen, setSeen] = useState(savedKey);
-  if (seen !== savedKey) {
-    setSeen(savedKey);
-    setFraction(saved);
-  }
+  // Opening always starts at the pane's own width, never the last one dragged to; closing folds it away.
   useEffect(() => {
-    latest.current = saved;
-  }, [saved, pane?.clot]);
+    panel.current?.resize(isOpen ? width.current : 0);
+    setOpened(isOpen);
+  }, [isOpen, panel]);
 
-  const commit = useCallback(
-    (next: number) => {
-      if (!pane) return;
-      if (next < PANE_MIN) {
-        close();
-        return;
-      }
-      const clamped = Math.min(1, Math.max(PANE_MIN, next));
-      void updatePrefs({ paneWidths: { [pane.clot]: clamped } });
+  const onLayoutChanged = useCallback(
+    (_layout: unknown, meta: { isUserInteraction: boolean }) => {
+      if (!meta.isUserInteraction) return;
+      const size = panel.current?.getSize();
+      if (!size) return;
+      const space = size.asPercentage > 0 ? (size.inPixels / size.asPercentage) * 100 : 0;
+      // Nothing left of it (the End key, or a drag to the right edge) is below the mark too.
+      if (size.inPixels < Math.max(CLOSE_FLOOR, space * CLOSE_BELOW)) close();
     },
-    [pane, close, updatePrefs],
+    [panel, close],
   );
 
-  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setDragging(true);
-  };
-  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragging || !area.current) return;
-    const rect = area.current.getBoundingClientRect();
-    const next = (rect.right - e.clientX) / rect.width;
-    // The far left makes the pane the whole width.
-    const value = next > PANE_MAX ? 1 : Math.max(0, next);
-    latest.current = value;
-    setFraction(value);
-  };
-  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragging) return;
-    e.currentTarget.releasePointerCapture(e.pointerId);
-    setDragging(false);
-    commit(latest.current);
-  };
-  // Keys repeat faster than the daemon answers: the width follows them at once, and is saved when they pause.
-  const pause = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => () => clearTimeout(pause.current), []);
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const change = (delta: number) => {
-      e.preventDefault();
-      const next = Math.min(1, latest.current + delta);
-      latest.current = next;
-      setFraction(next);
-      clearTimeout(pause.current);
-      pause.current = setTimeout(() => commit(latest.current), 300);
-    };
-    if (e.key === "ArrowLeft") change(STEP);
-    else if (e.key === "ArrowRight") change(-STEP);
-    else if (e.key === "Home") change(1);
-    else if (e.key === "End" || e.key === "Escape") {
-      e.preventDefault();
-      clearTimeout(pause.current);
-      close();
-    }
-  };
-
-  const full = pane !== undefined && fraction >= PANE_MAX;
-  const width = pane ? `${Math.round(Math.min(1, fraction) * 100)}%` : "0%";
-
   return (
-    <div ref={area} className="relative flex min-w-0 flex-1 gap-0 py-0">
-      <main data-page="container" className={cn("min-w-0 flex-1 overflow-hidden bg-card md:rounded-panel md:border", full && "hidden")}>
-        {children}
-      </main>
-      {pane ? (
-        <>
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize the side pane"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(fraction * 100)}
-            tabIndex={0}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onKeyDown={onKeyDown}
-            className="group relative z-10 w-3 shrink-0 cursor-col-resize touch-none outline-none"
-          >
-            <span className={cn("absolute inset-y-1/2 left-1/2 h-12 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-input transition-colors group-hover:bg-muted-foreground group-focus-visible:bg-brand", dragging && "bg-brand")} />
-          </div>
-          <aside aria-label={pane.label} style={full ? undefined : { width }} className={cn("min-w-0 overflow-y-auto bg-background py-5 pr-5 pl-6", full ? "flex-1" : "shrink-0")}>
+    // The group lets the page's 1px ring show outside it (the rail's side); the page panel carries the ring and the rounded corners.
+    <ResizablePanelGroup orientation="horizontal" className="min-w-0 flex-1" style={{ overflow: "visible" }} onLayoutChanged={onLayoutChanged}>
+      <ResizablePanel id="page" defaultSize="100%" minSize="0%" className="h-full bg-card md:rounded-panel md:shadow-panel">
+        <main data-page="container" className="h-full min-w-0 overflow-hidden">
+          {children}
+        </main>
+      </ResizablePanel>
+      <ResizableHandle id="pane-grip" aria-label="Resize the side pane" disableDoubleClick className={opened ? "max-md:hidden" : "pointer-events-none invisible after:hidden [&>span]:hidden"} />
+      <ResizablePanel id="pane" panelRef={panel} defaultSize="0%" minSize="0%" groupResizeBehavior="preserve-pixel-size" className="h-full">
+        {pane ? (
+          <aside aria-label={pane.label} className="h-full overflow-y-auto bg-background py-5 pr-5 pl-6">
             {pane.render()}
           </aside>
-        </>
-      ) : null}
-    </div>
+        ) : null}
+      </ResizablePanel>
+    </ResizablePanelGroup>
   );
 }

@@ -44,9 +44,9 @@ afterEach(() => api.close());
 
 describe("GET /commands", () => {
   it("lists every command in plain English, and each one parses as the command it names", async () => {
-    const list = (await (await call("/commands")).json()) as { name: string; options: string; description: string }[];
+    const list = (await (await call("/commands")).json()) as { name: string; options: string; required: boolean; description: string }[];
     expect(list).toEqual(COMMAND_LIST);
-    expect(list.map((c) => c.name)).toEqual(["close", "effort", "rules", "rules undo", "memory", "memory undo", "spend", "calendar undo", "composio undo", "composio reconnect"]);
+    expect(list.map((c) => c.name)).toEqual(["effort", "close", "rules", "memory", "spend", "calendar undo", "composio undo", "composio reconnect"]);
     for (const c of list) {
       expect(c.description.length).toBeGreaterThan(10);
       expect(c.description).not.toContain("—");

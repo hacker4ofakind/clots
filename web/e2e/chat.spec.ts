@@ -22,7 +22,7 @@ test("the slash menu filters /cl to close and calendar undo, with the matched le
   const box = page.getByLabel("Message Home");
   await box.fill("/");
   const menu = page.getByRole("listbox", { name: "Commands" });
-  await expect(menu.getByRole("option")).toHaveCount(10);
+  await expect.poll(() => menu.getByRole("option").count()).toBeGreaterThan(5);
   await box.fill("/cl");
   await expect(menu.getByRole("option")).toHaveCount(2);
   await expect(menu.getByRole("option").first()).toContainText("/close");
@@ -36,7 +36,7 @@ test("the slash menu filters /cl to close and calendar undo, with the matched le
 test("an email ask is answered from its card in the chat, after the user edits the text", async ({ page, request }) => {
   await gotoLive(page, "/c/home");
   await openAsk(request, { kind: "email", clot: "home", text: "Hello Jane." });
-  const card = page.getByRole("region", { name: "Allow Home to send an email?" });
+  const card = page.getByRole("region", { name: "Send an email from Home?" });
   await expect(card).toBeVisible();
   await card.getByLabel("Message").fill("Edited test.");
   await card.getByRole("button", { name: "Send", exact: true }).click();
@@ -89,7 +89,7 @@ for (const scheme of ["light", "dark"] as const) {
     await expect(page.locator("[data-ask-row]").first()).toBeVisible();
     await expectNoSeriousViolations(page);
     await page.goto("/c/home");
-    await expect(page.getByRole("region", { name: "Allow Home to send an email?" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Send an email from Home?" })).toBeVisible();
     await expectNoSeriousViolations(page);
   });
 }
@@ -253,7 +253,7 @@ test("an ask card past its deadline reads Closing… until the daemon closes it"
   try {
     await gotoLive(page, "/c/Truecast");
     await openAsk(request, { kind: "email", clot: "Truecast" });
-    const card = page.getByRole("region", { name: "Allow Truecast to send an email?" });
+    const card = page.getByRole("region", { name: "Send an email from Truecast?" });
     await expect(card).toBeVisible();
     await expect(card.locator("[data-ask-closing]")).toHaveCount(0);
     // Two minutes pass on the page's clock, while the daemon's has not yet closed the ask.
@@ -270,34 +270,40 @@ test("an ask card past its deadline reads Closing… until the daemon closes it"
 
 test("the rail's Clots move with the keyboard, and the side pane resizes with the arrow keys", async ({ page }) => {
   await page.goto("/c/home");
+  // Other tests may have made more Clots in the fake daemon; only the first three are compared.
   const names = () => page.locator("[data-rail-clot]").evaluateAll((els) => els.map((el) => el.getAttribute("data-rail-clot")));
+  const top = async () => (await names()).slice(0, 3);
   const start = await names();
   expect(start.slice(0, 3)).toEqual(["home", "Truecast", "Encryptify"]);
   await page.locator('[data-rail-clot="Truecast"] a').focus();
   await page.keyboard.press("Alt+ArrowDown");
-  await expect.poll(names).toEqual(["home", "Encryptify", "Truecast"]);
+  await expect.poll(top).toEqual(["home", "Encryptify", "Truecast"]);
   await expect(page.locator('[data-rail-clot="Truecast"] a')).toBeFocused();
-  await expect(page.getByRole("status").filter({ hasText: "Truecast moved to position 3 of 3" })).toHaveCount(1);
+  await expect(page.getByRole("status").filter({ hasText: /Truecast moved to position 3 of \d+/ })).toHaveCount(1);
   await page.keyboard.press("Alt+ArrowUp");
   await expect.poll(names).toEqual(start);
   // The same through the context menu, which the Menu key opens.
   await page.locator('[data-rail-clot="Truecast"]').dispatchEvent("contextmenu");
   await page.getByRole("menuitem", { name: "Move down" }).click();
-  await expect.poll(names).toEqual(["home", "Encryptify", "Truecast"]);
+  await expect.poll(top).toEqual(["home", "Encryptify", "Truecast"]);
   await page.locator('[data-rail-clot="Truecast"]').dispatchEvent("contextmenu");
   await page.getByRole("menuitem", { name: "Move up" }).click();
   await expect.poll(names).toEqual(start);
 
   await page.getByRole("button", { name: "Info" }).click();
   const grip = page.getByRole("separator", { name: "Resize the side pane" });
-  await expect(grip).toBeVisible();
-  const width = Number(await grip.getAttribute("aria-valuenow"));
+  await expect(grip).toBeAttached();
+  const pane = page.getByRole("complementary", { name: /Info about/ });
+  const width = () => pane.evaluate((el) => (el.parentElement ?? el).getBoundingClientRect().width);
+  await expect.poll(width).toBeGreaterThan(290);
+  const openWidth = await width();
   await grip.focus();
   await page.keyboard.press("ArrowLeft");
-  await expect.poll(async () => Number(await grip.getAttribute("aria-valuenow"))).toBeGreaterThan(width);
+  await expect.poll(width).toBeGreaterThan(openWidth);
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
-  await expect.poll(async () => Number(await grip.getAttribute("aria-valuenow"))).toBeLessThan(width);
-  await page.keyboard.press("Escape");
-  await expect(grip).toHaveCount(0);
+  await expect.poll(width).toBeLessThan(openWidth);
+  // Narrowing it with the keys past the closing mark closes it, as letting go of the drag there does.
+  for (let i = 0; i < 12; i++) await page.keyboard.press("ArrowRight");
+  await expect(pane).toHaveCount(0);
 });

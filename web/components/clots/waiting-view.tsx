@@ -11,6 +11,7 @@ import { countUrgent } from "@/lib/timer";
 import { useAppState } from "./app-state";
 import { AskActions } from "./ask-actions";
 import { ClotIcon } from "./clot-icon";
+import { CodeBlock } from "./code-block";
 import { NotificationsRow } from "./notifications-row";
 import { Timer, useNow } from "./timer";
 import { useAnswer } from "./use-answer";
@@ -28,7 +29,7 @@ function EmailPreview({ ask }: { ask: AskSnapshot }) {
           </div>
         ))}
       </dl>
-      <pre className="max-h-64 overflow-auto rounded-control bg-muted p-3 font-mono text-code whitespace-pre-wrap">{view.body}</pre>
+      <CodeBlock className="max-h-64">{view.body}</CodeBlock>
     </div>
   );
 }
@@ -54,7 +55,7 @@ function AskRow({ ask, clot }: { ask: AskSnapshot; clot: ClotSummary }) {
   const chat = `/c/${encodeURIComponent(ask.clot)}?ask=${ask.id}`;
   const open = () => router.push(chat);
   const isEmail = ask.kind === "email";
-  const title = <span className="block min-w-0 truncate text-chat font-medium max-md:text-[16px]">{isEmail ? <EmailSubject ask={ask} /> : ask.summary}</span>;
+  const title = <span className="block min-w-0 truncate text-chat font-[550] max-md:text-base">{isEmail ? <EmailSubject ask={ask} /> : ask.summary}</span>;
   const disabled = connection === "down" || outcome !== undefined;
   const actions = { ask, busy: busy || ask.state === "busy", disabled, onAllow: () => void send({ action: "allow" }), onBlock: () => void send({ action: "block" }), onPick: (option: 0 | 1) => void send({ action: "pick", option }), onOpen: open };
 
@@ -112,7 +113,7 @@ export function WaitingView() {
     <div tabIndex={0} aria-label="Waiting for you" role="region" className="flex h-full flex-col overflow-y-auto pb-28 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:pb-0">
       <div className="content-width flex flex-1 flex-col md:gap-7 md:p-10">
         <div className="flex items-baseline justify-between gap-3 max-md:px-5 max-md:pb-3 max-md:pt-[max(calc(env(safe-area-inset-top)+12px),62px)]">
-          <h1 className="text-title-mobile md:text-title">Waiting for you</h1>
+          <h1 className="text-title-mobile leading-normal md:text-title">Waiting for you</h1>
           {asks.length > 0 ? (
             <p suppressHydrationWarning className="text-label font-normal text-muted-foreground md:text-body" aria-live="polite">
               {asks.length}
@@ -126,18 +127,20 @@ export function WaitingView() {
         {asks.length === 0 ? (
           <Empty className="flex-1 pb-20">
             <EmptyHeader className="items-center gap-3.5">
-              <EmptyMedia variant="icon" className="size-16 rounded-[18px] text-foreground-soft [&_svg:not([class*='size-'])]:size-8">
+              <EmptyMedia variant="icon" className="size-16 rounded-tile-xl text-foreground-soft [&_svg:not([class*='size-'])]:size-8">
                 <CoffeeIcon />
               </EmptyMedia>
-              <EmptyTitle className="text-dialog-title">Continue with your life!</EmptyTitle>
-              <EmptyDescription className="text-chat">None of your Clots are waiting for you.</EmptyDescription>
+              <EmptyTitle role="heading" aria-level={2} className="text-empty font-bold">
+                Continue with your life!
+              </EmptyTitle>
+              <EmptyDescription className="text-chat text-muted-foreground">None of your Clots are waiting for you.</EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
           <div className="flex flex-col md:gap-7">
             {groups.map(({ clot, asks: list }) => (
               <section key={clot.name} aria-label={clotLabel(clot)} className="flex flex-col md:gap-0.5">
-                <h2 className="mb-1 flex items-center gap-2 text-label text-foreground-soft max-md:hidden">
+                <h2 className="mb-1 flex items-center gap-2 text-body font-bold text-foreground-soft max-md:hidden">
                   <ClotIcon icon={clot.icon} home={clot.home} size={16} tile={18} />
                   {clotLabel(clot)}
                 </h2>

@@ -186,6 +186,16 @@ describe("Asks", () => {
     expect(store.notes("graphite")[0]!.text).toContain("whether it finished is not known");
   });
 
+  it("leaves the Clot a note for every way an ask ends, even when its kind gave none", async () => {
+    const terse: AskKind<{ what: string }> = { ...testKind, onDeadline: async (_ask, io) => void (await io.close(null, "Blocked: no answer within 10 minutes.")) };
+    asks = new Asks({ store, conv, now: () => now, kick: () => undefined, after: () => () => undefined, kinds: [terse], emit: () => undefined, timeoutMs: () => 60_000 });
+    await asks.open(terse, "graphite", { what: "x" }, { summary: "About x", dedupe: "x", max: 3 });
+    await asks.sweep(false);
+    now += 120_000;
+    await asks.sweep(false);
+    expect(store.notes("graphite").map((n) => n.text)).toEqual(["Your question to the user (About x) ended: Blocked: no answer within 10 minutes."]);
+  });
+
   it("says why it could not ask, and leaves nothing behind when the post fails", async () => {
     conv.postAsk = async () => {
       throw new Error("down");

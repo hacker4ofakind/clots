@@ -1,58 +1,43 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ClipboardEvent } from "react";
 import { MagnifyingGlassIcon, UploadSimpleIcon } from "@phosphor-icons/react";
 import type { ClotIcon as ClotIconValue } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { api, ApiFailure } from "@/lib/api-client";
 import { PHOSPHOR_NAMES } from "@/lib/phosphor-names";
-import { cn } from "@/lib/utils";
 import { ClotIcon, ICON_COLORS, iconColorName, type IconColor } from "./clot-icon";
+import { CURATED_ICONS } from "./curated-icons";
+import { IconUploadProblem, UNREADABLE, uploadIcon } from "./icon-upload";
 
 const SHOWN = 96;
 const words = (name: string) => name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
-
-function readDataUrl(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(f);
-  });
-}
-
-/** Converts an ICO to a PNG in the browser (the server cannot read ICO), or says it could not. */
-async function fromIco(file: File): Promise<string> {
-  const bitmap = await createImageBitmap(file).catch(() => undefined);
-  if (!bitmap) throw new Error("That ICO file could not be read. Save the icon as PNG and upload that.");
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = 256;
-  canvas.getContext("2d")!.drawImage(bitmap, 0, 0, 256, 256);
-  return canvas.toDataURL("image/png");
-}
 
 /** The colour as a CSS value, from the icon colour tokens. */
 const colorVar = (color: string): string => `var(--icon-${color})`;
 
 /**
  * The button that shows a Clot's icon and opens the picker: any Phosphor icon in one of eight colours, or an upload (SVG, PNG,
- * JPG, WebP, ICO, or pasted). The names load without the library. A pick changes the preview at once; the dialog stays open until
- * it is closed.
+ * JPG, WebP, ICO, or pasted). It opens on a curated grid; the whole catalogue is searched by name. The names load without the
+ * library. The dialog is one size however many icons match, so nothing moves while typing; the results scroll, the footer stays.
+ * A pick changes the preview at once; the dialog stays open until it is closed (an upload closes it).
  */
 export function IconPicker({ value, onChange }: { value: ClotIconValue; onChange: (icon: ClotIconValue) => void }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string>();
+  const [uploading, setUploading] = useState(false);
   const file = useRef<HTMLInputElement>(null);
   const color = "phosphor" in value ? iconColorName(value.color) : "red";
   const name = "phosphor" in value ? value.phosphor : "";
+  const searching = query.trim() !== "";
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (q === "") return PHOSPHOR_NAMES.slice(0, SHOWN);
+    if (q === "") return CURATED_ICONS;
     // Names with a word that starts with what was typed come before those that only contain it ("lock" before "clock").
     const starts = (n: string) => (words(n).startsWith(q) || words(n).includes(` ${q}`) ? 0 : 1);
     return PHOSPHOR_NAMES.filter((n) => words(n).includes(q))
@@ -60,32 +45,50 @@ export function IconPicker({ value, onChange }: { value: ClotIconValue; onChange
       .slice(0, SHOWN);
   }, [query]);
 
-  const upload = async (f: File | undefined) => {
-    if (!f) return;
+  const upload = async (f: File | undefined, from: "dialog" | "paste") => {
+    if (!f || uploading) return;
     setError(undefined);
+    setUploading(true);
     try {
-      const dataUrl = f.name.toLowerCase().endsWith(".ico") || f.type === "image/x-icon" || f.type === "image/vnd.microsoft.icon" ? await fromIco(f) : await readDataUrl(f);
-      const { iconId } = await api<{ iconId: string }>("/clots/icons", { method: "POST", body: { dataUrl } });
-      onChange({ upload: iconId });
+      onChange({ upload: await uploadIcon(f, from) });
       setOpen(false);
     } catch (e) {
-      setError(e instanceof ApiFailure ? e.message : e instanceof Error ? e.message : "The icon could not be uploaded.");
+      setError(e instanceof IconUploadProblem ? e.message : UNREADABLE);
+    } finally {
+      setUploading(false);
     }
   };
 
+  // A picture on the clipboard is an upload; pasted text goes where it was pasted (the search box).
+  const paste = (e: ClipboardEvent<HTMLElement>) => {
+    const pasted = e.clipboardData.files[0];
+    if (!pasted) return;
+    e.preventDefault();
+    void upload(pasted, "paste");
+  };
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) {
+          setQuery("");
+          setError(undefined);
+        }
+      }}
+    >
       <DialogTrigger asChild>
         <Button type="button" variant="outline" aria-label="Pick an icon" className="size-18 rounded-2xl text-foreground [&_svg:not([class*='size-'])]:size-9">
           <ClotIcon icon={value} size={36} tile={72} />
         </Button>
       </DialogTrigger>
-      <DialogContent className="flex max-h-155 flex-col gap-0 p-0 sm:max-w-120" aria-describedby={undefined} onPaste={(e) => void upload([...e.clipboardData.files][0])}>
-        <DialogHeader className="px-5.5 pt-5">
+      <DialogContent className="flex h-140 max-h-[calc(100dvh-2rem)] w-120 flex-col gap-0 p-0 sm:max-w-120" aria-describedby={undefined} onPaste={paste}>
+        <DialogHeader className="shrink-0 px-5.5 pt-5">
           <DialogTitle>Pick an icon</DialogTitle>
         </DialogHeader>
-        <div className="flex flex-col items-center gap-4.5 px-5.5 py-4.5">
-          <div className="flex size-20 items-center justify-center rounded-[20px]" style={{ background: `color-mix(in oklch, ${colorVar(color)} 14%, var(--popover))` }}>
+        <div className="flex shrink-0 flex-col items-center gap-4.5 px-5.5 py-4.5">
+          <div className="flex size-20 items-center justify-center rounded-tile-2xl" style={{ background: `color-mix(in oklch, ${colorVar(color)} 14%, var(--popover))` }}>
             <ClotIcon icon={value} size={44} tile={80} />
           </div>
           <ToggleGroup type="single" value={color} onValueChange={(c) => c && onChange({ phosphor: name === "" ? "Sliders" : name, color: c })} aria-label="Colour" spacing={2.5}>
@@ -97,34 +100,51 @@ export function IconPicker({ value, onChange }: { value: ClotIconValue; onChange
             <InputGroupAddon>
               <MagnifyingGlassIcon />
             </InputGroupAddon>
-            <InputGroupInput aria-label="Search icons" placeholder={`Search ${PHOSPHOR_NAMES.length.toLocaleString("en-US")} icons`} value={query} onChange={(e) => setQuery(e.target.value)} />
+            <InputGroupInput aria-label="Search icons" placeholder={`Search ${PHOSPHOR_NAMES.length.toLocaleString("en-US")} icons`} value={query} onChange={(e) => (setQuery(e.target.value), setError(undefined))} />
           </InputGroup>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4.5">
-          <ToggleGroup type="single" value={name} onValueChange={(n) => n && onChange({ phosphor: n, color })} aria-label="Icon" spacing={1} className="grid w-full grid-cols-8">
-            {matches.map((n) => (
-              <ToggleGroupItem
-                key={n}
-                value={n}
-                aria-label={words(n)}
-                title={words(n)}
-                className={cn("aspect-square h-auto min-w-0 rounded-[10px] text-foreground-soft data-[state=on]:bg-primary-soft data-[state=on]:text-primary-ink data-[state=on]:ring-[1.5px] data-[state=on]:ring-primary data-[state=on]:ring-inset")}
-              >
-                <ClotIcon icon={{ phosphor: n, color: "currentColor" }} size={22} />
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+          {matches.length === 0 ? (
+            <p className="px-2 pt-6 text-center text-body text-muted-foreground">No icon is called that. Try another word.</p>
+          ) : (
+            <ToggleGroup type="single" value={name} onValueChange={(n) => n && onChange({ phosphor: n, color })} aria-label={searching ? "Search results" : "Icons"} spacing={1} className="grid w-full grid-cols-8">
+              {matches.map((n) => (
+                <ToggleGroupItem
+                  key={n}
+                  value={n}
+                  aria-label={words(n)}
+                  title={words(n)}
+                  className="aspect-square h-auto min-w-0 rounded-menu text-foreground-soft data-[state=on]:bg-primary-soft data-[state=on]:text-primary-ink data-[state=on]:ring-[1.5px] data-[state=on]:ring-primary data-[state=on]:ring-inset"
+                >
+                  <ClotIcon icon={{ phosphor: n, color: "currentColor" }} size={22} />
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          )}
         </div>
-        {error ? (
-          <p role="alert" className="px-5.5 pt-3 text-body text-primary-ink">
-            {error}
-          </p>
-        ) : null}
-        <div className="mt-3 flex items-center justify-between gap-3 border-t px-5.5 pb-4.5 pt-3.5">
-          <span className="text-label font-normal text-muted-foreground">SVG, PNG, JPG, WebP or ICO. You can also paste one.</span>
-          <Input ref={file} type="file" hidden accept="image/png,image/jpeg,image/webp,image/svg+xml,.ico,image/x-icon" onChange={(e) => void upload(e.target.files?.[0])} />
-          <Button variant="outline" size="sm" onClick={() => file.current?.click()}>
-            <UploadSimpleIcon /> Upload
+        <div className="mt-3 flex min-h-17 shrink-0 items-center justify-between gap-3 border-t px-5.5 py-3.5">
+          {error ? (
+            <span role="alert" className="min-w-0 text-label font-normal text-primary-ink">
+              {error}
+            </span>
+          ) : (
+            <span className="min-w-0 text-label font-normal text-muted-foreground">SVG, PNG, JPG, WebP or ICO. You can also paste one.</span>
+          )}
+          <Input
+            ref={file}
+            type="file"
+            hidden
+            aria-label="Icon file"
+            accept="image/png,image/jpeg,image/webp,image/svg+xml,image/x-icon,image/vnd.microsoft.icon,.svg,.png,.jpg,.jpeg,.webp,.ico"
+            onChange={(e) => {
+              const picked = e.target.files?.[0];
+              // Cleared so the same file can be chosen again after a failure.
+              e.target.value = "";
+              void upload(picked, "dialog");
+            }}
+          />
+          <Button variant="outline" size="sm" className="shrink-0" disabled={uploading} onClick={() => file.current?.click()}>
+            {uploading ? <Spinner /> : <UploadSimpleIcon />} Upload
           </Button>
         </div>
       </DialogContent>

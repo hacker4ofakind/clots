@@ -13,6 +13,7 @@ import { prepareImage } from "@/lib/images";
 import { useViewport } from "@/lib/viewport";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
+import { AttachmentThumb } from "./attachment-thumb";
 import { fuzzy, SlashMenu, type Match } from "./slash-menu";
 
 export interface Draft {
@@ -75,9 +76,9 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
   const canSend = (text.trim() !== "" || images.length > 0) && !off;
   const touch = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
 
-  const send = () => {
+  const send = (words = text) => {
     if (!canSend) return;
-    onSend({ text, images });
+    onSend({ text: words, images });
     edit("");
     setImages([]);
   };
@@ -89,7 +90,16 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
     if (matches.length > 0) {
       if (e.key === "ArrowDown") return void (e.preventDefault(), setSelected((s) => (s + 1) % matches.length));
       if (e.key === "ArrowUp") return void (e.preventDefault(), setSelected((s) => (s - 1 + matches.length) % matches.length));
-      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && matches[selected] && query.trim().toLowerCase() !== matches[selected]!.command.name)) return void (e.preventDefault(), choose(matches[selected]!.command.name));
+      const picked = matches[selected]?.command;
+      if (picked && e.key === "Tab") return void (e.preventDefault(), choose(picked.name));
+      if (picked && e.key === "Enter" && !e.shiftKey && !touch) {
+        e.preventDefault();
+        // A command that needs nothing more is run by the one press; one that needs an argument is completed for the user to finish.
+        if (!picked.required) send(`/${picked.name}`);
+        else if (query.trim().toLowerCase() !== picked.name) choose(picked.name);
+        else send();
+        return;
+      }
       if (e.key === "Escape") return void (e.preventDefault(), setMenuClosed(true));
     }
     if (e.key === "Enter" && !e.shiftKey && !touch) {
@@ -112,16 +122,15 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
   };
 
   return (
-    <div className={cn("px-3 pt-2 md:px-10 md:pb-4 md:pt-0", keyboard ? "pb-2" : "pb-[max(env(safe-area-inset-bottom),34px)]")}>
+    <div className={cn("chat-gutter px-3 pt-2 md:pb-4 md:pt-0", keyboard ? "pb-2" : "pb-[max(env(safe-area-inset-bottom),34px)]")}>
       <div className="relative">
-        {matches.length > 0 ? <SlashMenu matches={matches} selected={selected} onChoose={choose} /> : null}
+        {matches.length > 0 ? <SlashMenu matches={matches} selected={selected} onSelect={setSelected} onChoose={choose} /> : null}
         <div className="flex flex-col gap-2 rounded-composer border border-input bg-card p-2 shadow-xs focus-within:ring-2 focus-within:ring-ring">
           {images.length > 0 ? (
             <ul className="flex gap-2 px-2 pt-1">
               {images.map((src, i) => (
                 <li key={i} className="relative">
-                  {/* eslint-disable-next-line @next/next/no-img-element -- a local data URL the user attached */}
-                  <img src={src} alt="Attached" className="size-14 rounded-control object-cover" />
+                  <AttachmentThumb src={src} sizes="56px" fit="cover" className="size-14" />
                   <Button type="button" variant="default" size="icon-xs" aria-label="Remove image" onClick={() => setImages((list) => list.filter((_, j) => j !== i))} className="absolute -right-1.5 -top-1.5 size-5 rounded-full bg-foreground text-background hover:bg-foreground-soft">
                     <XIcon size={12} weight="bold" />
                   </Button>
@@ -131,7 +140,7 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
           ) : null}
           <div className="flex items-end gap-2">
             <Input ref={file} type="file" accept="image/*" multiple hidden onChange={(e) => void addFiles([...(e.target.files ?? [])])} />
-            <Button variant="ghost" size="icon" aria-label="Attach an image" onClick={() => file.current?.click()} className="size-9 rounded-full max-md:hidden">
+            <Button variant="ghost" size="icon" aria-label="Attach an image" disabled={off} onClick={() => file.current?.click()} className="size-9 rounded-full max-md:hidden">
               <PlusIcon />
             </Button>
             <Textarea
@@ -143,9 +152,9 @@ export function Composer({ clot, label, onSend, disabled }: { clot: string; labe
               onPaste={onPaste}
               aria-label={`Message ${label}`}
               placeholder={`Message ${label}…`}
-              className={cn("max-h-[200px] min-h-[34px] flex-1 resize-none self-center rounded-none border-0 bg-transparent px-2 py-[5px] text-[16px] leading-6 shadow-none ring-0 focus-visible:ring-0 md:text-chat max-md:pl-2", text.startsWith("/") && "font-mono md:text-body")}
+              className={cn("max-h-50 min-h-8.5 flex-1 resize-none self-center rounded-none border-0 bg-transparent px-0 py-1.25 text-base leading-6 shadow-none ring-0 focus-visible:ring-0 md:text-chat max-md:pl-2", text.startsWith("/") && "font-mono md:text-body")}
             />
-            <Button type="button" size="icon" aria-label="Send" disabled={!canSend} onClick={send} className={cn("size-[34px] rounded-full max-md:size-9 [&_svg:not([class*='size-'])]:size-4", !canSend && "bg-muted-strong text-muted-foreground disabled:opacity-100")}>
+            <Button type="button" size="icon" aria-label="Send" disabled={!canSend} onClick={() => send()} className={cn("size-8.5 rounded-full border-0 max-md:size-9 [&_svg:not([class*='size-'])]:size-4", !canSend && "bg-muted-strong text-muted-foreground disabled:opacity-100")}>
               <ArrowUpIcon weight="bold" />
             </Button>
           </div>

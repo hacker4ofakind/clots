@@ -1,4 +1,7 @@
 /** Longest side, in pixels, an image keeps before it is sent: a phone's screenshot is far larger than a Clot needs. */
+/** What clear parts of a picture turn into in a JPEG: white, as a picture on paper (it is image data, not a colour of the interface). */
+const JPEG_BACKGROUND = "#ffffff";
+
 export const MAX_SIDE = 2048;
 
 /** Largest file that goes as it is when it is already small enough in pixels. Anything bigger is encoded again. */
@@ -48,7 +51,7 @@ export async function prepareImage(file: File): Promise<string> {
     const context = canvas.getContext("2d");
     if (!context) throw new Error("The browser cannot shrink this picture");
     // A JPEG has no transparency: a PNG's clear parts would turn black.
-    context.fillStyle = "#fff";
+    context.fillStyle = JPEG_BACKGROUND;
     context.fillRect(0, 0, size.width, size.height);
     context.drawImage(bitmap, 0, 0, size.width, size.height);
     return canvas.toDataURL("image/jpeg", 0.85);

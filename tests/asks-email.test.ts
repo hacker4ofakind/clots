@@ -69,8 +69,8 @@ describe("the email ask", () => {
     expect(await open({ account: "tady", mail: mail() })).toBe(SEND_FILED);
     const [ask] = emails();
     expect(asks.snapshot(ask)!.view).toEqual({
-      heading: "Allow graphite to send an email?",
-      shortHeading: "Allow sending an email?",
+      heading: "Send an email from graphite?",
+      shortHeading: "Send an email?",
       rows: [
         { label: "From", value: "me@tady.ch" },
         { label: "To", value: "jane@x.com" },

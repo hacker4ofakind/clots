@@ -1,9 +1,8 @@
 import { z } from "zod";
 import type { ConfigStore } from "../../config-store.js";
 import type { ClotCreator } from "../../onboarding/create.js";
-import { IconError, type IconStore } from "../../onboarding/icons.js";
+import { bytesOfDataUrl, IconError, type IconStore } from "../../onboarding/icons.js";
 import { ApiError, ApiResult, parseBody, RawResult, type UiApi } from "../server.js";
-import { decodeImage } from "./clots.js";
 
 const iconSchema = z.union([z.object({ phosphor: z.string().regex(/^[A-Z][A-Za-z0-9]{0,40}$/), color: z.string().min(1).max(30) }), z.object({ upload: z.string().regex(/^[a-f0-9]{16}$/) })]);
 const validateSchema = z.object({ name: z.string().max(80), repo: z.string().max(200) });
@@ -46,19 +45,8 @@ export function registerClotAdminRoutes(api: UiApi, d: AdminDeps): void {
     "/clots/icons",
     async (req) => {
       const { dataUrl } = parseBody(uploadSchema, req.body);
-      let bytes: Buffer;
       try {
-        bytes = /^data:image\/svg\+xml/.test(dataUrl) ? Buffer.from(decodeURIComponent(dataUrl.split(",")[1] ?? ""), "utf8") : decodeImage(dataUrl).data;
-      } catch (error) {
-        if (error instanceof ApiError) {
-          // A format the chat does not take may still be an icon: SVG was handled above; let the icon check name what is wrong.
-          const match = /^data:[^;,]*;base64,(.+)$/.exec(dataUrl);
-          if (!match) throw error;
-          bytes = Buffer.from(match[1]!, "base64");
-        } else throw error;
-      }
-      try {
-        return new ApiResult(201, { iconId: await d.icons.add(bytes) });
+        return new ApiResult(201, { iconId: await d.icons.add(bytesOfDataUrl(dataUrl)) });
       } catch (error) {
         if (error instanceof IconError) throw new ApiError(400, error.message);
         throw error;

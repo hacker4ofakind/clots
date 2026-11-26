@@ -75,8 +75,20 @@
   --radius-panel: 16px;
   --radius-composer: 26px;
 
+  /* Tile radii: a Clot's icon tile and a tool's logo tile grow with their size. */
+  --radius-tile-sm: 9px;
+  --radius-tile-md: 11px;
+  --radius-tile-lg: 14px;
+  --radius-tile-xl: 18px;
+  --radius-tile-2xl: 20px;
+  --radius-bar: 22px;
+
   --shadow-pop: var(--shadow-pop-value);
   --shadow-dialog: var(--shadow-dialog-value);
+  --shadow-panel: var(--shadow-panel-value);
+  --shadow-menu: var(--shadow-menu-value);
+  --shadow-bar: var(--shadow-bar-value);
+  --shadow-card: var(--shadow-card-value);
 
   /* Type styles: text-title, text-chat and so on. */
   --text-title-mobile: 30px;
@@ -103,8 +115,24 @@
   --text-caption: 12.5px;
   --text-caption--line-height: 18px;
   --text-caption--font-weight: 500;
+  --text-empty: 22px;
+  --text-empty--line-height: 33px;
+  --text-empty--font-weight: 700;
+  --text-ui: 14.5px;
+  --text-ui--line-height: 21.75px;
   --text-code: 13.5px;
   --text-code--line-height: 20px;
+  /* Button text: 14px, 13px on the small ones, both at weight 550. */
+  --text-button: 14px;
+  --text-button--line-height: 1;
+  --text-button--font-weight: 550;
+  --text-button-sm: 13px;
+  --text-button-sm--line-height: 1;
+  --text-button-sm--font-weight: 550;
+  /* The phone tab bar's labels. */
+  --text-tab: 11px;
+  --text-tab--line-height: 16px;
+  --text-tab--font-weight: 600;
 }
 
 :root {
@@ -136,6 +164,10 @@
   --scrim: oklch(0.2 0.01 18.67 / 0.32);
   --shadow-pop-value: 0 12px 32px oklch(0.2 0.02 18.67 / 0.14);
   --shadow-dialog-value: 0 20px 50px oklch(0.2 0.02 18.67 / 0.22);
+  --shadow-menu-value: 0 16px 40px oklch(0.2 0.02 18.67 / 0.14);
+  --shadow-bar-value: 0 8px 24px oklch(0.2 0.02 18.67 / 0.14);
+  --shadow-panel-value: 0 0 0 1px var(--border), 0 1px 2px oklch(0.2 0.01 18.67 / 0.04);
+  --shadow-card-value: 0 1px 3px oklch(0.2 0.01 18.67 / 0.06);
 
   /* shadcn's names, derived from the tokens above. */
   --card-foreground: var(--foreground);
@@ -173,7 +205,7 @@
   --border: oklch(0.29 0.008 18.67);
   --input: oklch(0.37 0.01 18.67);
   --tile: oklch(0.32 0.01 18.67);
-  --primary-hover: oklch(0.63 0.21 18.67);
+  /* The design lightens the hover in dark, which takes white text on it to 3.9:1; it stays the light theme's darker value (AA needs 4.5:1). */
   --primary-soft: oklch(0.29 0.07 18.67);
   --primary-ink: oklch(0.78 0.14 18.67);
   --highlight-soft: oklch(0.29 0.05 175.02);
@@ -184,6 +216,10 @@
   --scrim: oklch(0 0 0 / 0.55);
   --shadow-pop-value: 0 12px 32px oklch(0 0 0 / 0.45);
   --shadow-dialog-value: 0 20px 50px oklch(0 0 0 / 0.55);
+  --shadow-menu-value: 0 16px 40px oklch(0 0 0 / 0.45);
+  --shadow-bar-value: 0 8px 24px oklch(0 0 0 / 0.45);
+  --shadow-panel-value: 0 0 0 1px var(--border);
+  --shadow-card-value: 0 1px 3px oklch(0 0 0 / 0.3);
 }
 
 /* The eight colours a Clot's icon can have: the brand's lightness and chroma, turned around the wheel. */
@@ -210,7 +246,12 @@
   --icon-pink: oklch(0.75 0.16 350);
 }
 
-/* The content width setting (Wide fills the page; Medium and Narrow cap it). Set on the root by the app's preferences. */
+/*
+ * The content width setting (Wide fills the page; Medium and Narrow cap it). Set on the root by the app's preferences.
+ * In a chat on desktop the side gutter at Wide is the same as the space above and below (16px, the design system's space-4), so
+ * the messages and the composer use the room; Medium and Narrow keep the page padding (40px) inside their cap. On a phone the
+ * chat's own gutters apply.
+ */
 .content-width {
   width: 100%;
   margin-inline: auto;
@@ -220,6 +261,15 @@
 }
 :root[data-width="narrow"] .content-width {
   max-width: 760px;
+}
+@media (min-width: 768px) {
+  .chat-gutter {
+    padding-inline: 1rem;
+  }
+  :root[data-width="medium"] .chat-gutter,
+  :root[data-width="narrow"] .chat-gutter {
+    padding-inline: 2.5rem;
+  }
 }
 
 @layer base {
@@ -238,6 +288,12 @@
   h3,
   h4 {
     text-wrap: balance;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[href],
+  summary {
+    cursor: pointer;
   }
   :focus-visible {
     outline: 2px solid var(--ring);

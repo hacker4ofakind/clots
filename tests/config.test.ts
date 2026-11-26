@@ -178,7 +178,8 @@ it("refuses the source keys that moved to sources.composio, naming the key", () 
 
 it("refuses a field the toolkit does not take, and a key the toolkit needs, naming the field", () => {
   expect(() => loadConfig(composio({ toolkit: "googlecalendar", account: "me", shared: true, apiKey: "LINEAR_KEY" }), composioKeys)).toThrow("apiKey");
-  expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true }), composioKeys)).toThrow("apiKey");
+  // A built-in toolkit without a key signs in through Composio.
+  expect(loadConfig(composio({ toolkit: "linear", account: "team", shared: true }), composioKeys).sources.composio[0]).toMatchObject({ toolkit: "linear", account: "team" });
   expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY", triggers: [{ slug: "X" }] }), composioKeys)).toThrow("triggers");
   expect(() => loadConfig(composio({ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY", leadTimes: ["1h"] }), composioKeys)).toThrow("leadTimes");
   expect(() => loadConfig(composio({ toolkit: "notion", account: "s", shared: true, apiKey: "NOTION_KEY", checkoutCompleted: true }), composioKeys)).toThrow("checkoutCompleted");

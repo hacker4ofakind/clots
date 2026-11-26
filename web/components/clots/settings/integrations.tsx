@@ -4,7 +4,8 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { ArrowsClockwiseIcon, PencilSimpleIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
-import { api, ApiFailure } from "@/lib/api-client";
+import { api } from "@/lib/api-client";
+import { readableError } from "@/lib/readable-error";
 import { scopeLabel, useIntegrations, useToolkitNames, type InboxRow, type ToolRow } from "@/lib/integrations";
 import { ConfirmDialog } from "../confirm-dialog";
 import { ConnectionIcon } from "../connection-icon";
@@ -21,7 +22,7 @@ interface Removal {
   what: string;
 }
 
-const failure = (e: unknown) => (e instanceof ApiFailure ? e.message : "The daemon cannot be reached.");
+const failure = (e: unknown) => readableError(e, "That could not be done. Try again.");
 
 /** The words under a tool's name: where it is used and who can see it, or what is wrong with it. */
 function toolMeta(tool: ToolRow): string {
@@ -116,7 +117,7 @@ export function IntegrationsSettings() {
           </ListCard>
         ) : null}
       </Section>
-      <Keys />
+      <Keys version={overview} />
       <ConfirmDialog
         open={removal !== undefined}
         onOpenChange={(open) => !open && setRemoval(undefined)}

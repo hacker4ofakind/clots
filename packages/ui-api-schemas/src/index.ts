@@ -172,6 +172,8 @@ export const commandSchema = z.object({
   name: z.string(),
   /** The arguments it takes, in plain English: "low or medium". Empty when it takes none. */
   options: z.string(),
+  /** The command does nothing without the options text (an effort level, an account): the menu completes it instead of running it. */
+  required: z.boolean(),
   description: z.string(),
 });
 export type CommandInfo = z.infer<typeof commandSchema>;

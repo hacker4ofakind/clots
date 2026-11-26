@@ -1,9 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { checkAccess } from "@/lib/access";
 import { getIdentity } from "@/lib/identity";
-
-const page = (title: string, text: string) =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#faf6f6;color:#2a2222}main{max-width:28rem;padding:1.5rem}h1{font-size:1.4rem}</style></head><body><main><h1>${title}</h1><p>${text}</p></main></body></html>`;
+import { accessDeniedHtml, notSetUpHtml } from "@/lib/status-document";
 
 /** The site-wide content security policy. Scripts need the per-request nonce. */
 export function contentSecurityPolicy(nonce: string, dev: boolean): string {
@@ -27,7 +25,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   const identity = await getIdentity();
   const access = checkAccess({ headers: request.headers, owner: identity.owner, serveHost: identity.serveHost });
   if (!access.ok) {
-    const html = access.status === 503 ? page("Clots is not set up", "Set <code>ui.owner</code> in clots.config.json to your Tailscale login, then reload.") : page("Not allowed", "This app is private to its owner on their tailnet.");
+    const html = access.status === 503 ? notSetUpHtml() : accessDeniedHtml();
     return new NextResponse(html, { status: access.status, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } });
   }
   const nonce = btoa(crypto.randomUUID());

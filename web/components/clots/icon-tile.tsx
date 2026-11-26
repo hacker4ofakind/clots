@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 
 const tile = cva("flex shrink-0 items-center justify-center", {
   variants: {
-    size: { xs: "size-[18px] rounded-sm", logo: "size-9 rounded-[9px]", tool: "size-14 rounded-[14px]", sm: "size-8 rounded-[9px]", md: "size-10 rounded-[11px]", phone: "size-11 rounded-card", lg: "size-16 rounded-2xl", xl: "size-20 rounded-[20px]" },
+    size: { xs: "size-[18px] rounded-sm", logo: "size-9 rounded-tile-sm", tool: "size-14 rounded-tile-lg", sm: "size-8 rounded-tile-sm", md: "size-10 rounded-tile-md", phone: "size-11 rounded-card", lg: "size-16 rounded-2xl", xl: "size-20 rounded-tile-2xl" },
     tone: { muted: "bg-muted", soft: "bg-primary-soft text-primary-ink", plain: "border border-input bg-card" },
   },
   defaultVariants: { size: "md", tone: "muted" },

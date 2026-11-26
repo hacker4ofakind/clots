@@ -23,6 +23,7 @@ import { registerWorkerRoutes } from "../../src/ui-api/routes/workers.js";
 import { registerPushRoutes } from "../../src/ui-api/routes/push.js";
 import { registerClotAdminRoutes } from "../../src/ui-api/routes/clots-admin.js";
 import { ClotCreator, onboardingMessage, type HeldTools } from "../../src/onboarding/create.js";
+import { IconStore } from "../../src/onboarding/icons.js";
 import { registerSettingsRoutes } from "../../src/ui-api/routes/settings.js";
 import { registerFakeIntegrations } from "./fake-integrations.mts";
 import { ConfigStore } from "../../src/config-store.js";
@@ -193,7 +194,7 @@ api.route("GET", "/clots/:clot/build", (req) => {
 const onboardingDone = new Set<string>();
 registerClotAdminRoutes(api, {
   creator,
-  icons: {} as never,
+  icons: new IconStore(path.join(dir, "icons")),
   config: configStore,
   webhookSecret: () => "whsec_fake_secret",
   onboarding: () => [

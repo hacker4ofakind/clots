@@ -92,8 +92,8 @@ export function emailKind(d: EmailKindDeps): AskKind<EmailPayload> {
     view: (clot, p) => {
       const title = p.event === undefined ? undefined : d.store.getEvent(p.event)?.title;
       return {
-        heading: `Allow ${labelOf(clot)} to send an email?`,
-        shortHeading: "Allow sending an email?",
+        heading: `Send an email from ${labelOf(clot)}?`,
+        shortHeading: "Send an email?",
         rows: [
           { label: "From", value: p.mail.from },
           { label: "To", value: p.mail.to.join(", ") },

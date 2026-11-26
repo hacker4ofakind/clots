@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
-import { api, ApiFailure } from "@/lib/api-client";
+import { api } from "@/lib/api-client";
 import { labelOfName } from "@/lib/clots";
+import { readableError } from "@/lib/readable-error";
 import { DEFAULT_OPTIONS, toolkitName, type Job, type Overview, type Toolkit, type ToolOptions } from "@/lib/integrations";
 import { cn } from "@/lib/utils";
 import { useAppState } from "../app-state";
@@ -41,7 +42,7 @@ export interface AddedInfo {
   options: ToolOptions;
 }
 
-const message = (e: unknown) => (e instanceof ApiFailure ? (e.unreachable ? "The daemon cannot be reached." : e.message) : "Something went wrong.");
+const message = (e: unknown) => readableError(e, "That could not be done. Try again.");
 
 interface Layout {
   wide: boolean;

@@ -13,6 +13,8 @@ export interface AnswerState {
   /** How the ask ended, once it has: from our own answer or from another device's. */
   outcome: string | undefined;
   send: (answer: AskAnswerBody) => Promise<void>;
+  /** Sends the answer that just failed again: the one the user chose, not another. */
+  retry: () => Promise<void>;
 }
 
 /**
@@ -25,9 +27,12 @@ export function useAnswer(askId: number): AnswerState {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [outcome, setOutcome] = useState<string>();
+  /** What the user last chose, so a retry sends that and nothing else. */
+  const last = useRef<AskAnswerBody>(undefined);
 
   const send = useCallback(
     async (body: AskAnswerBody) => {
+      last.current = body;
       setBusy(true);
       setError(undefined);
       const result = await answer(askId, body, key.current);
@@ -46,5 +51,9 @@ export function useAnswer(askId: number): AnswerState {
     [answer, askId],
   );
 
-  return { busy, error, outcome, send };
+  const retry = useCallback(async () => {
+    if (last.current) await send(last.current);
+  }, [send]);
+
+  return { busy, error, outcome, send, retry };
 }

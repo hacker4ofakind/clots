@@ -90,11 +90,10 @@ describe("icons", () => {
     expect(icon.normal.toString("latin1")).not.toContain("script");
   });
 
-  it("reads a file by its own bytes, refuses an ICO with a clear message, and refuses what is not an image", async () => {
-    expect(sniff(Buffer.from([0, 0, 1, 0, 1, 0]))).toBe("ico");
-    await expect(processIcon(Buffer.from([0, 0, 1, 0, 1, 0, 0, 0]))).rejects.toThrow(/ICO/);
+  it("reads a file by its own bytes and refuses what is not an image, in plain words", async () => {
     await expect(processIcon(Buffer.from("MZ not an image at all"))).rejects.toThrow(IconError);
-    await expect(processIcon(Buffer.alloc(3 * 1024 * 1024, 1))).rejects.toThrow(/2 MB/);
+    await expect(processIcon(Buffer.from("MZ not an image at all"))).rejects.toThrow(/couldn't be read as an image/);
+    await expect(processIcon(Buffer.alloc(3 * 1024 * 1024, 1))).rejects.toThrow(/up to 2 MB/);
   });
 
   it("keeps an icon by an id it makes, serves both variants, and refuses any other id", async () => {

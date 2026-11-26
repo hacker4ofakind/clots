@@ -4,12 +4,12 @@ import { Label } from "@/components/ui/label";
 /** A setting: its label and help on the left, its control on the right. */
 export function FieldRow({ label, help, error, htmlFor, children }: { label: string; help?: string; error?: string; htmlFor?: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-8 py-3">
+    <div className="flex items-center justify-between gap-8 py-2.75">
       <div className="min-w-0">
-        <Label htmlFor={htmlFor} className="text-body font-medium">
+        <Label htmlFor={htmlFor} className="text-ui font-[550]">
           {label}
         </Label>
-        {help ? <p className="text-label font-normal text-muted-foreground">{help}</p> : null}
+        {help ? <p className="mt-px text-label leading-normal font-normal text-muted-foreground">{help}</p> : null}
         {error ? (
           <p role="alert" className="text-caption text-primary-ink">
             {error}

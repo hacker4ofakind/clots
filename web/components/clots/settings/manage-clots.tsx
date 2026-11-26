@@ -7,7 +7,8 @@ import { PencilSimpleIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { api, ApiFailure } from "@/lib/api-client";
+import { api } from "@/lib/api-client";
+import { readableError } from "@/lib/readable-error";
 import { clotLabel, STATE_TONE, STATE_WORD } from "@/lib/clots";
 import { useAppState } from "../app-state";
 import { ClotIcon } from "../clot-icon";
@@ -35,7 +36,7 @@ export function ManageClots() {
       setTyped("");
       await refresh();
     } catch (e) {
-      setError(e instanceof ApiFailure ? e.message : "The daemon cannot be reached.");
+      setError(readableError(e, "That Clot could not be deleted."));
     } finally {
       setBusy(false);
     }

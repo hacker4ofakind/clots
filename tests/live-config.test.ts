@@ -81,6 +81,26 @@ describe("every key of the configuration file is either live or reported as wait
     expect(store.current.askTimeoutMinutes).toBe(3);
   });
 
+  it("applies a file that still has choiceTimeoutMinutes live: the value carries over and the first save drops the old key without a restart", async () => {
+    store.close();
+    fs.writeFileSync(file, JSON.stringify({ ...base, choiceTimeoutMinutes: 7 }));
+    store = new ConfigStore({ file, envFile, env: new LiveEnv(envFile, {}) });
+    registerLiveConfig(store, targets());
+    expect(store.current.askTimeoutMinutes).toBe(7);
+    const result = await store.save({ askTimeoutMinutes: 3 });
+    expect(result).toEqual({ ok: true, applied: ["askTimeoutMinutes"], needsRestart: [] });
+    const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(saved.askTimeoutMinutes).toBe(3);
+    expect(saved).not.toHaveProperty("choiceTimeoutMinutes");
+    // An unrelated save that only renames the key reports nothing for it.
+    store.close();
+    fs.writeFileSync(file, JSON.stringify({ ...base, choiceTimeoutMinutes: 7 }));
+    store = new ConfigStore({ file, envFile, env: new LiveEnv(envFile, {}) });
+    registerLiveConfig(store, targets());
+    expect(await store.save({ maxWorkers: 2 })).toEqual({ ok: true, applied: ["maxWorkers"], needsRestart: [] });
+    expect(store.current.askTimeoutMinutes).toBe(7);
+  });
+
   it("reports the keys that are read once at startup, saves them, and leaves what runs as it is", async () => {
     for (const [key, value] of [["intake", { port: 9999 }], ["image", "other:tag"], ["ui", { owner: "you@example.com" }], ["rulebookDir", "rules"], ["publicUrl", "https://x.ts.net"]] as const) {
       const result = await store.save({ [key]: value });

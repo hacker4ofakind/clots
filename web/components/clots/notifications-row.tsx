@@ -116,7 +116,7 @@ export function NotificationsRow() {
     <div className="mx-4 mt-1 mb-2 flex items-center gap-3 rounded-card bg-highlight-soft px-3.5 py-3 text-highlight-ink" data-notifications="ask">
       <BellIcon size={20} className="shrink-0" aria-hidden />
       <p className="min-w-0 flex-1 text-body">Get a notification when a Clot needs you</p>
-      <Button variant="highlight" className="h-[34px]" disabled={busy} onClick={() => void turnOn()}>
+      <Button variant="highlight" size="sm" className="h-8.5" disabled={busy} onClick={() => void turnOn()}>
         Turn on
       </Button>
     </div>

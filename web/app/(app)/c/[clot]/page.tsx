@@ -2,12 +2,13 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import type { ClotInfo, MessagePage } from "@clots/ui-api-schemas";
 import { ChatView } from "@/components/clots/chat-view";
+import { labelOfName } from "@/lib/clots";
 import { DaemonError, daemonJson } from "@/lib/daemon";
 
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata({ params }: { params: Promise<{ clot: string }> }): Promise<Metadata> {
-  return { title: decodeURIComponent((await params).clot) };
+  return { title: labelOfName(decodeURIComponent((await params).clot)) };
 }
 
 export default async function ChatPage({ params }: { params: Promise<{ clot: string }> }) {

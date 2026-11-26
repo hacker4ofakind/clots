@@ -6,6 +6,7 @@ import type { ClotSummary } from "@clots/ui-api-schemas";
 import { clotLabel, pausedLine } from "@/lib/clots";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
+import { PageTitle } from "./page-title";
 import { ClotIcon } from "./clot-icon";
 import { IconTile } from "./icon-tile";
 
@@ -24,7 +25,7 @@ export function ClotsList() {
   return (
     <div tabIndex={0} aria-label="Clots" role="region" className="h-full overflow-y-auto pb-28 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
       <div className="content-width">
-        <h1 className="px-5 pb-3 pt-[max(calc(env(safe-area-inset-top)+12px),62px)] text-title-mobile md:p-10 md:text-title">Clots</h1>
+        <PageTitle>Clots</PageTitle>
         <ul className="flex flex-col">
           {clots.map((clot) => {
             const line = subLine(clot);
@@ -36,7 +37,7 @@ export function ClotsList() {
                   </IconTile>
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">
-                      <span className="block truncate text-[17px] font-semibold">{clotLabel(clot)}</span>
+                      <span className="block truncate text-section font-semibold">{clotLabel(clot)}</span>
                       {clot.unread > 0 ? <span className="size-2 shrink-0 rounded-full bg-primary" aria-label={`${clot.unread} unread`} /> : null}
                     </span>
                     <span className={cn("block truncate text-label font-normal text-muted-foreground", line.waiting && "font-semibold text-highlight-ink")}>{line.text}</span>

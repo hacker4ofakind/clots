@@ -14,8 +14,8 @@ function Row({ worker }: { worker: WorkerView }) {
   const text = (
     <>
       <Icon size={16} className={cn("shrink-0", failed ? "text-primary-ink" : "text-highlight-ink")} aria-hidden />
-      <span className="min-w-0 flex-1 truncate text-body">{worker.title}</span>
-      <span className="shrink-0 text-caption text-muted-foreground">
+      <span className="min-w-0 flex-1 truncate text-ui">{worker.title}</span>
+      <span className="shrink-0 text-caption font-normal text-muted-foreground">
         {worker.model} · {worker.effort}
       </span>
     </>
@@ -65,7 +65,7 @@ export function WorkerCard({ workers }: { workers: WorkerView[] }) {
       </ul>
       <div className="flex items-center justify-between">
         {rest > 0 ? (
-          <Button variant="ghost" size="sm" onClick={() => setAll(true)} className="-ml-2.5 text-muted-foreground">
+          <Button variant="ghost" size="sm" onClick={() => setAll(true)} className="-ml-2.5">
             {rest} more <CaretDownIcon />
           </Button>
         ) : (
