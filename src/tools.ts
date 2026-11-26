@@ -1,3 +1,4 @@
+import { rulesOf } from "./clot-name.js";
 import { isHigh, TOOL_AXES, type RatedTool } from "./axes.js";
 import { HOME_CLOT, type CalendarAccount, type EmailAccount } from "./config.js";
 import type { SendRequest } from "./asks/email.js";
@@ -221,7 +222,7 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       const done = d.writer.apply(ctx.clot, file, edit);
       if (!done.ok) return `Not applied: ${done.reason}.`;
       const caveat = done.unlogged ? `\n${UNLOGGED_NOTE}` : "";
-      await d.say(ctx.clot, `Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`/rules undo\` takes it back.${caveat}`);
+      await d.say(ctx.clot, `Rule change for ${rulesOf(done.file)}: ${done.summary}\n\`/rules undo\` takes it back.${caveat}`);
       return `Applied, and in force now. The user has been shown it: ${done.summary}${caveat}`;
     }, ask);
   };
@@ -248,7 +249,7 @@ export function makeTools(d: ToolDeps, ctx: TurnContext): DaemonTools {
       const match = matchStanding(d.rulebook.standingFor(ctx.clot), event, parts).find((candidate) => candidate.rule.name === rule);
       if (!match) return `Refused: no standing rule named "${rule}" applies to the event this turn is looking into.`;
       const sender = d.senders[match.rule.via];
-      if (sender === undefined) return `Refused: sending by ${match.rule.via} is not set up in this daemon.`;
+      if (sender === undefined) return `Refused: sending by ${match.rule.via} is not set up here.`;
       // A batch is answered where its matching report was made.
       const unreachable = sender.reach(match.from);
       if (unreachable !== undefined) return `Refused: ${unreachable}.`;

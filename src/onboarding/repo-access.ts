@@ -14,7 +14,7 @@ export async function checkRepoAccess(o: { token: string; repo: string; fetchFn?
   try {
     const res = await call(`/repos/${repo}`);
     if (res.ok) return { ok: true };
-    if (res.status === 401) return { ok: false, invite: false, again: true, message: "GitHub did not accept the machine account's token. Replace CLOT_GITHUB_TOKEN under Keys." };
+    if (res.status === 401) return { ok: false, invite: false, again: true, message: "GitHub did not accept the Clots GitHub account's key. Replace CLOT_GITHUB_TOKEN under Keys." };
     if (res.status === 429 || (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0")) return { ok: false, invite: false, again: true, message: "GitHub is limiting requests right now. Wait a few minutes." };
     if (res.status >= 500) return { ok: false, invite: false, again: true, message: "GitHub is having trouble right now. Wait a moment." };
     // Not found or forbidden: an invitation may be waiting.

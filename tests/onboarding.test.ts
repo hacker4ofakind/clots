@@ -171,10 +171,10 @@ describe("creating a Clot", () => {
   it("finds a taken name, a bad container name, a reserved one, a bad repository and an unreachable one", async () => {
     expect((await creator.validate({ name: "graphite", repo: "o/new" })).errors.name).toContain("already");
     expect((await creator.validate({ name: "Bad Name", repo: "o/new" })).errors.name).toContain("letters, digits and hyphens");
-    expect((await creator.validate({ name: "home", repo: "o/new" })).errors.name).toContain("daemon's own");
+    expect((await creator.validate({ name: "home", repo: "o/new" })).errors.name).toContain("is reserved");
     // A name keeps its capitals, but is checked on its slug: Graphite is graphite, and Home is home.
     expect((await creator.validate({ name: "Graphite", repo: "o/new" })).errors.name).toContain("already");
-    expect((await creator.validate({ name: "Home", repo: "o/new" })).errors.name).toContain("daemon's own");
+    expect((await creator.validate({ name: "Home", repo: "o/new" })).errors.name).toContain("is reserved");
     expect((await creator.validate({ name: "Truecast", repo: "o/new" })).errors.name).toBeUndefined();
     expect((await creator.validate({ name: "fresh", repo: "nope" })).errors.repo).toContain("owner/name");
     const none = await creator.validate({ name: "fresh", repo: "o/private" });

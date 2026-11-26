@@ -142,7 +142,7 @@ export function calendarOverComposio(c: Composio, account: CalendarAccount, time
       const found = await get(req.uid);
       if (!found.ok) return found;
       const event = toCalEvent(found.item, timeZone);
-      return event ? { ok: true, event } : { ok: false, reason: "the calendar gave an event this daemon could not read", reached: true };
+      return event ? { ok: true, event } : { ok: false, reason: "the calendar gave an event Clots could not read", reached: true };
     }
 
     if (req.action === "create") {
@@ -159,7 +159,7 @@ export function calendarOverComposio(c: Composio, account: CalendarAccount, time
     const found = await get(req.uid);
     if (!found.ok) return found;
     const current = toCalEvent(found.item, timeZone);
-    if (!current) return { ok: false, reason: "the calendar gave an event this daemon could not read", reached: true };
+    if (!current) return { ok: false, reason: "the calendar gave an event Clots could not read", reached: true };
 
     if (req.action === "remove") {
       // As the script did: never one with guests (they would be told), never one of a series (an undo could not bring it back).

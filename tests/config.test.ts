@@ -334,7 +334,7 @@ it("keeps a Clot's name as typed, and refuses two names that differ only in capi
   const clot = (name: string) => ({ name, repoUrl: `https://github.com/o/${name}.git` });
   expect(loadConfig({ ...json, clots: [clot("Truecast"), clot("Encryptify")] }, env).clots.map((c) => c.name)).toEqual(["Truecast", "Encryptify"]);
   expect(() => loadConfig({ ...json, clots: [clot("Truecast"), clot("truecast")] }, env)).toThrow("same name");
-  expect(() => loadConfig({ ...json, clots: [clot("Home")] }, env)).toThrow("daemon's own");
+  expect(() => loadConfig({ ...json, clots: [clot("Home")] }, env)).toThrow("reserved names");
   expect(() => loadConfig({ ...json, clots: [clot("two words")] }, env)).toThrow();
   expect(() => loadConfig({ ...json, clots: [clot("Truecast")], sources: { email: [{ account: "a", clot: "Truecast", address: "a@gmail.com", password: "P", mailboxes: ["INBOX"] }] } }, { ...env, P: "x" })).not.toThrow();
 });

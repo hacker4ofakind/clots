@@ -272,7 +272,7 @@ export class ConfigStore {
 
   setKey(name: string, value: string): { ok: true } | { ok: false; error: string } {
     if (!ENV_KEY_NAME.test(name)) return { ok: false, error: "A key name is capital letters, digits and underscores, starting with a letter." };
-    if (PROTECTED_ENV_KEYS.includes(name)) return { ok: false, error: `${name} is the daemon's own and cannot be changed here.` };
+    if (PROTECTED_ENV_KEYS.includes(name)) return { ok: false, error: `${name} is used by Clots itself and cannot be changed here.` };
     if (/[\r\n]/.test(value)) return { ok: false, error: "A value cannot contain a line break." };
     if (value === "") return { ok: false, error: "A value is needed." };
     setEnvKey(this.d.envFile, name, value);
@@ -293,7 +293,7 @@ export class ConfigStore {
   }
 
   removeKey(name: string): { ok: true } | { ok: false; error: string } {
-    if (PROTECTED_ENV_KEYS.includes(name)) return { ok: false, error: `${name} is the daemon's own and cannot be removed here.` };
+    if (PROTECTED_ENV_KEYS.includes(name)) return { ok: false, error: `${name} is used by Clots itself and cannot be removed here.` };
     const users = this.usersOf(name);
     if (users.length > 0) return { ok: false, error: `${name} is used by ${users.join(", ")} in the configuration. Remove that first.` };
     removeEnvKey(this.d.envFile, name);

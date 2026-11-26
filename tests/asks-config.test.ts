@@ -47,7 +47,7 @@ describe("the config ask", () => {
     await file();
     const [row] = open("config");
     const view = asks.snapshot(row)!.view;
-    expect(view).toMatchObject({ heading: "Allow Home to change a setting?", rows: [{ label: "Setting", value: "sources.composio" }, { label: "File", value: "clots.config.json" }], previous: "[]", labels: { allow: "Save", block: "Decline" } });
+    expect(view).toMatchObject({ heading: "Allow Home to change a setting?", rows: [{ label: "Setting", value: "sources.composio" }], previous: "[]", labels: { allow: "Save", block: "Decline" } });
     expect(view.body).toContain('"toolkit": "elevenlabs"');
   });
 
@@ -102,11 +102,11 @@ describe("the restart ask", () => {
     await asks.answer(open("restart")[0]!.id, { action: "block" });
     expect(restarts).toBe(0);
     await file();
-    expect(asks.snapshot(open("restart")[0]!)!.view.warning).toContain("waits until every turn has finished");
+    expect(asks.snapshot(open("restart")[0]!)!.view.warning).toContain("waits until every Clot has finished what it is doing");
     await asks.answer(open("restart")[0]!.id, { action: "allow" });
     await settle();
     expect(restarts).toBe(1);
-    expect(conv.texts().at(-1)).toBe("Restarting the daemon now.");
+    expect(conv.texts().at(-1)).toBe("Restarting Clots now.");
   });
 
   it("does not hold the answer while it waits for turns to end", async () => {

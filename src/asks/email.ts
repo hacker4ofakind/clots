@@ -143,7 +143,7 @@ export function emailKind(d: EmailKindDeps): AskKind<EmailPayload> {
 
     async interrupted(ask, io) {
       const what = headlineOf(ask);
-      await io.close("failed", `The user approved your email ${what}, but the daemon stopped while sending it: whether it went out is not known. It will not be tried again. Tell the user.`, `Approved, but the daemon stopped while sending it, so it may or may not have gone: the email ${what}`);
+      await io.close("failed", `The user approved your email ${what}, but the daemon stopped while sending it: whether it went out is not known. It will not be tried again. Tell the user.`, `Approved, but Clots stopped while sending it, so it may or may not have gone: the email ${what}`);
     },
   };
 

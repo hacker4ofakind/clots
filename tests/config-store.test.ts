@@ -162,7 +162,7 @@ describe("the config store", () => {
   it("refuses bad names, protected keys and values with a line break", () => {
     expect(store.setKey("lower", "x")).toMatchObject({ ok: false });
     expect(store.setKey("A".repeat(65), "x")).toMatchObject({ ok: false });
-    expect(store.setKey("CLOTS_UI_SECRET", "x")).toMatchObject({ ok: false, error: expect.stringContaining("daemon's own") });
+    expect(store.setKey("CLOTS_UI_SECRET", "x")).toMatchObject({ ok: false, error: expect.stringContaining("used by Clots itself") });
     expect(store.setKey("VAPID_PRIVATE_KEY", "x")).toMatchObject({ ok: false });
     expect(store.setKey("OK_KEY", "a\nb")).toMatchObject({ ok: false });
     expect(store.removeKey("CLAUDE_CODE_OAUTH_TOKEN")).toMatchObject({ ok: false });

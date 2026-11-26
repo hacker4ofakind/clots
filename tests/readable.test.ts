@@ -26,7 +26,7 @@ describe("readableIssue", () => {
 
 describe("what the daemon sends the UI is a sentence", () => {
   it("accepts the words the daemon wrote for people and refuses the ones it kept for itself", () => {
-    for (const text of ["That Clot could not be found.", "That picture is larger than 5 MB.", "Write a message or add a picture first.", "The Clots daemon did not accept that request.", "Something went wrong in the daemon. Try again in a moment."]) expect(isSentence(text)).toBe(true);
+    for (const text of ["That Clot could not be found.", "That picture is larger than 5 MB.", "Write a message or add a picture first.", "Clots did not accept that request.", "Something went wrong. Try again in a moment."]) expect(isSentence(text)).toBe(true);
     for (const text of ["internal error", "unauthorized", "Failed with 500", "ECONNREFUSED", "Too small: expected number to be >=1"]) expect(isSentence(text)).toBe(false);
   });
 

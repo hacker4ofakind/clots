@@ -1,4 +1,4 @@
-import { labelOf } from "../clot-name.js";
+import { labelOf, rulesOf } from "../clot-name.js";
 import type { AskKind, Asks } from "../asks.js";
 import { blockedLine, minutes, waitedMinutes } from "./common.js";
 import { UNLOGGED_NOTE, type WriteResult } from "../rule-writer.js";
@@ -40,7 +40,7 @@ export function ruleKind(d: RuleKindDeps): AskKind<RulePayload> {
     view: (clot, p) => ({
       heading: `Allow ${labelOf(clot)} to change a rule?`,
       shortHeading: "Allow a rule change?",
-      rows: [{ label: "File", value: `${p.file}.yaml` }],
+      rows: [{ label: "Applies to", value: rulesOf(p.file) }],
       body: p.text,
       labels: { allow: "Apply", block: "Decline" },
     }),
@@ -65,7 +65,7 @@ export function ruleKind(d: RuleKindDeps): AskKind<RulePayload> {
       } catch (error) {
         // Whether the file was changed is not known, so the edit is not tried again.
         console.error(`[${ask.clot}] applying an approved rule change failed:`, error);
-        done = { ok: false, reason: `it failed in an unexpected way (${error instanceof Error ? error.message : String(error)}); check the file` };
+        done = { ok: false, reason: "something went wrong while saving it" };
       }
       if (!done.ok && done.retry) {
         // Nothing was changed and the cause was not the edit: the question is open again.
@@ -74,7 +74,7 @@ export function ruleKind(d: RuleKindDeps): AskKind<RulePayload> {
         return;
       }
       if (done.ok) {
-        await io.close("approved", `The user approved the rule change you asked for, and it is in force: ${what}`, `Approved. Rule change in \`${done.file}.yaml\`: ${done.summary}\n\`/rules undo\` takes it back.${done.unlogged ? `\n${UNLOGGED_NOTE}` : ""}`);
+        await io.close("approved", `The user approved the rule change you asked for, and it is in force: ${what}`, `Approved. Rule change for ${rulesOf(done.file)}: ${done.summary}\n\`/rules undo\` takes it back.${done.unlogged ? `\n${UNLOGGED_NOTE}` : ""}`);
       } else {
         await io.close("failed", `The user approved the rule change you asked for, but it could not be applied (${done.reason}): ${what}`, `Approved, but it could not be applied (${done.reason}), so nothing was changed: ${what}`);
       }

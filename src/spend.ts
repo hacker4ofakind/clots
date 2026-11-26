@@ -107,8 +107,8 @@ export class SpendLog {
       if (amount > 0) lines.push(`- ${label}: ${usd(amount)}`);
     };
     part("Main session", "main");
-    part("Re-grounding", "regrounding");
-    part("Triage and router", "triage");
+    part("Checking recaps", "regrounding");
+    part("Sorting events", "triage");
     for (const row of mine.filter((r) => r.who.startsWith("worker:"))) {
       const worker = store.getWorker(row.who.slice("worker:".length));
       const name = worker ? `Worker ${worker.id.slice(0, 8)} "${worker.title}" (${modelLabel(worker.model, worker.effort)})` : `Worker ${row.who.slice("worker:".length, "worker:".length + 8)}`;
@@ -117,7 +117,7 @@ export class SpendLog {
     const daemon = sum(rows.filter((row) => row.clot === "daemon"));
     const sweep = sum(rows.filter((row) => row.clot === "sweep"));
     const all = sum(rows.filter((row) => row.clot !== "daemon" && row.clot !== "sweep"));
-    lines.push(`All Clots: ${usd(all)}.${daemon > 0 ? ` Daemon: ${usd(daemon)}.` : ""}${sweep > 0 ? ` Sweep: ${usd(sweep)}.` : ""}`);
+    lines.push(`All Clots: ${usd(all)}.${daemon > 0 ? ` Clots itself: ${usd(daemon)}.` : ""}${sweep > 0 ? ` Sweep: ${usd(sweep)}.` : ""}`);
 
     lines.push(`Gate: ${describeGate(this.d.gate(), this.d.timeZone, now)}.`);
     lines.push(this.usageLine(now));

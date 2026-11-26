@@ -248,7 +248,7 @@ export class Asks {
     if (ask.state !== "open") return { status: "busy", outcome: "in progress" };
     const kind = this.kinds.get(ask.kind);
     if (!kind) return { status: "missing" };
-    if (!kind.answers.includes(answer.action)) return { status: "invalid", reason: `A ${ask.kind} ask does not take ${answer.action}.` };
+    if (!kind.answers.includes(answer.action)) return { status: "invalid", reason: "That answer is not available for this question." };
     const reason = kind.stale?.(ask, this.d.now());
     if (reason !== undefined) {
       await this.withdraw(ask.id, reason);
@@ -292,14 +292,14 @@ export class Asks {
         if (ask.state !== "busy") continue;
         const kind = this.kinds.get(ask.kind);
         if (kind?.interrupted) await kind.interrupted(ask, this.io(ask));
-        else await this.finish(ask, "failed", `${ask.summary}: ${INTERRUPTED}`, `The daemon stopped while carrying this out, so whether it finished is not known: ${ask.summary}`, {});
+        else await this.finish(ask, "failed", `${ask.summary}: ${INTERRUPTED}`, `Clots stopped while carrying this out, so whether it finished is not known: ${ask.summary}`, {});
       }
     }
     for (const ask of store.openAsks()) {
       if (ask.state !== "open") continue;
       const kind = this.kinds.get(ask.kind);
       if (!kind) {
-        await this.withdraw(ask.id, "this kind of question is switched off in the daemon");
+        await this.withdraw(ask.id, "this kind of question is switched off");
         continue;
       }
       const reason = kind.stale?.(ask, this.d.now());

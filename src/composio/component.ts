@@ -717,7 +717,7 @@ export class Composio implements ToolkitHost {
         await this.makeTrigger(a, connectionId, want, key);
       } catch (e) {
         if (!o.verify) throw e;
-        await this.tellOnce(`trigger:${user}|${want.slug}|${key}`, a, `Composio's trigger ${want.slug} for ${user} stopped and could not be made again (${e instanceof Error ? e.message : String(e)}).`);
+        await this.tellOnce(`trigger:${user}|${want.slug}|${key}`, a, `Composio stopped sending ${want.slug} events for ${user}, and they could not be switched back on (${e instanceof Error ? e.message : String(e)}).`);
       }
     }
     for (const row of store.composio.triggers(user)) {
@@ -762,7 +762,7 @@ export class Composio implements ToolkitHost {
   /** Tells, once per tool and account per start, in the account's Clot channel, of a call whose answer changed shape. */
   private async reportDrift(): Promise<void> {
     for (const [key, d] of this.drift) {
-      await this.tellOnce(`drift:${key}`, d.account, `Composio's ${d.slug} answered in an unexpected shape${d.where}. What the daemon reads through it for ${userOf(d.account)} is treated as unreadable until it is fixed; Composio or ${d.account.toolkit} may have changed it.`);
+      await this.tellOnce(`drift:${key}`, d.account, `Composio's ${d.slug} sent back something Clots does not recognise${d.where}. What Clots reads through it for ${userOf(d.account)} is ignored until this is fixed; Composio or ${d.account.toolkit} may have changed it.`);
     }
   }
 
@@ -780,7 +780,7 @@ export class Composio implements ToolkitHost {
       const want = (await defFor(a.toolkit).triggers(a, this)).find((w) => w.slug === row.slug && configKey(w.config) === row.key);
       if (want) await this.makeTrigger(a, connectionId, want, row.key);
     } catch (e) {
-      await this.tellOnce(`trigger:${row.user}|${row.slug}|${row.key}`, a, `Composio disabled its trigger ${row.slug} for ${row.user} and it could not be made again (${e instanceof Error ? e.message : String(e)}).`);
+      await this.tellOnce(`trigger:${row.user}|${row.slug}|${row.key}`, a, `Composio turned off ${row.slug} events for ${row.user}, and they could not be switched back on (${e instanceof Error ? e.message : String(e)}).`);
     }
   }
 
@@ -807,7 +807,7 @@ export class Composio implements ToolkitHost {
 
   private connectionText(a: ComposioAccount): string {
     const keys = a.apiKeyName ?? Object.values(a.fieldKeys ?? {}).join(", ");
-    return `Composio is no longer accepting the connection for ${userOf(a)}. Replace ${keys || "its key"} in .env and restart the daemon.`;
+    return `Composio is no longer accepting the connection for ${userOf(a)}. Replace ${keys || "its key"} under Keys, then restart Clots.`;
   }
 
   private async tellOnce(key: string, a: ComposioAccount, text: string): Promise<void> {

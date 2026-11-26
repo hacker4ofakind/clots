@@ -60,7 +60,7 @@ describe("the rule ask", () => {
     const [ask] = rules();
     expect(ask).toMatchObject({ payload: { scope: "global" } });
     const view = asks.snapshot(ask)!.view;
-    expect(view).toMatchObject({ heading: "Allow graphite to change a rule?", rows: [{ label: "File", value: "global.yaml" }], labels: { allow: "Apply", block: "Decline" } });
+    expect(view).toMatchObject({ heading: "Allow graphite to change a rule?", rows: [{ label: "Applies to", value: "every Clot" }], labels: { allow: "Apply", block: "Decline" } });
     expect(view.body).toContain("Drop events where actor is `dependabot[bot]`");
     expect(writer.applied).toEqual([]);
     await open("own", guidance("Billing is urgent."));
@@ -71,7 +71,7 @@ describe("the rule ask", () => {
     await open("own", dropDependabot);
     await allow();
     expect(writer.applied).toEqual([{ clot: "graphite", scope: "own", edit: dropDependabot }]);
-    expect(conv.postsFor("graphite")).toEqual(["Approved. Rule change in `graphite.yaml`: Drop events where actor is `dependabot[bot]`\n`/rules undo` takes it back."]);
+    expect(conv.postsFor("graphite")).toEqual(["Approved. Rule change for graphite: Drop events where actor is `dependabot[bot]`\n`/rules undo` takes it back."]);
     expect(store.notes("graphite").map((note) => note.text)).toEqual(["The user approved the rule change you asked for, and it is in force: Drop events where actor is `dependabot[bot]`"]);
     expect(rules()).toEqual([]);
     expect(store.conversation.askOutcome(1)?.result).toBe("approved");
@@ -164,7 +164,7 @@ describe("the rule ask", () => {
     await open("own", dropDependabot);
     writer.throws = true;
     await allow();
-    expect(conv.postsFor("graphite")[0]).toContain("Approved, but it could not be applied (it failed in an unexpected way (boom); check the file)");
+    expect(conv.postsFor("graphite")[0]).toContain("Approved, but it could not be applied (something went wrong while saving it)");
     expect(store.notes("graphite")[0]!.text).toContain("could not be applied");
     expect(rules()).toEqual([]);
   });

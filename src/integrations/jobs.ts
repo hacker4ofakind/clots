@@ -40,7 +40,7 @@ export function authFor(info: ToolkitInfo): ConnectAuth | { error: string } {
   const sign = info.schemes.find((s) => s.scheme.startsWith("OAUTH") && info.managed.includes(s.scheme));
   if (sign !== undefined && sign.required.length === 0) return "oauth";
   if (info.schemes.some((s) => !s.scheme.startsWith("OAUTH"))) return "key";
-  return { error: `${info.name} needs an OAuth app of your own, which this dialog cannot set up. Put an entry with oauthApp in clots.config.json.` };
+  return { error: `${info.name} needs an app of your own, which this dialog cannot set up. Ask a Clot to set it up for you.` };
 }
 
 /** Whether an entry connects with a key of its own (it names one in `apiKey` or `fields`). */

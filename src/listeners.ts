@@ -82,7 +82,7 @@ export class Supervisor {
     console.error(`[listener] ${o.name} failed (${state.failures} in a row): ${why}`);
     if (state.failures === TELL_AFTER && !state.told) {
       state.told = true;
-      await o.tell(`${o.name} has failed three times in a row (${why}). I keep trying, waiting longer each time, and will say when it works again.`);
+      await o.tell(`${o.name} has failed three times in a row (${why}). I'll keep trying, a little less often each time, and tell you when it works again.`);
     }
     this.after(Math.max(retryWait(state.failures), o.minRetryMs ?? 0), () => this.loop(o, state));
   }

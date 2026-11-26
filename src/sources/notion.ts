@@ -188,7 +188,7 @@ export function notionCommentSender(c: Composio): Sender {
       const account = accountOf(event.account);
       if (!account) return `the Notion account ${event.account} is not configured`;
       // Its own comment comes back as an event, and must be told apart from anyone else's, or a rule would answer itself.
-      if (c.identity(account) === "") return "the Notion integration's bot is not known yet, so its own comment could not be told apart; nothing is sent until the daemon has read it";
+      if (c.identity(account) === "") return "the Notion integration's bot is not known yet, so its own comment could not be told apart; nothing is sent until Clots has read it";
       return undefined;
     },
 

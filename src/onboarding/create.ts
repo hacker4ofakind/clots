@@ -76,7 +76,7 @@ export class ClotCreator {
     const errors: Validation["errors"] = {};
     const name = o.name.trim();
     if (!CLOT_NAME.test(name)) errors.name = CLOT_NAME_RULE;
-    else if (RESERVED.includes(slugOf(name))) errors.name = `${name} is the daemon's own name.`;
+    else if (RESERVED.includes(slugOf(name))) errors.name = `${name} is reserved. Pick another name.`;
     // A create that failed has given its name back: only one that is still being built holds it.
     else if (this.d.config.current.clots.some((c) => sameClot(c.name, name)) || [...this.building].some(([b, state]) => state.step !== "failed" && sameClot(b, name))) errors.name = `There is a Clot named ${name} already.`;
     if (!isRepo(o.repo.trim())) errors.repo = "Write the repository as owner/name.";
