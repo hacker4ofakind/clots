@@ -245,6 +245,10 @@ export const configureBodySchema = z.object({
   selfIsUser: z.boolean(),
   events: z.boolean(),
   pollMinutes: z.number().int().min(1).max(1440).optional(),
+  /** Google Calendar: how long before an event each reminder comes ("24h", "90m", "2d"). */
+  leadTimes: z.array(z.string().regex(/^\d{1,4}[mhd]$/)).min(1).max(10).optional(),
+  /** Stripe: also tell the Clot when a customer finishes paying at checkout. */
+  checkoutCompleted: z.boolean().optional(),
   /** The same job again, after Back: it is updated, never doubled. */
   jobId: z.string().min(1).max(64).optional(),
   /** `<toolkit>:<account>` of the tool whose settings are being edited. */
@@ -296,6 +300,10 @@ export const toolViewSchema = z.object({
   selfIsUser: z.boolean(),
   events: z.boolean(),
   pollMinutes: z.number().int().optional(),
+  /** Google Calendar: the lead times of its reminders, as given ("24h"). */
+  leadTimes: z.array(z.string()).optional(),
+  /** Stripe: whether completed checkouts are told. */
+  checkoutCompleted: z.boolean().optional(),
   logo: z.string().optional(),
   status: z.enum(TOOL_STATUSES),
   restartNeeded: z.literal(true).optional(),
@@ -311,5 +319,86 @@ export const inboxBodySchema = z.object({
   clot: z.string().optional(),
   imap: z.object({ host: z.string().min(1).max(200), port: z.number().int().min(1).max(65535) }).optional(),
   smtp: z.object({ host: z.string().min(1).max(200), port: z.number().int().min(1).max(65535) }).optional(),
+  /** Other addresses delivered into this inbox. Given, it replaces the saved list (empty clears it). */
+  addresses: z.array(z.email().max(200)).max(20).optional(),
+  /** Whether the Clots are told the inbox's address, or only its name. */
+  tellAddress: z.boolean().optional(),
 });
 export type InboxBody = z.infer<typeof inboxBodySchema>;
+
+/**
+ * What a person reads when something fails, worded in one place for the daemon and the web app alike: text that came from the
+ * network, Composio, GitHub, Docker, git or a validator is shown only as a sentence for people, or as a plain line for the kind of failure.
+ */
+
+/** What an unknown failure says when there is nothing more specific. */
+export const GENERIC_ERROR = "Something went wrong. Try again in a moment.";
+
+/** Text that is a raw status, class, code or stack in a sentence's clothes. */
+const RAW = /\b(?:HTTP|status|code)\s*[:=]?\s*[1-5]\d\d\b|\b[45]\d\d\s+[A-Z][a-z]|\bE[A-Z]{4,}\b|[{}]|\bat\s+\S+:\d+|\n|\bundefined\b|\[object|\bnull\b/;
+
+/**
+ * Whether text can be shown as it is: a sentence the daemon wrote for a person ("There is a Clot named Home already."), not a code,
+ * a status line, a stack or a library's message ("invalid request", "Failed with 500", "TypeError: x", "Too small: expected...").
+ */
+export function isSentence(text: string): boolean {
+  if (text.length < 8 || text.length > 240) return false;
+  if (!/^[A-Z0-9]/.test(text) || !/[.?!"')]$/.test(text)) return false;
+  if (/^Failed with \d+/.test(text) || /^\w*Error\b/.test(text) || RAW.test(text)) return false;
+  // The words of a validator, not of a person.
+  if (/^(Invalid|Required|Expected|Too (small|big)|Unrecognized|String must|Number must)\b/.test(text)) return false;
+  return true;
+}
+
+/** Known failures that arrive as raw text (from Composio, GitHub, Docker, git, the network, a validator), and what to tell a person. First match wins. */
+const KNOWN: [RegExp, string][] = [
+  [/cannot connect to the docker|docker daemon|docker_engine|dockerDesktop|error during connect|docker.*not running/i, "Docker isn't responding. Open Docker Desktop, then try again."],
+  [/could not read from remote|repository not found|authentication failed for|fatal: |remote: /i, "The repository could not be downloaded. Check its name and that the Clots account can reach it."],
+  [/ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ENETUNREACH|socket hang up|fetch failed|network|offline/i, "The connection failed. Check the internet connection and try again."],
+  [/ETIMEDOUT|timed? ?out|timeout|aborted/i, "The service took too long to answer. Try again."],
+  [/\b429\b|rate.?limit|too many requests|quota/i, "The service is limiting requests right now. Wait a few minutes and try again."],
+  [/\b401\b|unauthori[sz]ed|bad credentials|invalid[ _-]?(api[ _-]?)?(key|token|credentials)|authentication|expired token|revoked/i, "The service did not accept the sign-in. Connect it again and try once more."],
+  [/\b403\b|forbidden|permission denied|access denied|not permitted/i, "That account isn't allowed to do that. Check its access and try again."],
+  [/\b404\b|not found|no such/i, "That could not be found. It may have been removed."],
+  [/\b5\d\d\b|bad gateway|service unavailable|gateway time-?out|internal server error|overloaded/i, "The service is having trouble right now. Try again in a moment."],
+  [/^(Invalid|Required|Expected|Too (small|big)|Unrecognized|String must|Number must)\b|\bexpected .+ received\b|\bzod\b|\bschema\b/i, "That value isn't allowed. Check it and try again."],
+];
+
+/**
+ * What to tell a person about text that came from somewhere else (a job's failure, a field's reason, a config file's error): the text
+ * itself when it is a sentence for people, a plain line for a kind of failure it names, otherwise `fallback`. Never the raw text.
+ */
+export function readableText(text: unknown, fallback: string): string {
+  if (typeof text !== "string") return fallback;
+  const trimmed = text.trim();
+  if (isSentence(trimmed)) return trimmed;
+  for (const [pattern, sentence] of KNOWN) if (pattern.test(trimmed)) return sentence;
+  return fallback;
+}
+
+/** What a failed build says above its log, by what the log shows. The log is for troubleshooting; this line says what to do. */
+export function readableBuildFailure(log: string | undefined): string {
+  const known = KNOWN.slice(0, 5).find(([pattern]) => pattern.test(log ?? ""));
+  return known === undefined ? "The build did not finish. The log below shows where it stopped." : `${known[1]} The log below has the details.`;
+}
+
+
+/** The part of a validator's issue this reads: zod's issues have these fields. */
+export interface IssueLike {
+  code: string;
+  message: string;
+  minimum?: unknown;
+  maximum?: unknown;
+  origin?: unknown;
+  format?: unknown;
+}
+
+/** A validator's refusal of one value, in words a person reads beside a field ("That must be at least 1."). */
+export function readableIssue(issue: IssueLike): string {
+  const count = issue.origin === "string" || issue.origin === "array" ? " characters or items" : "";
+  if (issue.code === "too_small" && issue.minimum !== undefined) return issue.origin === "string" && issue.minimum === 1 ? "A value is needed." : `That must be at least ${String(issue.minimum)}${count === "" ? "" : " long"}.`;
+  if (issue.code === "too_big" && issue.maximum !== undefined) return `That must be at most ${String(issue.maximum)}${count === "" ? "" : " long"}.`;
+  if (issue.code === "invalid_format" && (issue.format === "url" || issue.format === "email")) return issue.format === "url" ? "That isn't a valid web address." : "That isn't a valid email address.";
+  if (issue.code === "invalid_type") return "That isn't the kind of value this needs. Check it and try again.";
+  return readableText(issue.message, "That value isn't allowed. Check it and try again.");
+}

@@ -503,7 +503,7 @@ export function loadConfig(json: unknown, env: Record<string, string | undefined
 
   const publicUrl = (file.publicUrl ?? "").replace(/\/+$/, "");
   const reachedFromOutside = sources.composio.length > 0 || Object.values(mcpServers).some((server) => server.kind === "http" && server.oauth);
-  if (reachedFromOutside && publicUrl === "") throw new Error("publicUrl is needed: webhooks and OAuth logins reach the daemon through it (the Tailscale Funnel address)");
+  if (reachedFromOutside && publicUrl === "") throw new Error("Set the public address under General settings. Webhooks and sign-ins reach the daemon through it (the Tailscale Funnel address).");
 
   return {
     timeZone: file.timeZone,

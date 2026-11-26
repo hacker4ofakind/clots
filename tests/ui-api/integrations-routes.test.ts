@@ -116,6 +116,39 @@ describe("connecting a toolkit over the API", () => {
   });
 });
 
+describe("the options only some toolkits have", () => {
+  const activate = async () => {
+    [...h.api.connections.values()][0]!.status = "active";
+    await h.jobs.tick();
+  };
+
+  it("writes a calendar's lead times into its entry and lists them for Edit settings", async () => {
+    h.state.script = async (tools) => void (await tools.save_integration({ entry: { toolkit: "googlecalendar", leadTimes: ["7d"] } }));
+    const created = await call("POST", "/integrations/configure", { toolkit: "googlecalendar", ...OPTIONS, pollMinutes: 10, leadTimes: ["24h", "90m"] });
+    expect(created.status).toBe(201);
+    await settle();
+    await activate();
+    expect((h.config.json().sources as { composio: Record<string, unknown>[] }).composio[0]).toMatchObject({ toolkit: "googlecalendar", leadTimes: ["24h", "90m"], pollMinutes: 10 });
+    expect(h.config.current.sources.composio[0]).toMatchObject({ leadMinutes: [1440, 90], pollMinutes: 10 });
+    expect((await call("GET", "/integrations")).body.tools[0]).toMatchObject({ id: "googlecalendar:shared", leadTimes: ["24h", "90m"] });
+  });
+
+  it("refuses a lead time that is not a number with m, h or d, before anything is made", async () => {
+    for (const leadTimes of [["a day"], ["24"], [], ["1h", "1h", "1h", "1h", "1h", "1h", "1h", "1h", "1h", "1h", "1h"]]) {
+      expect((await call("POST", "/integrations/configure", { toolkit: "googlecalendar", ...OPTIONS, leadTimes })).status, JSON.stringify(leadTimes)).toBe(400);
+    }
+  });
+
+  it("writes Stripe's completed checkouts, and lists them", async () => {
+    h.state.script = async (tools) => void (await tools.save_integration({ entry: { toolkit: "stripe" } }));
+    await call("POST", "/integrations/configure", { toolkit: "stripe", ...OPTIONS, checkoutCompleted: true });
+    await settle();
+    await activate();
+    expect((h.config.json().sources as { composio: Record<string, unknown>[] }).composio[0]).toMatchObject({ toolkit: "stripe", checkoutCompleted: true });
+    expect((await call("GET", "/integrations")).body.tools[0]).toMatchObject({ id: "stripe:shared", checkoutCompleted: true });
+  });
+});
+
 describe("GET /integrations", () => {
   it("lists each tool with the status the daemon last read of its connection, and whether it needs a restart", async () => {
     h.state.script = slackScript;
@@ -208,6 +241,22 @@ describe("inboxes", () => {
     expect((await call("PUT", "/inboxes/me", { address: "other@acme-corp.example", mailboxes: ["INBOX", "Archive"] })).status).toBe(200);
     expect(h.config.current.sources.email[0]).toMatchObject({ address: "other@acme-corp.example", mailboxes: ["INBOX", "Archive"], smtp: { host: "mail.acme-corp.example", port: 587 } });
     expect((await call("PUT", "/inboxes/me", { address: "me@elsewhere.example", mailboxes: ["INBOX"] })).status).toBe(400);
+  });
+
+  it("keeps the other addresses and whether the address is told: given they replace, left out they stay, and the defaults leave the file", async () => {
+    await call("POST", "/inboxes", { ...body, addresses: ["support@example.com"], tellAddress: false });
+    expect((await call("GET", "/integrations")).body.inboxes[0]).toMatchObject({ addresses: ["support@example.com"], tellAddress: false, imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 } });
+    const entries = () => (h.config.json().sources as { email: Record<string, unknown>[] }).email;
+    expect(entries()[0]).toMatchObject({ addresses: ["support@example.com"], tellAddress: false });
+    await call("PUT", "/inboxes/me", { address: "me@gmail.com", mailboxes: ["INBOX", "Sent"] });
+    expect(entries()[0]).toMatchObject({ addresses: ["support@example.com"], tellAddress: false, mailboxes: ["INBOX", "Sent"] });
+    await call("PUT", "/inboxes/me", { address: "me@gmail.com", mailboxes: ["INBOX"], addresses: ["a@example.com", "b@example.com"], tellAddress: true });
+    expect(entries()[0]).toMatchObject({ addresses: ["a@example.com", "b@example.com"] });
+    expect(entries()[0]).not.toHaveProperty("tellAddress");
+    await call("PUT", "/inboxes/me", { address: "me@gmail.com", mailboxes: ["INBOX"], addresses: [] });
+    expect(entries()[0]).not.toHaveProperty("addresses");
+    expect((await call("PUT", "/inboxes/me", { address: "me@gmail.com", mailboxes: ["INBOX"], addresses: ["not an address"] })).status).toBe(400);
+    expect(h.config.current.sources.email[0]).toMatchObject({ addresses: [], tellAddress: true });
   });
 
   it("lists an inbox with its folders, and a tool with how it was set up", async () => {

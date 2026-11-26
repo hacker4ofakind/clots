@@ -6,8 +6,8 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api-client";
 import { labelOfName } from "@/lib/clots";
-import { readableError } from "@/lib/readable-error";
-import { DEFAULT_OPTIONS, toolkitName, type Job, type Overview, type Toolkit, type ToolOptions } from "@/lib/integrations";
+import { readableError, readableText } from "@/lib/readable-error";
+import { DEFAULT_OPTIONS, parseLeadTimes, toolkitName, type Job, type Overview, type Toolkit, type ToolOptions } from "@/lib/integrations";
 import { cn } from "@/lib/utils";
 import { useAppState } from "../app-state";
 import { KeyStep } from "./key-step";
@@ -154,7 +154,7 @@ function Flow({ clot: given, edit, resume, added = [], retool, onAdded, onOpenCh
       const at = stepRef.current;
       if (at !== "working" && at !== "connect" && at !== "loading") return;
       if (next.state === "failed") {
-        setFailure(next.error ?? "The connection could not be made.");
+        setFailure(readableText(next.error, "The connection could not be made. Try again."));
         go("working");
         return;
       }
@@ -194,7 +194,7 @@ function Flow({ clot: given, edit, resume, added = [], retool, onAdded, onOpenCh
         if (!live) return;
         setToolkit(listed ?? { slug, name: loaded?.name ?? toolkitName(slug), logo: tool?.logo, auth: "oauth" });
         if (tool?.clot) setEditClot(tool.clot);
-        if (tool) setOptions({ audience: tool.audience, selfIsUser: tool.selfIsUser ?? true, shared: tool.shared, events: tool.events ?? true, pollMinutes: tool.pollMinutes ?? 30 });
+        if (tool) setOptions({ audience: tool.audience, selfIsUser: tool.selfIsUser ?? true, shared: tool.shared, events: tool.events ?? true, pollMinutes: tool.pollMinutes ?? 30, leadTimes: tool.leadTimes?.join(", ") ?? DEFAULT_OPTIONS.leadTimes, checkoutCompleted: tool.checkoutCompleted ?? false });
         if (loaded) {
           jobId.current = loaded.jobId;
           applyJob(loaded);
@@ -227,6 +227,8 @@ function Flow({ clot: given, edit, resume, added = [], retool, onAdded, onOpenCh
           selfIsUser: options.selfIsUser,
           events: options.events,
           ...(polls ? { pollMinutes: Math.max(1, options.pollMinutes) } : {}),
+          ...(toolkit.slug === "googlecalendar" ? { leadTimes: parseLeadTimes(options.leadTimes) ?? parseLeadTimes(DEFAULT_OPTIONS.leadTimes) } : {}),
+          ...(toolkit.slug === "stripe" ? { checkoutCompleted: options.checkoutCompleted } : {}),
           ...(jobId.current === undefined ? {} : { jobId: jobId.current }),
           ...(edit === undefined ? {} : { replaces: edit }),
         },

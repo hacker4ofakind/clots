@@ -35,7 +35,7 @@ export function WorkingStep({ toolkit, error, onBack, onRetry }: { toolkit: Tool
           <Button variant="outline" onClick={onBack}>
             <ArrowLeftIcon /> Back
           </Button>
-          {error ? <Button onClick={onRetry}>Try again</Button> : null}
+          {error ? <Button data-primary onClick={onRetry}>Try again</Button> : null}
         </>
       }
     >

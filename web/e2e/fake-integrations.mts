@@ -27,6 +27,8 @@ interface Tool {
   selfIsUser?: boolean;
   events?: boolean;
   pollMinutes?: number;
+  leadTimes?: string[];
+  checkoutCompleted?: boolean;
   restartNeeded?: true;
 }
 interface Inbox {
@@ -36,6 +38,10 @@ interface Inbox {
   shared: boolean;
   provider: "Gmail" | "Email";
   mailboxes: string[];
+  imap?: { host: string; port: number };
+  smtp?: { host: string; port: number };
+  addresses: string[];
+  tellAddress: boolean;
 }
 interface Options {
   toolkit: string;
@@ -44,6 +50,8 @@ interface Options {
   selfIsUser: boolean;
   events: boolean;
   pollMinutes?: number;
+  leadTimes?: string[];
+  checkoutCompleted?: boolean;
   replaces?: string;
 }
 interface Job {
@@ -74,6 +82,7 @@ const TOOLKITS: Toolkit[] = [
   { slug: "slack", name: "Slack", auth: "oauth", webhooks: true },
   { slug: "linear", name: "Linear", auth: "oauth", webhooks: true },
   { slug: "stripe", name: "Stripe", auth: "key", webhooks: true },
+  { slug: "googlecalendar", name: "Google Calendar", auth: "oauth" },
 ];
 
 const KEY_INSTRUCTIONS = ["1. Open https://elevenlabs.io/app/developers/api-keys.", "2. Select Create API key and name it Clots.", "3. Under permissions, leave Text to Speech and Voices on; turn the rest off.", "4. Copy the key and paste it above. ElevenLabs only shows it once."].join("\n");
@@ -83,8 +92,8 @@ const initialTools = (): Tool[] => [
   { id: "microsoft_teams:main", toolkit: "microsoft_teams", account: "main", clot: null, shared: true, audience: "team", status: "active" },
 ];
 const initialInboxes = (): Inbox[] => [
-  { account: "tady", address: "lukas@tady.ch", clot: null, shared: true, provider: "Email", mailboxes: ["INBOX"] },
-  { account: "lukbicycles", address: "lukbicycles.com+clots@gmail.com", clot: "home", shared: false, provider: "Gmail", mailboxes: ["INBOX"] },
+  { account: "tady", address: "lukas@tady.ch", clot: null, shared: true, provider: "Email", mailboxes: ["INBOX"], imap: { host: "mail.tady.ch", port: 993 }, smtp: { host: "mail.tady.ch", port: 465 }, addresses: [], tellAddress: true },
+  { account: "lukbicycles", address: "lukbicycles.com+clots@gmail.com", clot: "home", shared: false, provider: "Gmail", mailboxes: ["INBOX"], imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 }, addresses: [], tellAddress: true },
 ];
 
 export function registerFakeIntegrations(api: UiApi, bus: EventBus, now: () => number = Date.now) {
@@ -121,7 +130,7 @@ export function registerFakeIntegrations(api: UiApi, bus: EventBus, now: () => n
   const activate = (job: Job) => {
     const o = job.options;
     const account = o.replaces ? (o.replaces.split(":")[1] ?? "main") : "main";
-    const entry: Tool = { id: `${job.toolkit}:${account}`, toolkit: job.toolkit, account, clot: o.clot ?? null, shared: o.clot === undefined, audience: o.audience, status: "active", selfIsUser: o.selfIsUser, events: o.events, ...(o.pollMinutes === undefined ? {} : { pollMinutes: o.pollMinutes }) };
+    const entry: Tool = { id: `${job.toolkit}:${account}`, toolkit: job.toolkit, account, clot: o.clot ?? null, shared: o.clot === undefined, audience: o.audience, status: "active", selfIsUser: o.selfIsUser, events: o.events, ...(o.pollMinutes === undefined ? {} : { pollMinutes: o.pollMinutes }), ...(o.leadTimes === undefined ? {} : { leadTimes: o.leadTimes }), ...(o.checkoutCompleted === undefined ? {} : { checkoutCompleted: o.checkoutCompleted }) };
     tools = [...tools.filter((t) => t.id !== (o.replaces ?? entry.id) && t.id !== entry.id), entry];
     set(job, { state: "active" });
   };
@@ -135,7 +144,7 @@ export function registerFakeIntegrations(api: UiApi, bus: EventBus, now: () => n
   api.route("POST", "/integrations/configure", (req) => {
     const body = (req.body ?? {}) as Options & { jobId?: string };
     if (!toolkit(body.toolkit)) throw new ApiError(400, "Unknown toolkit.");
-    const options: Options = { toolkit: body.toolkit, ...(body.clot ? { clot: body.clot } : {}), audience: body.audience, selfIsUser: body.selfIsUser, events: body.events, ...(body.pollMinutes === undefined ? {} : { pollMinutes: body.pollMinutes }), ...(body.replaces ? { replaces: body.replaces } : {}) };
+    const options: Options = { toolkit: body.toolkit, ...(body.clot ? { clot: body.clot } : {}), audience: body.audience, selfIsUser: body.selfIsUser, events: body.events, ...(body.pollMinutes === undefined ? {} : { pollMinutes: body.pollMinutes }), ...(body.leadTimes === undefined ? {} : { leadTimes: body.leadTimes }), ...(body.checkoutCompleted === undefined ? {} : { checkoutCompleted: body.checkoutCompleted }), ...(body.replaces ? { replaces: body.replaces } : {}) };
     const existing = body.jobId ? jobs.get(body.jobId) : undefined;
     const job: Job = existing ?? { jobId: randomUUID(), toolkit: body.toolkit, name: toolkit(body.toolkit)!.name, clot: body.clot ?? null, state: "working", options, attempts: 0 };
     job.options = options;
@@ -181,7 +190,7 @@ export function registerFakeIntegrations(api: UiApi, bus: EventBus, now: () => n
   const inboxFrom = (body: Record<string, unknown>, account: string): Inbox => {
     const address = String(body.address ?? "");
     const gmail = /@(gmail|googlemail)\.com$/i.test(address);
-    return { account, address, clot: typeof body.clot === "string" ? body.clot : null, shared: typeof body.clot !== "string", provider: gmail ? "Gmail" : "Email", mailboxes: Array.isArray(body.mailboxes) ? body.mailboxes.map(String) : ["INBOX"] };
+    return { account, address, clot: typeof body.clot === "string" ? body.clot : null, shared: typeof body.clot !== "string", provider: gmail ? "Gmail" : "Email", mailboxes: Array.isArray(body.mailboxes) ? body.mailboxes.map(String) : ["INBOX"], imap: (body.imap as Inbox["imap"]) ?? (gmail ? { host: "imap.gmail.com", port: 993 } : undefined), smtp: (body.smtp as Inbox["smtp"]) ?? (gmail ? { host: "smtp.gmail.com", port: 465 } : undefined), addresses: Array.isArray(body.addresses) ? body.addresses.map(String) : [], tellAddress: body.tellAddress !== false };
   };
   api.route("POST", "/inboxes", (req) => {
     const body = (req.body ?? {}) as Record<string, unknown>;

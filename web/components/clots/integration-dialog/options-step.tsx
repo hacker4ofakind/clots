@@ -5,7 +5,8 @@ import { ArrowLeftIcon, GlobeIcon, LockSimpleIcon, UsersThreeIcon, type IconProp
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import type { Audience, Toolkit, ToolOptions } from "@/lib/integrations";
+import { Input } from "@/components/ui/input";
+import { parseLeadTimes, type Audience, type Toolkit, type ToolOptions } from "@/lib/integrations";
 import { FieldRow } from "../field-row";
 import { TimeInput } from "../time-input";
 import { ToolLogo } from "../tool-logo";
@@ -41,6 +42,8 @@ export function OptionsStep({
 }) {
   const set = <K extends keyof ToolOptions>(key: K, value: ToolOptions[K]) => onChange({ ...options, [key]: value });
   const polls = options.events && toolkit.webhooks !== true;
+  const calendar = toolkit.slug === "googlecalendar";
+  const leadError = calendar && parseLeadTimes(options.leadTimes) === undefined ? "Use a number and m, h or d, like 24h or 90m. Separate several with commas." : undefined;
   return (
     <StepFrame
       title={`Configure ${toolkit.name}`}
@@ -52,7 +55,7 @@ export function OptionsStep({
             {editing ? null : <ArrowLeftIcon />}
             {editing ? "Cancel" : "Back"}
           </Button>
-          <Button onClick={onFinish}>Finish</Button>
+          <Button data-primary disabled={leadError !== undefined} onClick={onFinish}>Finish</Button>
         </>
       }
     >
@@ -88,6 +91,16 @@ export function OptionsStep({
             <TimeInput id="tool-poll" label="Check every" value={options.pollMinutes} onChange={(minutes) => set("pollMinutes", minutes)} />
           </FieldRow>
         </div>
+      ) : null}
+      {calendar ? (
+        <FieldRow label="Remind me before events" help="How long ahead each event reminds you. Separate several with commas" htmlFor="tool-lead" error={leadError}>
+          <Input id="tool-lead" value={options.leadTimes} onChange={(e) => set("leadTimes", e.target.value)} placeholder="24h, 1h" autoComplete="off" spellCheck={false} aria-invalid={leadError !== undefined} className="w-37.5 font-mono text-code md:text-code" />
+        </FieldRow>
+      ) : null}
+      {toolkit.slug === "stripe" ? (
+        <FieldRow label="Include completed checkouts" help={`Also tell ${clot ?? "the Clots"} when a customer finishes paying at checkout`} htmlFor="tool-checkout">
+          <Switch id="tool-checkout" checked={options.checkoutCompleted} onCheckedChange={(on) => set("checkoutCompleted", on)} />
+        </FieldRow>
       ) : null}
     </StepFrame>
   );

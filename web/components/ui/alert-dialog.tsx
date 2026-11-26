@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { cn } from "@/lib/utils"
+import { pressPrimaryOnEnter } from "@/lib/primary-enter"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
@@ -62,6 +63,10 @@ function AlertDialogContent({
           className
         )}
         {...props}
+        onKeyDown={(event) => {
+          props.onKeyDown?.(event)
+          pressPrimaryOnEnter(event)
+        }}
       />
     </AlertDialogPortal>
   )

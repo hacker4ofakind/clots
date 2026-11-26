@@ -40,7 +40,7 @@ export function OAuthStep({ toolkit, link, active, needsRestart, shownAt, readyA
           <Button variant="outline" onClick={onBack}>
             <ArrowLeftIcon /> Back
           </Button>
-          <Button disabled={left > 0 || !active} onClick={onDone}>
+          <Button data-primary disabled={left > 0 || !active} onClick={onDone}>
             Done {left > 0 ? <span className="tabular-nums opacity-80">({left})</span> : null}
           </Button>
         </>

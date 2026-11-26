@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { readableIssue, readableText } from "@clots/ui-api-schemas";
 import { ZodError } from "zod";
 import { loadConfigLeaving, migrateLegacy, type Config, type SkippedAccount } from "./config.js";
 import { readEnvFile, removeEnvKey, setEnvKey } from "./env-file.js";
@@ -306,10 +307,10 @@ export class ConfigStore {
 function fieldErrors(error: unknown, keys: string[]): Record<string, string> {
   if (error instanceof ZodError) {
     const out: Record<string, string> = {};
-    for (const issue of error.issues) out[String(issue.path[0] ?? keys[0] ?? "config")] ??= issue.message;
+    for (const issue of error.issues) out[String(issue.path[0] ?? keys[0] ?? "config")] ??= readableIssue(issue);
     return out;
   }
   const text = error instanceof Error ? error.message : String(error);
   const named = keys.find((k) => text.includes(k));
-  return { [named ?? keys[0] ?? "config"]: text.split("\n")[0]!.slice(0, 300) };
+  return { [named ?? keys[0] ?? "config"]: readableText(text.split("\n")[0]!.slice(0, 300), "That could not be saved. Check it and try again.") };
 }

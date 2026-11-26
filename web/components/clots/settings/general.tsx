@@ -7,8 +7,9 @@ import { CONTENT_WIDTHS, THEMES } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { api, ApiFailure } from "@/lib/api-client";
-import { readableError } from "@/lib/readable-error";
+import { CONFIG_FILE_PROBLEM, readableError, readableReason, readableText } from "@/lib/readable-error";
 import { savedText } from "@/lib/setting-labels";
 import { useUnsavedGuard } from "@/lib/use-unsaved-guard";
 import { useAppState } from "../app-state";
@@ -17,6 +18,7 @@ import { FieldRow, PageHeader } from "../field-row";
 import { Segmented } from "../segmented";
 import { Stepper } from "../stepper";
 import { TimeInput } from "../time-input";
+import { Section } from "./section";
 
 interface General {
   timeZone: string;
@@ -25,8 +27,16 @@ interface General {
   maxProposals: number;
   askTimeoutMinutes: number;
   publicUrl: string;
+  home: boolean;
+  hold: { quietSeconds: number; capSeconds: number };
+  sweep: { enabled: boolean; everyMinutes: number };
+  /** `null`: no warning. */
+  spend: { weeklyWarnUsd: number | null };
   error?: string;
 }
+
+/** What a switch that is turned on again starts from: the daemon's own defaults. */
+const DEFAULT_SPEND_USD = 50;
 
 const THEME_OPTIONS = [
   { value: "system", label: "System", icon: <MonitorIcon /> },
@@ -43,6 +53,7 @@ export function GeneralSettings() {
   const [form, setForm] = useState<General>();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const lastSpend = useRef(DEFAULT_SPEND_USD);
   const zones = useMemo(() => (typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : ["UTC"]), []);
 
   useEffect(() => {
@@ -71,6 +82,7 @@ export function GeneralSettings() {
 
   if (!form) return <PageHeader title="General" />;
   const set = <K extends keyof General>(key: K, value: General[K]) => setForm({ ...form, [key]: value });
+  if (form.spend.weeklyWarnUsd !== null) lastSpend.current = form.spend.weeklyWarnUsd;
 
   const save = async () => {
     setSaving(true);
@@ -82,7 +94,7 @@ export function GeneralSettings() {
       setForm(res);
       toast(savedText(res.needsRestart));
     } catch (error) {
-      if (error instanceof ApiFailure && error.status === 400) setErrors((error.body as { errors?: Record<string, string> }).errors ?? {});
+      if (error instanceof ApiFailure && error.status === 400) setErrors(Object.fromEntries(Object.entries((error.body as { errors?: Record<string, string> } | null)?.errors ?? {}).map(([field, reason]) => [field, readableReason(reason)])));
       else toast(readableError(error, "Could not save. Try again."));
     } finally {
       setSaving(false);
@@ -104,7 +116,7 @@ export function GeneralSettings() {
       </PageHeader>
       {saved?.error ? (
         <p role="alert" className="rounded-card bg-primary-soft px-4 py-3 text-body text-primary-ink">
-          clots.config.json was edited by hand and could not be used, so the last good settings stay in force: {saved.error}
+          clots.config.json was edited by hand and could not be used. {readableText(saved.error, CONFIG_FILE_PROBLEM)}
         </p>
       ) : null}
       <div>
@@ -128,6 +140,15 @@ export function GeneralSettings() {
         <FieldRow label="Content width" help="For chats and setup screens">
           <Segmented label="Content width" value={prefs.contentWidth} options={WIDTH_OPTIONS} onValueChange={(contentWidth) => void updatePrefs({ contentWidth })} />
         </FieldRow>
+        <FieldRow label="Public URL" htmlFor="url" error={errors.publicUrl}>
+          <Input id="url" value={form.publicUrl} onChange={(e) => set("publicUrl", e.target.value)} className="w-75 text-label font-normal md:text-label" />
+        </FieldRow>
+      </div>
+      <Section title="Clots">
+        <div>
+          <FieldRow label="Home Clot" help="Takes what belongs to no project. Takes effect after a restart" htmlFor="home" error={errors.home}>
+            <Switch id="home" checked={form.home} onCheckedChange={(on) => set("home", on)} />
+          </FieldRow>
         <FieldRow label="Start a new session at" help="How full a Clot's context gets before it sums up and starts fresh" htmlFor="rollover" error={errors.rolloverPercent}>
           <Stepper id="rollover" label="Start a new session at" value={form.rolloverPercent} min={1} max={100} unit="%" onChange={(v) => set("rolloverPercent", v)} />
         </FieldRow>
@@ -140,10 +161,42 @@ export function GeneralSettings() {
         <FieldRow label="Ask timeout" help="An unanswered ask is blocked after this" htmlFor="timeout" error={errors.askTimeoutMinutes}>
           <TimeInput id="timeout" label="Ask timeout" value={form.askTimeoutMinutes} onChange={(m) => set("askTimeoutMinutes", m)} />
         </FieldRow>
-        <FieldRow label="Public URL" htmlFor="url" error={errors.publicUrl}>
-          <Input id="url" value={form.publicUrl} onChange={(e) => set("publicUrl", e.target.value)} className="w-75 text-label font-normal md:text-label" />
-        </FieldRow>
-      </div>
+        </div>
+      </Section>
+      <Section title="Incoming events">
+        <div>
+          <FieldRow label="Wait for quiet" help="Events that arrive together reach a Clot as one batch once they stop for this long" htmlFor="hold-quiet" error={errors["hold.quietSeconds"]}>
+            <Stepper id="hold-quiet" label="Wait for quiet" value={form.hold.quietSeconds} min={0} max={3600} unit="s" digits={4} onChange={(v) => set("hold", { ...form.hold, quietSeconds: v })} />
+          </FieldRow>
+          <FieldRow label="Longest wait" help="A batch goes out after this, even if events keep coming" htmlFor="hold-cap" error={errors["hold.capSeconds"]}>
+            <Stepper id="hold-cap" label="Longest wait" value={form.hold.capSeconds} min={0} max={3600} unit="s" digits={4} onChange={(v) => set("hold", { ...form.hold, capSeconds: v })} />
+          </FieldRow>
+          <FieldRow label="Look through claude.ai connectors" help="A Clot reads them now and then for what needs you" htmlFor="sweep-on" error={errors["sweep.enabled"]}>
+            <Switch id="sweep-on" checked={form.sweep.enabled} onCheckedChange={(on) => set("sweep", { ...form.sweep, enabled: on })} />
+          </FieldRow>
+          {form.sweep.enabled ? (
+            <div className="pl-4">
+              <FieldRow label="Look every" help="At least every 15 minutes" htmlFor="sweep-every" error={errors["sweep.everyMinutes"]}>
+                <TimeInput id="sweep-every" label="Look every" value={form.sweep.everyMinutes} onChange={(m) => set("sweep", { ...form.sweep, everyMinutes: m })} />
+              </FieldRow>
+            </div>
+          ) : null}
+        </div>
+      </Section>
+      <Section title="Spending">
+        <div>
+          <FieldRow label="Warn about weekly spending" help="You hear once when a Clot spends more than this in a week" htmlFor="spend-on">
+            <Switch id="spend-on" checked={form.spend.weeklyWarnUsd !== null} onCheckedChange={(on) => set("spend", { weeklyWarnUsd: on ? lastSpend.current : null })} />
+          </FieldRow>
+          {form.spend.weeklyWarnUsd !== null ? (
+            <div className="pl-4">
+              <FieldRow label="Weekly limit" help="In US dollars" htmlFor="spend-usd" error={errors["spend.weeklyWarnUsd"]}>
+                <Stepper id="spend-usd" label="Weekly limit" value={form.spend.weeklyWarnUsd} min={1} max={100000} unit="USD" digits={6} onChange={(v) => set("spend", { weeklyWarnUsd: v })} />
+              </FieldRow>
+            </div>
+          ) : null}
+        </div>
+      </Section>
       <ConfirmDialog open={leave.pending} onOpenChange={(open) => !open && leave.cancel()} title="Leave without saving?" description="Your changes to these settings will be lost." confirmLabel="Discard changes" cancelLabel="Keep editing" onConfirm={leave.proceed} />
     </form>
   );

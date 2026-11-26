@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { CaretDownIcon, CaretRightIcon, InfoIcon } from "@phosphor-icons/react";
+import { useId, useState } from "react";
+import { CaretRightIcon, InfoIcon } from "@phosphor-icons/react";
 import type { MessageView } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { cn } from "@/lib/utils";
 import { AttachmentThumb } from "./attachment-thumb";
 import type { Item } from "./chat-items";
@@ -49,7 +49,6 @@ export function Activity({ message }: { message: MessageView }) {
 
 /** A centred system line (the context limit, a pause), or the folded recap a new session starts with. */
 export function Note({ message }: { message: MessageView }) {
-  const [open, setOpen] = useState(false);
   const recap = (message.data as { recap?: boolean } | null)?.recap === true;
   if (!recap) {
     return (
@@ -60,18 +59,61 @@ export function Note({ message }: { message: MessageView }) {
     );
   }
   const [first, ...rest] = message.text.split("\n\n");
+  const body = rest.join("\n\n") || first || "";
+  return <Recap body={body} />;
+}
+
+/** The recap's lines, one unit each: a list item on its own, any other block whole. They fade in one after another. */
+export function recapLines(body: string): string[] {
+  const listItem = /^\s*([-*]|\d+\.)\s/;
+  return body
+    .split(/\n{2,}/)
+    .flatMap((block) => {
+      const lines = block.split("\n").filter((l) => l.trim() !== "");
+      return lines.length > 1 && lines.every((l) => listItem.test(l)) ? lines : [block];
+    })
+    .filter((b) => b.trim() !== "");
+}
+
+/**
+ * The folded recap a new session starts with. It stays centred when opened: the button is centred above a text block of its own, the
+ * caret turns, the height opens smoothly (the conversation below moves with it) and the lines fade in one after another.
+ */
+function Recap({ body }: { body: string }) {
+  const [open, setOpen] = useState(false);
+  const reduce = useReducedMotion();
+  const lines = recapLines(body);
+  const id = useId();
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="self-center text-caption text-muted-foreground" data-recap>
-      <CollapsibleTrigger asChild>
-        <Button variant="ghost" size="xs" className="text-foreground-soft">
-          {open ? <CaretDownIcon /> : <CaretRightIcon />}
-          New session. Recap of the previous one
-        </Button>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <Markdown text={rest.join("\n\n") || first || ""} className="mt-2 text-body text-foreground" />
-      </CollapsibleContent>
-    </Collapsible>
+    <div className="flex w-full flex-col items-center text-caption text-muted-foreground" data-recap>
+      <Button variant="ghost" size="xs" className="text-foreground-soft" aria-expanded={open} aria-controls={id} onClick={() => setOpen((o) => !o)}>
+        <motion.span className="inline-flex" animate={{ rotate: open ? 90 : 0 }} transition={{ duration: reduce ? 0 : 0.2, ease: "easeOut" }}>
+          <CaretRightIcon aria-hidden />
+        </motion.span>
+        New session. Recap of the previous one
+      </Button>
+      <AnimatePresence initial={false}>
+        {open ? (
+          <motion.div
+            key="recap"
+            id={id}
+            className="w-full overflow-hidden"
+            initial={{ height: 0 }}
+            animate={{ height: "auto" }}
+            exit={{ height: 0 }}
+            transition={{ duration: reduce ? 0 : 0.32, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <div className="mx-auto max-w-full pt-2 text-left text-body text-foreground">
+              {lines.map((line, i) => (
+                <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: reduce ? 0 : 0.12 } }} transition={{ duration: reduce ? 0 : 0.19, delay: reduce ? 0 : 0.03 + Math.min(i, 10) * 0.015 }}>
+                  <Markdown text={line} />
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
   );
 }
 

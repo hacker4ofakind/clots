@@ -121,7 +121,7 @@ upload (4 MB).
 | Messages | page through a Clot's chat (newest first, cursor); send a message (text and attached images); the slash command list |
 | Asks | list open asks and choices; answer one (`allow`, `block`, `edit` with new text, `pick` with an option) |
 | Workers | the workers of a turn, with status and pull request |
-| Settings | read and write General settings; UI preferences |
+| Settings | read and write General settings and the Schedule; UI preferences |
 | Keys | list `.env` key names with their last 4 characters; set one; remove one |
 | Integrations | inboxes and Composio accounts (list, add, edit, remove); search Composio toolkits; start the configurer as a job; a job's status, its key, abandoning it; reconnect a tool |
 | Push | register and remove a push subscription; the VAPID public key; a device reporting itself visible; a test notification |
@@ -278,19 +278,45 @@ Each row links to its pull request once there is one.
 ### Settings
 
 - **General**: time zone, theme (system, light, dark), content width (wide,
-  medium, narrow; default wide), start a new session at (`rolloverPercent`),
-  workers at once (`maxWorkers`), open rule asks per Clot (`maxProposals`),
-  ask timeout (`askTimeoutMinutes`, as the time input), public URL. Theme and
+  medium, narrow; default wide) and public URL, then three titled groups.
+  *Clots*: Home Clot (`home`, a switch; it has no live handler, so its help
+  says "Takes effect after a restart" and the toast names it), start a new
+  session at (`rolloverPercent`), workers at once (`maxWorkers`), open rule asks
+  per Clot (`maxProposals`), ask timeout (`askTimeoutMinutes`, as the time
+  input). *Incoming events*: wait for quiet (`hold.quietSeconds`) and longest
+  wait (`hold.capSeconds`), both steppers in seconds (the longest wait cannot be
+  shorter than the quiet wait), look through claude.ai connectors
+  (`sweep.enabled`, a switch) with look every (`sweep.everyMinutes`, the time
+  input, at least 15 minutes) under it while on. *Spending*: warn about weekly
+  spending (`spend.weeklyWarnUsd`, a switch: off writes an empty `spend`, on
+  starts from 50) with the weekly limit in US dollars under it while on. Theme and
   content width are segmented controls (in the chat, Wide fills the page with
   the same space at the sides as above and below the messages; Medium and
-  Narrow cap the width), the start-a-session, workers and rule-ask
-  limits are steppers. Leaving a page with unsaved edits asks first. Save writes
+  Narrow cap the width), the limits are steppers. Each setting's help line
+  gives the default where the default is not obvious. Validation messages are
+  plain words beside the field, keyed by the field's path (`hold.capSeconds`).
+  Leaving a page with unsaved edits asks first. Save writes
   and applies (section 10); the toast names the settings by their labels on the
   page, never by key ("Saved. Ask timeout takes effect after a restart."). Theme
   and content width are UI preferences, saved at once.
+- **Schedule** (`gates`): Scarce hours and Lead-in hours, each a card with a row
+  per weekday (a switch, and from and to times while on; "Not active" while
+  off), a Restore defaults button beside each heading (weekdays 15:00 to 18:00
+  and 10:00 to 15:00; it fills the form and still has to be saved), and under
+  Lead-in hours the share of five-hour usage at which it holds
+  (`leadInPercent`, a stepper in %). Times are in the configured time zone,
+  which the page says. A window must start before it ends (no window crosses
+  midnight); the refusal names the day ("Wednesday: the window must start
+  before it ends."). Save writes the weekday windows as `"15:00-18:00"`
+  strings and applies at once. The page shares General's Save, unsaved-changes
+  and picked-up-hand-edit behaviour.
 - **Manage Clots**: one list, each Clot with its icon, name, repository (Home:
   "No repository"), its state alone (working, idle, paused with reason), and
-  icon buttons Edit (opens the New Clot steps prefilled) and Delete; New Clot
+  icon buttons Edit (opens the New Clot steps prefilled; for a project Clot its
+  first step also holds "What this project is", the one-line `about` the
+  routing call reads, up to 300 characters, and "Test command", the one
+  command a locked turn may run, both empty to clear; they save with the
+  icon and repository, and the home Clot has neither) and Delete; New Clot
   sits beside the heading. Delete is refused for the home Clot; for others it asks for the name
   typed in, then stops the container, removes the config entry and keeps the
   volumes and the chat history (a later Clot with the same name gets them
@@ -299,7 +325,12 @@ Each row links to its pull request once there is one.
   (accounts: list with scope and audience, add, edit, remove) and Keys (the
   `.env` keys: name, last 4 characters, replace, remove, add; the daemon's own
   keys, which it refuses to change, show those buttons disabled with the reason).
-  Secret Storage is absent.
+  Secret Storage is absent. What stays in the file only, and why, is in
+  `.superpowers/handoffs/polish/config-inventory.md`: `image`, `ui.owner`,
+  `intake.port` and `rulebookDir` (infrastructure, access and restart-only),
+  `mcpServers` (a stdio server runs a command on the host, and an OAuth one
+  signs in through the daemon's own callback) and a toolkit's trigger
+  configuration (the configurer's).
 
 ### Phone
 
@@ -452,7 +483,13 @@ or a worker is running). Changing only the icon saves at once.
 2. **Options**: audience (a select: private, team, public, with their icons),
    whether it is the user's own account, shared with every Clot or only this
    one, events on or off, and a polling time (the time input; shown when events
-   are on and the toolkit has no webhook trigger). Finish.
+   are on and the toolkit has no webhook trigger). Two toolkits add one row each
+   under those: Google Calendar's "Remind me before events" (`leadTimes`, a text
+   field of lead times such as `24h, 90m`, default `24h`; a wrong one is refused
+   in words and Finish stays off) and Stripe's "Include completed checkouts"
+   (`checkoutCompleted`, a switch, off by default). The daemon, not the
+   configurer, writes both into the entry, and Edit settings shows what is
+   saved. Finish.
 3. **Configurer**: a throwaway session (Sonnet 5.5, medium effort) runs in the
    daemon with the integration skill and these tools: read the toolkit's
    metadata and auth schemes, list its trigger types with their config
@@ -483,8 +520,13 @@ or a worker is running). Changing only the icon saves at once.
 **Inboxes**: a form with the address, the provider (detected from the domain,
 which also picks the icon and the default IMAP and SMTP servers; an unknown
 domain asks for the servers), the password or app password (saved to `.env`),
-the folders or labels to watch, and shared or one Clot. Adding, editing and
-removing apply at once.
+the folders or labels to watch, and shared or one Clot. A "More options"
+button opens the rest: the incoming and outgoing mail servers (host and port;
+only for an address that is not Gmail, prefilled from the provider, and open
+by default when the daemon says a server is missing), other addresses
+delivered into the inbox (comma-separated) and "Tell the Clots the address"
+(a switch, on by default). An edit opens it already open when the inbox uses
+any of them. Adding, editing and removing apply at once.
 
 ## 12. Error handling
 

@@ -96,7 +96,7 @@ const configStore = new ConfigStore({
   env: new LiveEnv(path.join(dir, ".env"), {}),
   onChanged: (e) => void bus.emit("config.changed", { keys: e.keys.filter((k) => !e.needsRestart.includes(k)), needsRestart: e.needsRestart, fromFile: e.fromFile, ...(e.error === undefined ? {} : { error: e.error }) }),
 });
-configStore.onChange(["timeZone", "rolloverPercent", "maxWorkers", "maxProposals", "askTimeoutMinutes"], () => undefined);
+configStore.onChange(["timeZone", "rolloverPercent", "maxWorkers", "maxProposals", "askTimeoutMinutes", "gates", "sweep", "spend", "hold"], () => undefined);
 configStore.watch();
 registerSettingsRoutes(api, { config: configStore, announce: () => undefined, reorder: () => undefined, removeClot: async () => undefined });
 // The integrations are fake too (a fake Composio and configurer), so the dialog can be driven end to end.

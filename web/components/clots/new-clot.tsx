@@ -12,7 +12,8 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/in
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { api, ApiFailure } from "@/lib/api-client";
-import { readableError } from "@/lib/readable-error";
+import { DEFAULT_OPTIONS } from "@/lib/integrations";
+import { readableError, readableReason } from "@/lib/readable-error";
 import { useAppState } from "./app-state";
 import { BuildProgress } from "./build-progress";
 import { ClotIcon } from "./clot-icon";
@@ -21,7 +22,7 @@ import { IconTile } from "./icon-tile";
 import { DEFAULT_ICON, STEPS, iconFromParam, iconToParam, recalledHeld, rememberHeld, sameName, type Build, type HeldTool, type Step } from "./new-clot-state";
 import { ToolsStep } from "./new-clot-tools";
 
-type Errors = { name?: string; repo?: string };
+type Errors = { name?: string; repo?: string; about?: string; testCommand?: string };
 type Invite = { login?: string };
 
 const parseStep = (value: string | null): Step => (STEPS.includes(value as Step) ? (value as Step) : "details");
@@ -39,7 +40,8 @@ function FieldLabel({ htmlFor, children }: { htmlFor?: string; children: string 
 /** The errors a failed create or edit carried, as the form's fields. */
 function fieldErrors(e: unknown): { errors: Errors & { toolJobs?: string }; text?: string } {
   if (!(e instanceof ApiFailure)) return { errors: {}, text: "That could not be done." };
-  const errors = (e.body as { errors?: Errors & { toolJobs?: string } } | null)?.errors ?? {};
+  const raw = (e.body as { errors?: Errors & { toolJobs?: string } } | null)?.errors ?? {};
+  const errors = Object.fromEntries(Object.entries(raw).map(([field, reason]) => [field, readableReason(reason)])) as Errors & { toolJobs?: string };
   return { errors, text: Object.keys(errors).length === 0 ? readableError(e, "That could not be done.") : undefined };
 }
 
@@ -61,6 +63,8 @@ export function NewClot() {
   const [repo, setRepo] = useState(params.get("repo") ?? "");
   const [icon, setIcon] = useState<ClotIconValue>(iconFromParam(params.get("icon")) ?? DEFAULT_ICON);
   const [held, setHeld] = useState<HeldTool[]>([]);
+  // An edit also holds the Clot's one-line description and its test command, as the file has them (`text.original`).
+  const [text, setText] = useState({ about: "", testCommand: "", original: { about: "", testCommand: "" } });
   const [errors, setErrors] = useState<Errors>({});
   const [invite, setInvite] = useState<Invite>();
   const [checking, setChecking] = useState(false);
@@ -78,6 +82,17 @@ export function NewClot() {
     if (iconFromParam(params.get("icon")) === undefined && existing.icon) setIcon(existing.icon);
     if (!params.has("repo") && existing.repository) setRepo(existing.repository);
   }, [edit, existing, params]);
+  const hasEntry = edit !== undefined && original.repository !== null;
+  useEffect(() => {
+    if (!hasEntry) return;
+    let live = true;
+    void api<{ about: string; testCommand: string }>(`/clots/${enc(edit)}/settings`)
+      .then((s) => live && setText((t) => ({ about: t.about === t.original.about ? s.about : t.about, testCommand: t.testCommand === t.original.testCommand ? s.testCommand : t.testCommand, original: s })))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [hasEntry, edit]);
   const repoChanged = edit !== undefined && original.repository !== null && repo.trim().toLowerCase() !== original.repository.toLowerCase();
 
   // The tools held for this Clot come back with a reload: the address has the jobs, the tab's storage the rest.
@@ -92,7 +107,7 @@ export function NewClot() {
         const job = await api<{ toolkit: string; name?: string; held?: boolean; state: string }>(`/integrations/jobs/${enc(jobId)}`).catch(() => undefined);
         if (job?.held !== true) return undefined;
         const known = remembered.find((r) => r.jobId === jobId);
-        return { jobId, toolkit: known?.toolkit ?? { slug: job.toolkit, name: job.name ?? job.toolkit, auth: "oauth" }, options: known?.options ?? { audience: "team", selfIsUser: true, shared: false, events: true, pollMinutes: 30 }, state: job.state === "failed" ? "failed" : "active" };
+        return { jobId, toolkit: known?.toolkit ?? { slug: job.toolkit, name: job.name ?? job.toolkit, auth: "oauth" }, options: known?.options ?? DEFAULT_OPTIONS, state: job.state === "failed" ? "failed" : "active" };
       }),
     ).then((list) => setHeld(list.filter((h): h is HeldTool => h !== undefined)));
   }, [params]);
@@ -179,7 +194,7 @@ export function NewClot() {
       }
       go("tools");
     } catch (e) {
-      setErrors({ repo: e instanceof ApiFailure && e.unreachable ? readableError(e, "") : "That could not be checked." });
+      setErrors({ repo: readableError(e, "That could not be checked. Try again.") });
     } finally {
       setChecking(false);
     }
@@ -208,7 +223,7 @@ export function NewClot() {
     setSaving(true);
     setToolsProblem(undefined);
     try {
-      const res = await api<{ ok: boolean; moving?: boolean }>(`/clots/${enc(edit)}`, { method: "PUT", body: { icon, ...(repoChanged ? { repo: repo.trim() } : {}) } });
+      const res = await api<{ ok: boolean; moving?: boolean }>(`/clots/${enc(edit)}`, { method: "PUT", body: { icon, ...(repoChanged ? { repo: repo.trim() } : {}), ...(text.about.trim() !== text.original.about ? { about: text.about.trim() } : {}), ...(text.testCommand.trim() !== text.original.testCommand ? { testCommand: text.testCommand.trim() } : {}) } });
       if (res.moving) {
         setBuild({ step: "cloning" });
         go("create");
@@ -218,11 +233,11 @@ export function NewClot() {
         router.push("/settings/clots");
       }
     } catch (e) {
-      const { errors: errs, text } = fieldErrors(e);
-      if (errs.repo) {
-        setErrors({ repo: errs.repo });
+      const { errors: errs, text: problem } = fieldErrors(e);
+      if (errs.repo || errs.about || errs.testCommand) {
+        setErrors({ repo: errs.repo, about: errs.about, testCommand: errs.testCommand });
         go("details", "replace");
-      } else setToolsProblem(text ?? "That could not be saved.");
+      } else setToolsProblem(problem ?? "That could not be saved.");
     } finally {
       setSaving(false);
     }
@@ -230,7 +245,7 @@ export function NewClot() {
 
   const retry = async () => {
     setBuild({ step: "cloning" });
-    await api(`/clots/${enc(name)}/retry`, { method: "POST", body: {} }).catch(() => setBuild({ step: "failed", log: "Retry could not be started." }));
+    await api(`/clots/${enc(name)}/retry`, { method: "POST", body: {} }).catch((e) => setBuild({ step: "failed", log: readableError(e, "Retry could not be started. Try again.") }));
   };
 
   /** Reset: back to an empty form (or, for an edit, to the Clot as saved). Tools held for a Clot not made yet are let go. */
@@ -244,6 +259,7 @@ export function NewClot() {
     if (edit !== undefined) {
       setIcon(original.icon ?? DEFAULT_ICON);
       setRepo(original.repository ?? "");
+      setText((t) => ({ ...t, about: t.original.about, testCommand: t.original.testCommand }));
       router.replace(`/new?edit=${enc(edit)}`);
       return;
     }
@@ -349,10 +365,37 @@ export function NewClot() {
                         {errors.repo}
                       </p>
                     ) : null}
-                    {invite ? <p className="text-caption text-muted-foreground">Invite {invite.login ?? "the machine account"} as a collaborator on the repository, then press Check again.</p> : null}
                     {repoChanged ? <p className="text-caption text-muted-foreground">Saving clones this repository into a fresh workspace and moves {name} onto it. The old workspace is kept.</p> : null}
                   </div>
                 )}
+                {hasEntry ? (
+                  <>
+                    <div className="flex max-w-130 flex-col gap-2">
+                      <FieldLabel htmlFor="clot-about">What this project is</FieldLabel>
+                      <Input id="clot-about" value={text.about} maxLength={300} onChange={(e) => (setText({ ...text, about: e.target.value }), setErrors((x) => ({ ...x, about: undefined })))} autoComplete="off" aria-invalid={errors.about !== undefined} aria-describedby="clot-about-help" />
+                      <p id="clot-about-help" className="text-caption text-muted-foreground">
+                        One line. It helps place an event that names no repository.
+                      </p>
+                      {errors.about ? (
+                        <p role="alert" className="text-caption text-primary-ink">
+                          {errors.about}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="flex max-w-130 flex-col gap-2">
+                      <FieldLabel htmlFor="clot-test">Test command</FieldLabel>
+                      <Input id="clot-test" value={text.testCommand} maxLength={500} placeholder="npm test" onChange={(e) => (setText({ ...text, testCommand: e.target.value }), setErrors((x) => ({ ...x, testCommand: undefined })))} autoComplete="off" spellCheck={false} aria-invalid={errors.testCommand !== undefined} aria-describedby="clot-test-help" className="font-mono text-code md:text-code" />
+                      <p id="clot-test-help" className="text-caption text-muted-foreground">
+                        The one command {name} may run, besides read-only ones, while it works on its own. Leave it empty for none.
+                      </p>
+                      {errors.testCommand ? (
+                        <p role="alert" className="text-caption text-primary-ink">
+                          {errors.testCommand}
+                        </p>
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
                 <div className="mt-auto flex justify-end">
                   <Button type="submit" disabled={checking || connection === "down" || name === "" || (repo === "" && !(edit !== undefined && original.repository === null))}>
                     {checking ? <Spinner /> : null}

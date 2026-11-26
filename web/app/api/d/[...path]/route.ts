@@ -30,7 +30,7 @@ async function forward(req: NextRequest, ctx: { params: Promise<{ path: string[]
     if (type && !type.startsWith("application/json")) headers.set("content-security-policy", "default-src 'none'; sandbox");
     return new Response(res.body, { status: res.status, headers });
   } catch {
-    return Response.json({ error: "the daemon cannot be reached" }, { status: 502, headers: { "cache-control": "no-store" } });
+    return Response.json({ error: "The Clots daemon cannot be reached.", code: "daemon-unreachable" }, { status: 502, headers: { "cache-control": "no-store" } });
   }
 }
 

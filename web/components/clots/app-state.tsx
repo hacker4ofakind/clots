@@ -5,6 +5,7 @@ import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import { uiPrefsSchema, type AnswerResponse, type AskAnswerBody, type AskSnapshot, type ClotSummary, type UiPrefs } from "@clots/ui-api-schemas";
 import { api, ApiFailure } from "@/lib/api-client";
+import { CONFIG_FILE_PROBLEM, readableError, readableText } from "@/lib/readable-error";
 import { useStream, type StreamEvent, type StreamStatus } from "@/lib/stream";
 
 export type AnswerOutcome = { kind: "answered"; outcome: string | null } | { kind: "closed"; outcome: string } | { kind: "busy" } | { kind: "failed"; message: string };
@@ -109,7 +110,7 @@ export function AppStateProvider({ initial, children }: { initial: { clots: Clot
         if (event.data?.ui) setPrefs(event.data.ui);
         // A hand edit of the file: picked up and applied, or refused with the reason.
         if (event.data?.fromFile) {
-          if (event.data.error) toast.error("clots.config.json was not picked up", { description: String(event.data.error) });
+          if (event.data.error) toast.error("clots.config.json was not picked up", { description: readableText(event.data.error, CONFIG_FILE_PROBLEM) });
           else if ((event.data.keys?.length ?? 0) + (event.data.needsRestart?.length ?? 0) > 0) toast("Picked up changes to clots.config.json", event.data.needsRestart?.length ? { description: `${event.data.needsRestart.join(", ")} takes effect after a restart.` } : undefined);
         }
         break;
@@ -159,9 +160,9 @@ export function AppStateProvider({ initial, children }: { initial: { clots: Clot
       if (error instanceof ApiFailure) {
         const outcome = (error.body as { outcome?: string } | null)?.outcome;
         if (error.status === 409 && outcome !== undefined) return { kind: "closed", outcome };
-        return { kind: "failed", message: error.unreachable ? "Can't reach the Clots daemon." : error.message };
+        return { kind: "failed", message: readableError(error, "That answer could not be sent. Try again.") };
       }
-      return { kind: "failed", message: "Something went wrong." };
+      return { kind: "failed", message: "That answer could not be sent. Try again." };
     }
   }, []);
 

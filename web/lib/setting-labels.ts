@@ -16,6 +16,10 @@ const LABELS: Record<string, string> = {
   ui: "The UI owner",
   rulebookDir: "The rulebook folder",
   home: "The Home Clot",
+  hold: "The wait for events",
+  sweep: "Looking through the connectors",
+  spend: "The spending warning",
+  gates: "The schedule",
   clots: "The Clots list",
   sources: "The connected tools",
 };

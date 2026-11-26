@@ -19,6 +19,7 @@ let store: ConfigStore;
 let changed: { keys: string[]; needsRestart: string[]; fromFile: boolean; error?: string }[];
 
 const write = (json: unknown) => fs.writeFileSync(file, typeof json === "string" ? json : JSON.stringify(json, null, 2));
+const file_ = () => file;
 const settle = (ms = 700) => new Promise((r) => setTimeout(r, ms));
 
 beforeEach(() => {
@@ -196,6 +197,8 @@ describe("the settings routes", () => {
     removed = [];
     order = [];
     api = new UiApi({ secret: () => "s", bus: new EventBus("b") });
+    // What the daemon registers: these keys apply live; `home` has no handler, so it waits for a restart.
+    store.onChange(["maxWorkers", "rolloverPercent", "maxProposals", "askTimeoutMinutes", "timeZone", "gates", "sweep", "spend", "hold"], () => undefined);
     registerSettingsRoutes(api, { config: store, removeClot: async (n) => void removed.push(n), reorder: (o) => void order.push(o), announce: () => undefined });
     const server = await api.listen(0);
     const port = (server.address() as net.AddressInfo).port;
@@ -206,11 +209,66 @@ describe("the settings routes", () => {
   it("reads and saves the general settings, with the error beside the field when one is wrong", async () => {
     expect(await (await call("/settings/general")).json()).toMatchObject({ timeZone: "UTC", maxWorkers: 3, askTimeoutMinutes: 10 });
     const ok = await call("/settings/general", { method: "PUT", body: JSON.stringify({ maxWorkers: 2, askTimeoutMinutes: 2 }) });
-    expect(await ok.json()).toMatchObject({ maxWorkers: 2, askTimeoutMinutes: 2, applied: [] });
+    expect(await ok.json()).toMatchObject({ maxWorkers: 2, askTimeoutMinutes: 2, applied: ["maxWorkers", "askTimeoutMinutes"] });
     const bad = await call("/settings/general", { method: "PUT", body: JSON.stringify({ rolloverPercent: 300 }) });
     expect(bad.status).toBe(400);
     expect(((await bad.json()) as { errors: Record<string, string> }).errors.rolloverPercent).toBeTruthy();
     expect(store.current.rolloverPercent).toBe(65);
+  });
+
+  it("shows the settings the pages gained with their defaults, and saves them", async () => {
+    const got = (await (await call("/settings/general")).json()) as Record<string, unknown>;
+    expect(got).toMatchObject({ home: true, hold: { quietSeconds: 60, capSeconds: 120 }, sweep: { enabled: true, everyMinutes: 180 }, spend: { weeklyWarnUsd: 50 } });
+    const put = (body: unknown) => call("/settings/general", { method: "PUT", body: JSON.stringify(body) });
+    const ok = await put({ hold: { quietSeconds: 30, capSeconds: 90 }, sweep: { enabled: false, everyMinutes: 60 }, spend: { weeklyWarnUsd: 120.5 }, home: false });
+    expect(await ok.json()).toMatchObject({ hold: { quietSeconds: 30, capSeconds: 90 }, sweep: { enabled: false, everyMinutes: 60 }, spend: { weeklyWarnUsd: 120.5 }, home: false, needsRestart: ["home"] });
+    const file = JSON.parse(fs.readFileSync(file_(), "utf8"));
+    expect(file).toMatchObject({ hold: { quietSeconds: 30, capSeconds: 90 }, sweep: { enabled: false, everyMinutes: 60 }, spend: { weeklyWarnUsd: 120.5 }, home: false });
+    // No warning is an explicit empty spend, and it reads back as null.
+    await put({ spend: { weeklyWarnUsd: null } });
+    expect(JSON.parse(fs.readFileSync(file_(), "utf8")).spend).toEqual({});
+    expect(((await (await call("/settings/general")).json()) as { spend: unknown }).spend).toEqual({ weeklyWarnUsd: null });
+  });
+
+  it("says in plain words what is wrong with one of the new settings, by its path, and saves nothing", async () => {
+    const put = async (body: unknown) => {
+      const res = await call("/settings/general", { method: "PUT", body: JSON.stringify(body) });
+      return { status: res.status, errors: ((await res.json()) as { errors: Record<string, string> }).errors };
+    };
+    expect(await put({ hold: { quietSeconds: 90, capSeconds: 30 } })).toEqual({ status: 400, errors: { "hold.capSeconds": "The longest wait cannot be shorter than the quiet wait." } });
+    expect((await put({ sweep: { enabled: true, everyMinutes: 5 } })).errors["sweep.everyMinutes"]).toBe("That must be at least 15.");
+    expect((await put({ spend: { weeklyWarnUsd: 0.5 } })).errors["spend.weeklyWarnUsd"]).toBe("That must be at least 1.");
+    expect(store.current.hold).toEqual({ quietMs: 60_000, capMs: 120_000 });
+  });
+
+  it("reads and saves the schedule as a row per weekday, with the defaults for what the file leaves out", async () => {
+    const got = (await (await call("/settings/schedule")).json()) as { scarce: { day: string; on: boolean; from: string; to: string }[]; leadIn: { day: string; on: boolean }[]; leadInPercent: number; timeZone: string };
+    expect(got.timeZone).toBe("UTC");
+    expect(got.leadInPercent).toBe(50);
+    expect(got.scarce).toHaveLength(7);
+    expect(got.scarce[0]).toEqual({ day: "mon", on: true, from: "15:00", to: "18:00" });
+    expect(got.scarce[5]).toEqual({ day: "sat", on: false, from: "15:00", to: "18:00" });
+    expect(got.leadIn[0]).toMatchObject({ day: "mon", on: true, from: "10:00", to: "15:00" });
+    const scarce = got.scarce.map((r) => (r.day === "sat" ? { ...r, on: true, from: "09:00", to: "12:30" } : r.day === "mon" ? { ...r, on: false } : r));
+    const res = await call("/settings/schedule", { method: "PUT", body: JSON.stringify({ scarce, leadInPercent: 70 }) });
+    expect(res.status).toBe(200);
+    const saved = JSON.parse(fs.readFileSync(file_(), "utf8")).gates;
+    expect(saved.scarce).toEqual({ tue: "15:00-18:00", wed: "15:00-18:00", thu: "15:00-18:00", fri: "15:00-18:00", sat: "09:00-12:30" });
+    expect(saved.leadIn.mon).toBe("10:00-15:00");
+    expect(saved.leadInPercent).toBe(70);
+    expect(store.current.gates.scarce.sat).toEqual({ start: 540, end: 750 });
+    expect(store.current.gates.scarce.mon).toBeUndefined();
+  });
+
+  it("refuses a window that ends before it starts, naming the day, and writes nothing", async () => {
+    const got = (await (await call("/settings/schedule")).json()) as { scarce: { day: string; from: string; to: string }[] };
+    const scarce = got.scarce.map((r) => (r.day === "wed" ? { ...r, from: "18:00", to: "09:00" } : r));
+    const res = await call("/settings/schedule", { method: "PUT", body: JSON.stringify({ scarce }) });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { errors: Record<string, string> }).errors).toEqual({ "scarce.wed": "Wednesday: the window must start before it ends." });
+    const bad = await call("/settings/schedule", { method: "PUT", body: JSON.stringify({ leadInPercent: 500 }) });
+    expect(bad.status).toBe(400);
+    expect(JSON.parse(fs.readFileSync(file_(), "utf8")).gates).toBeUndefined();
   });
 
   it("never returns a key's value, and a PUT then a GET shows the new last four", async () => {

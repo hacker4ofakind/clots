@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api-client";
 import { labelOfName } from "@/lib/clots";
 import { useEdgeSwipeBack } from "@/lib/edge-swipe";
+import { readableText } from "@/lib/readable-error";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
 import { Composer } from "./composer";
@@ -74,7 +75,7 @@ export function ChatView({ clot, initial, info }: { clot: string; initial: Messa
                 {label} is working
               </p>
             ) : null}
-            {state?.state === "failed" ? <p className="text-caption text-primary-ink">{state.reason ?? "The last turn failed."}</p> : null}
+            {state?.state === "failed" ? <p className="text-caption text-primary-ink">{readableText(state.reason, "The last turn failed.")}</p> : null}
           </div>
         </div>
         {loadingOlder ? <Skeleton className="absolute inset-x-4 top-2 mx-auto h-10 max-w-sm" role="status" aria-label="Loading earlier messages" /> : null}

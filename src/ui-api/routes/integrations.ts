@@ -11,6 +11,9 @@ export function providerOf(address: string): "Gmail" | "Email" {
   return domain === "gmail.com" || domain === "googlemail.com" ? "Gmail" : "Email";
 }
 
+/** A lead time in minutes as it is written in the file: hours when they come out whole, else minutes. */
+const leadText = (minutes: number): string => (minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`);
+
 const slug = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 /** The `.env` key for an inbox's password: `EMAIL_<ACCOUNT>_PASSWORD`, the account made safe for a key name. */
 export const passwordKey = (account: string) => `EMAIL_${account.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_PASSWORD`;
@@ -63,13 +66,13 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
   api.route("GET", "/integrations", () => {
     const c = d.config.current;
     return {
-      inboxes: c.sources.email.map((a) => ({ account: a.account, address: a.address, clot: a.clot ?? null, shared: a.shared, provider: providerOf(a.address), mailboxes: a.mailboxes })),
+      inboxes: c.sources.email.map((a) => ({ account: a.account, address: a.address, clot: a.clot ?? null, shared: a.shared, provider: providerOf(a.address), mailboxes: a.mailboxes, imap: a.imap, smtp: a.smtp, addresses: a.addresses, tellAddress: a.tellAddress })),
       tools: c.sources.composio.map((a): ToolView => {
         const id = `${a.toolkit}:${a.account}`;
         const logo = d.jobs?.logoOf(a.toolkit);
         // What the entry says of how it was set up, for Edit settings to fill the options with: a built-in toolkit's events are not optional.
         const pollMinutes = a.pollMinutes ?? a.triggers.find((t) => t.pollMinutes !== undefined)?.pollMinutes;
-        return { id, toolkit: a.toolkit, account: a.account, clot: a.clot ?? null, shared: a.shared, audience: a.audience, selfIsUser: a.selfIsUser, events: isBuiltinToolkit(a.toolkit) || a.triggers.length > 0, ...(pollMinutes === undefined ? {} : { pollMinutes }), ...(logo === undefined ? {} : { logo }), status: d.statusOf?.(id) ?? "unknown", ...(d.restartNeeded?.(id) ? { restartNeeded: true as const } : {}) };
+        return { id, toolkit: a.toolkit, account: a.account, clot: a.clot ?? null, shared: a.shared, audience: a.audience, selfIsUser: a.selfIsUser, events: isBuiltinToolkit(a.toolkit) || a.triggers.length > 0, ...(pollMinutes === undefined ? {} : { pollMinutes }), ...(a.leadMinutes === undefined ? {} : { leadTimes: a.leadMinutes.map(leadText) }), ...(a.checkoutCompleted === undefined ? {} : { checkoutCompleted: a.checkoutCompleted }), ...(logo === undefined ? {} : { logo }), status: d.statusOf?.(id) ?? "unknown", ...(d.restartNeeded?.(id) ? { restartNeeded: true as const } : {}) };
       }),
     };
   });
@@ -102,9 +105,9 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
     const sources = sourcesOf() ?? {};
     const composio = sources.composio ?? [];
     const found = composio.find((e) => `${String(e.toolkit)}:${String(e.account)}` === req.params.id);
-    if (!found) throw new ApiError(404, "no such tool");
+    if (!found) throw new ApiError(404, "That tool could not be found.");
     const result = await d.config.save({ sources: { ...sources, composio: composio.filter((e) => e !== found) } });
-    if (!result.ok) throw new ApiError(400, "the tool could not be removed");
+    if (!result.ok) throw new ApiError(400, "The tool could not be removed. Try again.");
     for (const key of [found.apiKey, found.apiKeyName].filter((k): k is string => typeof k === "string")) if (d.config.usersOf(key).length === 0) d.config.removeKey(key);
     return { ok: true, needsRestart: result.needsRestart.includes("sources") };
   });
@@ -114,7 +117,7 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
   // An inbox: the password goes straight to .env, and the entry names its key.
   api.route("POST", "/inboxes", async (req) => {
     const body = parseBody(inboxBodySchema, req.body);
-    if (body.password === undefined) throw new ApiError(400, "invalid request", { fieldErrors: { password: ["A password is needed."] } });
+    if (body.password === undefined) throw new ApiError(400, "Some of that is not valid. Check it and try again.", { fieldErrors: { password: ["A password is needed."] } });
     const password = body.password;
     let added = "";
     // Planned against the file as it is when this request's turn comes, so two inboxes added at once both land and get distinct names.
@@ -138,7 +141,7 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
       const written = d.config.setKey(key, password);
       if (!written.ok) throw new ApiError(400, written.error);
       added = account;
-      const entry = { account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
+      const entry = { account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers, ...(body.addresses?.length ? { addresses: body.addresses } : {}), ...(body.tellAddress === false ? { tellAddress: false } : {}) };
       return { patch: { sources: { ...sources, email: [...email, entry] } }, undo };
     });
     if ("refused" in done) return done.refused;
@@ -157,7 +160,7 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
       const sources = (raw.sources ?? {}) as NonNullable<ReturnType<typeof sourcesOf>>;
       const email = sources.email ?? [];
       const found = email.find((e) => e.account === account);
-      if (!found) throw new ApiError(404, "no such inbox");
+      if (!found) throw new ApiError(404, "That inbox could not be found.");
       const servers = serversOf(body, found);
       if ("error" in servers) return { refuse: new ApiResult(400, { errors: { imap: servers.error } }) };
       const key = typeof found.password === "string" ? found.password : passwordKey(account);
@@ -169,8 +172,11 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
         if (!written.ok) throw new ApiError(400, written.error);
       }
       // The edit replaces what the form holds; what it does not hold (other addresses, whether the address is told) stays.
-      const { clot: _clot, shared: _shared, imap: _imap, smtp: _smtp, ...kept } = found;
-      const entry = { ...kept, account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
+      const { clot: _clot, shared: _shared, imap: _imap, smtp: _smtp, addresses: oldAddresses, tellAddress: oldTell, ...kept } = found;
+      // Given, the list and the switch replace what was saved (the defaults, no other addresses and told, leave the file); left out, they stay.
+      const addresses = body.addresses ?? oldAddresses;
+      const tellAddress = body.tellAddress ?? oldTell;
+      const entry = { ...kept, ...(Array.isArray(addresses) && addresses.length > 0 ? { addresses } : {}), ...(tellAddress === false ? { tellAddress: false } : {}), account, ...(body.clot === undefined ? { shared: true } : { clot: body.clot }), address: body.address, password: key, mailboxes: body.mailboxes, ...servers };
       return { patch: { sources: { ...sources, email: email.map((e) => (e === found ? entry : e)) } }, undo };
     });
     if ("refused" in done) return done.refused;
@@ -182,9 +188,9 @@ export function registerIntegrationRoutes(api: UiApi, d: IntegrationRouteDeps): 
     const sources = sourcesOf() ?? {};
     const email = sources.email ?? [];
     const found = email.find((e) => e.account === req.params.account);
-    if (!found) throw new ApiError(404, "no such inbox");
+    if (!found) throw new ApiError(404, "That inbox could not be found.");
     const result = await d.config.save({ sources: { ...sources, email: email.filter((e) => e !== found) } });
-    if (!result.ok) throw new ApiError(400, "the inbox could not be removed");
+    if (!result.ok) throw new ApiError(400, "The inbox could not be removed. Try again.");
     // The password goes with it when nothing else names it.
     if (typeof found.password === "string" && d.config.usersOf(found.password).length === 0) d.config.removeKey(found.password);
     return { ok: true, needsRestart: result.needsRestart.includes("sources") };

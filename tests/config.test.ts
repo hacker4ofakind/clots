@@ -292,8 +292,8 @@ it("tells the Clots an email account's addresses unless told not to", () => {
 });
 
 it("wants the public address once anything has to reach the daemon from outside", () => {
-  expect(() => loadConfig({ ...json, sources: { composio: [{ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY" }] } }, composioKeys)).toThrow("publicUrl");
-  expect(() => loadConfig({ ...json, mcpServers: { notion: { url: "https://mcp.notion.com/mcp", oauth: true } } }, env)).toThrow("publicUrl");
+  expect(() => loadConfig({ ...json, sources: { composio: [{ toolkit: "linear", account: "team", shared: true, apiKey: "LINEAR_KEY" }] } }, composioKeys)).toThrow("public address");
+  expect(() => loadConfig({ ...json, mcpServers: { notion: { url: "https://mcp.notion.com/mcp", oauth: true } } }, env)).toThrow("public address");
 });
 
 it("reads the daemon's MCP servers, replacing each .env key by its value", () => {

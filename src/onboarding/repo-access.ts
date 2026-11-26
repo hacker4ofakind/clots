@@ -1,6 +1,6 @@
 import { isRepo } from "../github-api.js";
 
-export type RepoAccess = { ok: true; accepted?: boolean } | { ok: false; login?: string; message: string; invite: boolean };
+export type RepoAccess = { ok: true; accepted?: boolean } | { ok: false; login?: string; message: string; invite: boolean; /** Checking again can change the answer once the person has acted or waited. */ again?: boolean };
 
 /**
  * Whether the machine account can reach a repository. When it cannot, but an invitation is waiting, the invitation is
@@ -14,7 +14,9 @@ export async function checkRepoAccess(o: { token: string; repo: string; fetchFn?
   try {
     const res = await call(`/repos/${repo}`);
     if (res.ok) return { ok: true };
-    if (res.status === 401) return { ok: false, invite: false, message: "GitHub did not accept the machine account's token." };
+    if (res.status === 401) return { ok: false, invite: false, again: true, message: "GitHub did not accept the machine account's token. Replace CLOT_GITHUB_TOKEN under Keys." };
+    if (res.status === 429 || (res.status === 403 && res.headers.get("x-ratelimit-remaining") === "0")) return { ok: false, invite: false, again: true, message: "GitHub is limiting requests right now. Wait a few minutes." };
+    if (res.status >= 500) return { ok: false, invite: false, again: true, message: "GitHub is having trouble right now. Wait a moment." };
     // Not found or forbidden: an invitation may be waiting.
     const invitations = await call("/user/repository_invitations");
     if (invitations.ok) {
@@ -27,8 +29,8 @@ export async function checkRepoAccess(o: { token: string; repo: string; fetchFn?
     }
     const who = await call("/user");
     const login = who.ok ? ((await who.json()) as { login?: string }).login : undefined;
-    return { ok: false, invite: true, ...(login === undefined ? {} : { login }), message: `${login ?? "The machine account"} cannot reach ${repo}. Invite ${login ?? "it"} as a collaborator on the repository, then check again.` };
+    return { ok: false, invite: true, again: true, ...(login === undefined ? {} : { login }), message: `${login ?? "The machine account"} cannot reach ${repo}. Invite ${login ?? "it"} as a collaborator on the repository.` };
   } catch {
-    return { ok: false, invite: false, message: "GitHub could not be reached. Try again in a moment." };
+    return { ok: false, invite: false, again: true, message: "GitHub could not be reached. Check the internet connection." };
   }
 }

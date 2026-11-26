@@ -55,7 +55,7 @@ export function KeyStep({ toolkit, instructions, saving, error, onBack, onDone }
           <Button variant="outline" onClick={onBack}>
             <ArrowLeftIcon /> Back
           </Button>
-          <Button disabled={!ready} onClick={() => onDone(value.trim())}>
+          <Button data-primary disabled={!ready} onClick={() => onDone(value.trim())}>
             {saving ? <Spinner /> : null}
             Done
           </Button>

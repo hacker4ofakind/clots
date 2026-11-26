@@ -452,7 +452,7 @@ ${request}`.slice(0, 1900), { kind: "note" }).catch(() => undefined);
     store.finishRunning(name);
 
     if (!result.ok && !result.limit) {
-      conv.setState(name, "failed", "The last turn ended with an error");
+      conv.setState(name, "failed", "The last turn ended with an error. Send a message to try again.");
       await conv.post(
         name,
         row.kind === "digest"

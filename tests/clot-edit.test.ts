@@ -146,6 +146,42 @@ describe("Edit: a Clot's icon and repository", () => {
   });
 });
 
+describe("Edit: a Clot's description and test command", () => {
+  const put = (name: string, body: unknown) => call(`/clots/${name}`, { method: "PUT", body: JSON.stringify(body) });
+
+  it("reads them as the file has them, saves them at once, and an empty text removes the key", async () => {
+    expect(await (await call("/clots/graphite/settings")).json()).toEqual({ about: "the project in the repository o/old", testCommand: "" });
+    expect((await call("/clots/ghost/settings")).status).toBe(404);
+    expect((await put("graphite", { about: "  The payments service  ", testCommand: "npm test" })).status).toBe(200);
+    expect(config.current.clots[0]).toMatchObject({ about: "The payments service", testCommand: "npm test", repoUrl: "https://github.com/o/old.git" });
+    expect(config.current.clots[1]).not.toHaveProperty("about");
+    expect((await put("graphite", { testCommand: "" })).status).toBe(200);
+    expect(config.current.clots[0]).not.toHaveProperty("testCommand");
+    expect(config.current.clots[0]!.about).toBe("The payments service");
+    expect((await put("graphite", { about: "" })).status).toBe(200);
+    expect(config.current.clots[0]).not.toHaveProperty("about");
+  });
+
+  it("refuses a description over 300 characters and an edit that gives nothing, and changes nothing", async () => {
+    expect((await put("shop", { about: "x".repeat(301) })).status).toBe(400);
+    expect((await put("shop", {})).status).toBe(400);
+    expect((await put("ghost", { about: "x" })).status).toBe(404);
+    expect(config.current.clots[1]).not.toHaveProperty("about");
+  });
+
+  it("saves them together with an icon, and with a repository change that is still being cloned", async () => {
+    expect((await put("shop", { icon: { phosphor: "Gear", color: "red" }, testCommand: "make test" })).status).toBe(200);
+    expect(config.current.clots[1]).toMatchObject({ icon: { phosphor: "Gear", color: "red" }, testCommand: "make test" });
+    release = () => undefined;
+    const moving = await put("graphite", { repo: "o/new", about: "Moved on" });
+    expect(moving.status).toBe(202);
+    expect(config.current.clots[0]).toMatchObject({ about: "Moved on", repoUrl: "https://github.com/o/old.git" });
+    release?.();
+    await waitFor(() => moved.length === 1);
+    expect(config.current.clots[0]).toMatchObject({ about: "Moved on", repoUrl: "https://github.com/o/new.git" });
+  });
+});
+
 describe("a failed create gives its name back", () => {
   it("lets the same name be tried again with another repository, before any retry", async () => {
     const failing = new ClotCreator({ config, token: () => "t", fetchFn: (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch, start: async () => Promise.reject(new Error("no")), emit: (e) => void steps.push(e), onReady: async () => undefined });

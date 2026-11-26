@@ -311,7 +311,7 @@ describe("a key connection", () => {
     const jobId = await h.jobs.configure({ toolkit: "posthog", ...OPTIONS });
     await settle();
     await h.jobs.putKey(jobId, "phx_value");
-    expect(h.jobs.get(jobId)).toMatchObject({ state: "failed", error: expect.stringContaining("publicUrl") });
+    expect(h.jobs.get(jobId)).toMatchObject({ state: "failed", error: expect.stringContaining("public address") });
     expect(fs.readFileSync(h.envFile, "utf8")).not.toContain("POSTHOG_SHARED_KEY");
     expect(composioEntries(h)).toHaveLength(0);
   });
@@ -368,7 +368,7 @@ describe("the configurer's proposal", () => {
     await settle();
     expect(answers[0]).toMatch(/^Refused: .*bogus/);
     expect(answers[1]).toMatch(/^Refused: an entry is an object/);
-    expect(h.jobs.get(jobId)).toMatchObject({ state: "failed", error: expect.stringContaining("could not produce a valid entry") });
+    expect(h.jobs.get(jobId)).toMatchObject({ state: "failed", error: "The connection could not be set up for this service. Try again, or ask a Clot to connect it." });
     expect(composioEntries(h)).toHaveLength(0);
     expect(h.api.of("linkManaged")).toHaveLength(0);
   });
@@ -444,13 +444,13 @@ describe("the configurer's proposal", () => {
     const h = makeJobs();
     const a = await h.jobs.configure({ toolkit: "slack", ...OPTIONS });
     await settle();
-    expect(h.jobs.get(a)).toMatchObject({ state: "failed", error: "The configurer finished without proposing an entry." });
+    expect(h.jobs.get(a)).toMatchObject({ state: "failed", error: "The connection could not be set up for this service. Try again, or ask a Clot to connect it." });
     h.state.script = async () => {
       throw new Error("the model is down");
     };
     const b = await h.jobs.configure({ toolkit: "slack", ...OPTIONS });
     await settle();
-    expect(h.jobs.get(b)).toMatchObject({ state: "failed", error: expect.stringContaining("the model is down") });
+    expect(h.jobs.get(b)).toMatchObject({ state: "failed", error: "The connection could not be set up. Try again in a moment." });
     expect(composioEntries(h)).toHaveLength(0);
   });
 

@@ -82,7 +82,7 @@ export class ClotCreator {
     if (!isRepo(o.repo.trim())) errors.repo = "Write the repository as owner/name.";
     if (errors.name || errors.repo) return { ok: false, errors };
     const access = await checkRepoAccess({ token: this.d.token(), repo: o.repo.trim(), fetchFn: this.d.fetchFn });
-    if (!access.ok) return { ok: false, errors: { repo: access.message }, ...(access.invite ? { invite: { login: access.login } } : {}), access };
+    if (!access.ok) return { ok: false, errors: { repo: access.again ? `${access.message} Then press Check again.` : access.message }, ...(access.invite ? { invite: { login: access.login } } : {}), access };
     return { ok: true, errors: {}, accepted: access.accepted, access };
   }
 
@@ -145,7 +145,7 @@ export class ClotCreator {
     const busy = this.d.busy?.(name);
     if (busy !== undefined) return { ok: false, status: 409, errors: { repo: busy } };
     const access = await checkRepoAccess({ token: this.d.token(), repo, fetchFn: this.d.fetchFn });
-    if (!access.ok) return { ok: false, status: 400, errors: { repo: access.message } };
+    if (!access.ok) return { ok: false, status: 400, errors: { repo: access.again ? `${access.message} Then press Save again.` : access.message } };
     this.building.set(name, { step: "cloning", repo, kind: "reclone", ...(icon === undefined ? {} : { icon }) });
     void this.runReclone(name, repo);
     return { ok: true, moving: true };

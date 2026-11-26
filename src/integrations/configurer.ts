@@ -29,6 +29,10 @@ export interface ConfigureRequest {
   selfIsUser: boolean;
   events: boolean;
   pollMinutes?: number;
+  /** Google Calendar: how long before an event each reminder comes. */
+  leadTimes?: string[];
+  /** Stripe: whether completed checkouts are told. */
+  checkoutCompleted?: boolean;
   auth: ConnectAuth;
   /** The `.env` key the daemon will write the user's key to, when `auth` is `key`. Only the name: the value never reaches here. */
   keyName?: string;
@@ -38,7 +42,7 @@ export interface ConfigureRequest {
   clots: string[];
 }
 
-export type ConfigureResult = { ok: true; entry: Record<string, unknown>; instructions?: string } | { ok: false; error: string };
+export type ConfigureResult = { ok: true; entry: Record<string, unknown>; instructions?: string } | { ok: false; error: string; /** What went wrong in the developer's words, for the log only. */ detail?: string };
 
 /** The only things the configurer session can do. Each answers text for the model. */
 export interface ConfigurerTools {
@@ -187,9 +191,9 @@ export class Configurer {
       const done = await this.d.model({ systemPrompt: `${(this.d.skill ?? readSkill)()}\n\n---\n\n${BRIEF}`, prompt: buildPrompt(req), tools });
       if (done && typeof done.costUsd === "number") this.d.onCost?.(done.costUsd);
     } catch (e) {
-      if (saved === undefined) return { ok: false, error: `The configurer failed: ${e instanceof Error ? e.message : String(e)}` };
+      if (saved === undefined) return { ok: false, error: "The connection could not be set up. Try again in a moment.", detail: `The configurer failed: ${e instanceof Error ? e.message : String(e)}` };
     }
-    if (saved === undefined) return { ok: false, error: refusal === undefined ? "The configurer finished without proposing an entry." : `The configurer could not produce a valid entry: ${refusal}.` };
+    if (saved === undefined) return { ok: false, error: "The connection could not be set up for this service. Try again, or ask a Clot to connect it.", detail: refusal === undefined ? "The configurer finished without proposing an entry." : `The configurer could not produce a valid entry: ${refusal}.` };
     return { ok: true, ...saved };
   }
 
@@ -211,6 +215,9 @@ export class Configurer {
     else e.selfIsUser = req.selfIsUser;
     if (!builtin && !req.events) e.triggers = [];
     if (req.toolkit === "googlecalendar" && req.pollMinutes !== undefined) e.pollMinutes = req.pollMinutes;
+    // The reminders' lead times and Stripe's checkouts are the person's too, for the toolkits that have them.
+    if (req.toolkit === "googlecalendar" && req.leadTimes !== undefined) e.leadTimes = req.leadTimes;
+    if (req.toolkit === "stripe" && req.checkoutCompleted !== undefined) e.checkoutCompleted = req.checkoutCompleted;
 
     // Only the key the daemon generated may be named.
     const named = [e.apiKey, e.verificationToken, ...Object.values((e.fields as Record<string, unknown> | undefined) ?? {}), (e.oauthApp as Record<string, unknown> | undefined)?.clientId, (e.oauthApp as Record<string, unknown> | undefined)?.clientSecret].filter((v) => v !== undefined);

@@ -53,7 +53,9 @@ test("a taken name, a clash that differs only in capitals, a bad name and a repo
   await fill(page, "Locked", "octo/private-repo");
   await next(page);
   await expect(page.getByRole("alert").filter({ hasText: "clots-dot-dev cannot reach octo/private-repo" })).toBeVisible();
-  await expect(page.getByText("Invite clots-dot-dev as a collaborator on the repository, then press Check again.")).toBeVisible();
+  // The instruction is said once, in the error, with the button's own wording.
+  await expect(page.getByText("Invite clots-dot-dev as a collaborator on the repository. Then press Check again.")).toHaveCount(1);
+  await expect(page.getByText(/Invite clots-dot-dev/)).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Check again" })).toBeVisible();
   // The step has not moved on.
   await expect(page).not.toHaveURL(/step=tools/);
@@ -159,6 +161,7 @@ test("a failed build shows its log and Retry, and Retry carries on to the chat",
   await page.getByRole("button", { name: `Create ${brittle}` }).click();
   await expect(page.getByRole("heading", { name: `Creating ${brittle} failed` })).toBeVisible();
   await expect(page.getByText(`${brittle} could not be created.`)).toBeVisible();
+  await expect(page.getByText("The repository could not be downloaded. Check its name and that the Clots account can reach it. The log below has the details.")).toBeVisible();
   await expect(page.getByText("Remote branch main not found")).toBeVisible();
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(page).toHaveURL(new RegExp(`/c/${brittle}$`), { timeout: 15_000 });

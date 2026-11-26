@@ -4,6 +4,7 @@ import Link from "next/link";
 import { CaretRightIcon } from "@phosphor-icons/react";
 import type { ClotSummary } from "@clots/ui-api-schemas";
 import { clotLabel, pausedLine, plainPreview } from "@/lib/clots";
+import { readableText } from "@/lib/readable-error";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
 import { PageTitle } from "./page-title";
@@ -14,7 +15,7 @@ import { IconTile } from "./icon-tile";
 function subLine(clot: ClotSummary): { text: string; waiting: boolean } {
   if (clot.waiting > 0) return { text: `${clot.waiting} waiting for you`, waiting: true };
   if (clot.state === "paused") return { text: pausedLine(clot), waiting: false };
-  if (clot.state === "failed") return { text: clot.reason ?? "Needs a look", waiting: false };
+  if (clot.state === "failed") return { text: readableText(clot.reason, "Needs a look"), waiting: false };
   const preview = clot.preview === null ? "" : plainPreview(clot.preview);
   if (preview !== "") return { text: preview, waiting: false };
   return { text: clot.state === "working" ? "Working" : "Nothing said yet", waiting: false };

@@ -34,6 +34,7 @@ export function IconPicker({ value, onChange }: { value: ClotIconValue; onChange
   const file = useRef<HTMLInputElement>(null);
   const color = "phosphor" in value ? iconColorName(value.color) : "red";
   const name = "phosphor" in value ? value.phosphor : "";
+  const uploaded = "upload" in value;
   const searching = query.trim() !== "";
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -91,7 +92,7 @@ export function IconPicker({ value, onChange }: { value: ClotIconValue; onChange
           <div className="flex size-20 items-center justify-center rounded-tile-2xl" style={{ background: `color-mix(in oklch, ${colorVar(color)} 14%, var(--popover))` }}>
             <ClotIcon icon={value} size={44} tile={80} />
           </div>
-          <ToggleGroup type="single" value={color} onValueChange={(c) => c && onChange({ phosphor: name === "" ? "Sliders" : name, color: c })} aria-label="Colour" spacing={2.5}>
+          <ToggleGroup type="single" value={uploaded ? "" : color} onValueChange={(c) => c && !uploaded && onChange({ phosphor: name === "" ? "Sliders" : name, color: c })} disabled={uploaded} aria-label="Colour" title={uploaded ? "An uploaded image keeps its own colours. Pick an icon to choose a colour." : undefined} spacing={2.5} className={uploaded ? "opacity-40" : undefined}>
             {ICON_COLORS.map((c: IconColor) => (
               <ToggleGroupItem key={c} value={c} aria-label={c === "red" ? "Rose" : c[0]!.toUpperCase() + c.slice(1)} className="size-7 min-w-7 rounded-full p-0 data-[state=on]:ring-2 data-[state=on]:ring-foreground data-[state=on]:ring-offset-2 data-[state=on]:ring-offset-popover" style={{ background: colorVar(c) }} />
             ))}

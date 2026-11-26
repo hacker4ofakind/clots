@@ -32,6 +32,8 @@ export interface ToolRow {
   selfIsUser?: boolean;
   events?: boolean;
   pollMinutes?: number;
+  leadTimes?: string[];
+  checkoutCompleted?: boolean;
 }
 
 export interface InboxRow {
@@ -41,6 +43,12 @@ export interface InboxRow {
   shared: boolean;
   provider: string;
   mailboxes?: string[];
+  imap?: { host: string; port: number };
+  smtp?: { host: string; port: number };
+  /** Other addresses delivered into the inbox. */
+  addresses?: string[];
+  /** Whether the Clots are told the address. */
+  tellAddress?: boolean;
 }
 
 export interface Overview {
@@ -74,9 +82,19 @@ export interface ToolOptions {
   shared: boolean;
   events: boolean;
   pollMinutes: number;
+  /** Google Calendar: how long before an event each reminder comes, as written ("24h, 1h"). */
+  leadTimes: string;
+  /** Stripe: also tell the Clot when a customer finishes paying at checkout. */
+  checkoutCompleted: boolean;
 }
 
-export const DEFAULT_OPTIONS: ToolOptions = { audience: "team", selfIsUser: true, shared: false, events: true, pollMinutes: 30 };
+export const DEFAULT_OPTIONS: ToolOptions = { audience: "team", selfIsUser: true, shared: false, events: true, pollMinutes: 30, leadTimes: "24h", checkoutCompleted: false };
+
+/** Lead times typed as "24h, 90m" to a list, or undefined when one of them is not a number with m, h or d. */
+export function parseLeadTimes(text: string): string[] | undefined {
+  const parts = text.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean);
+  return parts.length > 0 && parts.length <= 10 && parts.every((p) => /^\d{1,4}[mhd]$/.test(p)) ? parts : undefined;
+}
 
 /** A toolkit slug as a name: "microsoft_teams" is "Microsoft Teams". */
 export const toolkitName = (slug: string): string => slug.replace(/(^|[_-])(\w)/g, (_m, sep: string, ch: string) => (sep ? " " : "") + ch.toUpperCase());

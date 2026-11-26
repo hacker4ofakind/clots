@@ -10,14 +10,14 @@ export function registerPushRoutes(api: UiApi, d: { push: Push; subscriptions: P
 
   api.route("POST", "/push/subscribe", (req) => {
     const sub = parseBody(subscribeSchema, req.body);
-    if (!allowedEndpoint(sub.endpoint)) throw new ApiError(400, "that push address is not one of the known push services");
+    if (!allowedEndpoint(sub.endpoint)) throw new ApiError(400, "That browser's notifications can't be used here.");
     d.subscriptions.add(sub, d.now());
     return { ok: true };
   });
 
   api.route("DELETE", "/push/subscribe", (req) => {
     const endpoint = req.query.get("endpoint");
-    if (!endpoint) throw new ApiError(400, "say which subscription");
+    if (!endpoint) throw new ApiError(400, "That notification setting could not be found.");
     d.subscriptions.remove(endpoint);
     return { ok: true };
   });

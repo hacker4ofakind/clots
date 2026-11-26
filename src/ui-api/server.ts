@@ -137,27 +137,27 @@ export class UiApi {
     try {
       const secret = this.d.secret();
       const given = req.headers["x-clots-ui-secret"];
-      if (!secretMatches(Array.isArray(given) ? given[0] : given, secret)) return this.send(res, 401, { error: "unauthorized" });
+      if (!secretMatches(Array.isArray(given) ? given[0] : given, secret)) return this.send(res, 401, { error: "The Clots daemon did not accept that request." });
       const url = new URL(req.url ?? "/", "http://localhost");
-      if (url.pathname !== API_BASE && !url.pathname.startsWith(`${API_BASE}/`)) return this.send(res, 404, { error: "not found" });
+      if (url.pathname !== API_BASE && !url.pathname.startsWith(`${API_BASE}/`)) return this.send(res, 404, { error: "That could not be found." });
       const pathname = url.pathname.slice(API_BASE.length) || "/";
       const method = req.method ?? "GET";
 
       if (method === "GET" && pathname === "/stream") return serveStream(this.d.bus, req, res, { heartbeatMs: this.d.heartbeatMs });
 
       const found = this.match(method, pathname);
-      if (found === undefined) return this.send(res, 404, { error: "not found" });
-      if (found === "method") return this.send(res, 405, { error: "method not allowed" });
+      if (found === undefined) return this.send(res, 404, { error: "That could not be found." });
+      if (found === "method") return this.send(res, 405, { error: "That action is not available." });
 
       let body: unknown;
       if (method !== "GET" && method !== "DELETE") {
-        const raw = await readBody(req, found.route.maxBytes, () => this.send(res, 413, { error: "too large" }));
+        const raw = await readBody(req, found.route.maxBytes, () => this.send(res, 413, { error: "That is too large to send." }));
         if (raw === undefined) return;
         if (raw.length > 0) {
           try {
             body = JSON.parse(raw.toString("utf8"));
           } catch {
-            return this.send(res, 400, { error: "the body is not JSON" });
+            return this.send(res, 400, { error: "That request could not be read. Reload the page and try again." });
           }
         }
       }
@@ -170,9 +170,9 @@ export class UiApi {
       else this.send(res, 200, result);
     } catch (error) {
       if (error instanceof ApiError) return this.send(res, error.status, { error: error.message, ...(error.details === undefined ? {} : { details: error.details }) });
-      if (error instanceof z.ZodError) return this.send(res, 400, { error: "invalid request", details: z.flattenError(error) });
+      if (error instanceof z.ZodError) return this.send(res, 400, { error: "Some of that is not valid. Check it and try again.", details: z.flattenError(error) });
       console.error("[ui-api] a request failed:", error);
-      this.send(res, 500, { error: "internal error" });
+      this.send(res, 500, { error: "Something went wrong in the daemon. Try again in a moment." });
     }
   }
 }
@@ -180,6 +180,6 @@ export class UiApi {
 /** Parses a request's body with a schema; a bad body answers 400 with the field errors. */
 export function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
   const parsed = schema.safeParse(body);
-  if (!parsed.success) throw new ApiError(400, "invalid request", z.flattenError(parsed.error));
+  if (!parsed.success) throw new ApiError(400, "Some of that is not valid. Check it and try again.", z.flattenError(parsed.error));
   return parsed.data;
 }

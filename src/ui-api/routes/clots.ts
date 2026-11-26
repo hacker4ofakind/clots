@@ -38,18 +38,18 @@ const IMAGE_SIGNATURES: { type: string; matches: (b: Buffer) => boolean }[] = [
 /** An image from a data URL, with its type taken from its own bytes, not from what the URL claims. */
 export function decodeImage(dataUrl: string): ImageRow {
   const match = /^data:[^;,]*;base64,([A-Za-z0-9+/=\s]+)$/.exec(dataUrl);
-  if (!match) throw new ApiError(400, "an image must be a base64 data URL");
+  if (!match) throw new ApiError(400, "That picture could not be read. Try another one.");
   const data = Buffer.from(match[1]!, "base64");
-  if (data.length > MAX_IMAGE_BYTES) throw new ApiError(413, "an image is larger than 5 MB");
+  if (data.length > MAX_IMAGE_BYTES) throw new ApiError(413, "That picture is larger than 5 MB.");
   const found = IMAGE_SIGNATURES.find((s) => s.matches(data));
-  if (!found) throw new ApiError(400, "only PNG, JPEG, WebP and GIF images are accepted");
+  if (!found) throw new ApiError(400, "Pictures must be PNG, JPEG, WebP or GIF.");
   return { mediaType: found.type, data };
 }
 
 export function registerClotRoutes(api: UiApi, d: ClotRouteDeps): void {
   const { store, conv, asks } = d;
   const known = (name: string): void => {
-    if (!d.names().includes(name)) throw new ApiError(404, "no such Clot");
+    if (!d.names().includes(name)) throw new ApiError(404, "That Clot could not be found.");
   };
   const waitingFor = (name: string) => store.openAsks(name).length;
 
@@ -125,13 +125,13 @@ export function registerClotRoutes(api: UiApi, d: ClotRouteDeps): void {
       const body = parseBody(sendMessageSchema, req.body);
       const text = body.text;
       const images = body.images.map(decodeImage);
-      if (text.trim() === "" && images.length === 0) throw new ApiError(400, "a message needs text or an image");
+      if (text.trim() === "" && images.length === 0) throw new ApiError(400, "Write a message or add a picture first.");
       const at = d.now();
       const { message, created } = conv.addUser(name, { id: body.id, text, images, at });
       // A repeated ID is the same send retried: it is stored once and handled once.
       if (!created) return { message, duplicate: true };
       const clot = d.clots().get(name);
-      if (!clot) throw new ApiError(503, "this Clot is not running");
+      if (!clot) throw new ApiError(503, "This Clot is not running. Try again in a moment.");
       // Commands, empty text and images alone are never feedback to an open ask.
       const feedback = text.trim() !== "" && !text.trim().startsWith("/") && images.length === 0;
       if (feedback && (await asks.onUserMessage(name, text))) return { message };
@@ -145,7 +145,7 @@ export function registerClotRoutes(api: UiApi, d: ClotRouteDeps): void {
     known(req.params.clot!);
     const message = store.conversation.get(req.params.id!);
     const image = message && message.clot === req.params.clot ? store.conversation.image(message.id, Number(req.params.n)) : undefined;
-    if (!image) throw new ApiError(404, "no such image");
+    if (!image) throw new ApiError(404, "That picture could not be found.");
     return new RawResult(image.mediaType, image.data);
   });
 
@@ -161,7 +161,7 @@ export function registerClotRoutes(api: UiApi, d: ClotRouteDeps): void {
 
   api.route("POST", "/asks/:id/answer", async (req) => {
     const id = Number(req.params.id);
-    if (!Number.isInteger(id)) throw new ApiError(400, "no such ask");
+    if (!Number.isInteger(id)) throw new ApiError(400, "That ask could not be found.");
     const { answer, key } = parseBody(answerRequestSchema, req.body);
     const result = await asks.answer(id, answer, key);
     switch (result.status) {
@@ -174,7 +174,7 @@ export function registerClotRoutes(api: UiApi, d: ClotRouteDeps): void {
       case "invalid":
         throw new ApiError(400, result.reason);
       default:
-        throw new ApiError(404, "no such ask");
+        throw new ApiError(404, "That ask could not be found.");
     }
   });
 }

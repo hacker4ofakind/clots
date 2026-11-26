@@ -29,7 +29,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   const last = req.headers.get("last-event-id") ?? req.nextUrl.searchParams.get("last") ?? undefined;
   const upstream = new AbortController();
   req.signal.addEventListener("abort", () => upstream.abort());
-  const unreachable = () => Response.json({ error: "the daemon cannot be reached" }, { status: 502, headers: { "cache-control": "no-store" } });
+  const unreachable = () => Response.json({ error: "The Clots daemon cannot be reached.", code: "daemon-unreachable" }, { status: 502, headers: { "cache-control": "no-store" } });
   try {
     const res = await daemon("/stream", { headers: last === undefined ? {} : { "last-event-id": last }, signal: upstream.signal }, req.headers);
     if (!res.ok || !res.body) return unreachable();

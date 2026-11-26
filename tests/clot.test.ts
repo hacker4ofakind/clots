@@ -243,7 +243,7 @@ describe("Clot", () => {
     runner.script = [{ ok: false, say: [], contextPercent: 0 }];
     await clot.onMessage(msg("do it"));
     expect(conv.postsFor("graphite").at(-1)).toBe("That turn ended with an error. Send your message again to retry.");
-    expect(conv.stateOf("graphite")).toEqual({ state: "failed", reason: "The last turn ended with an error" });
+    expect(conv.stateOf("graphite")).toEqual({ state: "failed", reason: "The last turn ended with an error. Send a message to try again." });
     expect(store.activeSession("graphite")!.started).toBe(false);
   });
 

@@ -1,4 +1,4 @@
-import type { ConfigureBody, IntegrationJob, IntegrationStatus, ToolkitSummaryView } from "@clots/ui-api-schemas";
+import { readableText, type ConfigureBody, type IntegrationJob, type IntegrationStatus, type ToolkitSummaryView } from "@clots/ui-api-schemas";
 import type { ComposioApi } from "../composio/api.js";
 import type { ToolkitInfo } from "../composio/auth.js";
 import { HOME_CLOT } from "../config.js";
@@ -66,6 +66,8 @@ interface Job {
   selfIsUser: boolean;
   events: boolean;
   pollMinutes?: number;
+  leadTimes?: string[];
+  checkoutCompleted?: boolean;
   /** `<toolkit>:<account>` of the tool being edited. */
   replaces?: string;
   /** A reconnect of a tool that exists: no configurer, no entry written. */
@@ -226,7 +228,8 @@ export class IntegrationJobs {
 
   private fail(job: Job, error: string): void {
     this.log(`${job.toolkit}:${job.account} failed: ${error}`);
-    this.set(job, "failed", { error });
+    // The dialog shows this: a sentence for a person, never the exception's own words (those are in the log).
+    this.set(job, "failed", { error: readableText(error, "The connection could not be made. Try again.") });
   }
 
   get(jobId: string): IntegrationJob {
@@ -273,7 +276,8 @@ export class IntegrationJobs {
     try {
       info = await this.d.api.toolkitInfo(body.toolkit);
     } catch (e) {
-      throw new JobError(404, `Composio could not describe ${body.toolkit}: ${message(e)}`);
+      this.log(`describing ${body.toolkit} failed: ${message(e)}`);
+      throw new JobError(404, `Composio could not load the settings for ${body.toolkit}. Check the name or try again in a moment.`);
     }
 
     const replaces = body.replaces ?? job?.replaces;
@@ -316,6 +320,8 @@ export class IntegrationJobs {
     job.selfIsUser = body.selfIsUser;
     job.events = body.events;
     job.pollMinutes = body.pollMinutes;
+    job.leadTimes = body.leadTimes;
+    job.checkoutCompleted = body.checkoutCompleted;
     job.replaces = replaces;
     job.auth = auth;
     job.instructions = undefined;
@@ -340,13 +346,18 @@ export class IntegrationJobs {
         selfIsUser: job.selfIsUser,
         events: job.events,
         ...(job.pollMinutes === undefined ? {} : { pollMinutes: job.pollMinutes }),
+        ...(job.leadTimes === undefined ? {} : { leadTimes: job.leadTimes }),
+        ...(job.checkoutCompleted === undefined ? {} : { checkoutCompleted: job.checkoutCompleted }),
         auth: job.auth,
         ...(job.keyName === undefined ? {} : { keyName: job.keyName }),
         ...(current === undefined ? {} : { current }),
         clots,
       });
       if (stale()) return;
-      if (!result.ok) return this.fail(job, result.error);
+      if (!result.ok) {
+        if (result.detail !== undefined) this.log(`${job.toolkit}:${job.account} configurer: ${result.detail}`);
+        return this.fail(job, result.error);
+      }
       job.entry = result.entry;
       job.instructions = result.instructions;
       await this.connect(job, gen);
@@ -422,7 +433,8 @@ export class IntegrationJobs {
       try {
         await this.d.reconnected(job.replaces!);
       } catch (e) {
-        return this.fail(job, `The tool could not be brought up again: ${message(e)}`);
+        this.log(`bringing ${job.toolkit}:${job.account} up again failed: ${message(e)}`);
+        return this.fail(job, "The tool could not be brought up again. Try again in a moment.");
       }
       return this.set(job, "active");
     }
@@ -493,7 +505,8 @@ export class IntegrationJobs {
       try {
         await this.d.reconnected(job.replaces!);
       } catch (e) {
-        return this.fail(job, `The tool could not be brought up again: ${message(e)}`);
+        this.log(`bringing ${job.toolkit}:${job.account} up again failed: ${message(e)}`);
+        return this.fail(job, "The tool could not be brought up again. Try again in a moment.");
       }
       return this.set(job, "active");
     }
@@ -540,7 +553,8 @@ export class IntegrationJobs {
     try {
       info = await this.d.api.toolkitInfo(toolkit);
     } catch (e) {
-      throw new JobError(502, `Composio could not describe ${toolkit}: ${message(e)}`);
+      this.log(`describing ${toolkit} failed: ${message(e)}`);
+      throw new JobError(502, `Composio could not load the settings for ${toolkit}. Try again in a moment.`);
     }
     // The entry says how it connects: a key it names, or the sign-in.
     const keyName = secretKeyOf(entry);

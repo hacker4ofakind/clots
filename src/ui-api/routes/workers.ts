@@ -22,7 +22,7 @@ export function workerView(w: WorkerRow): WorkerView {
 export function registerWorkerRoutes(api: UiApi, d: { store: Store }): void {
   api.route("GET", "/turns/:id/workers", (req) => {
     const workers = d.store.workersOfTurn(req.params.id!);
-    if (workers.length === 0) throw new ApiError(404, "no workers for this turn");
+    if (workers.length === 0) throw new ApiError(404, "There are no workers for that turn.");
     return { turnId: req.params.id!, clot: workers[0]!.clot, workers: workers.map(workerView) };
   });
 }

@@ -3,6 +3,7 @@
 import { CheckCircleIcon, CircleIcon, WarningIcon } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { readableBuildFailure } from "@/lib/readable-error";
 import { CodeBlock } from "./code-block";
 import type { Build } from "./new-clot-state";
 
@@ -20,6 +21,7 @@ export function BuildProgress({ name, build, moving, onRetry, onStartOver }: { n
         <p className="flex items-center gap-2 text-body text-primary-ink">
           <WarningIcon aria-hidden /> {moving ? `${name} could not be moved to the new repository.` : `${name} could not be created.`}
         </p>
+        <p className="text-body text-muted-foreground">{readableBuildFailure(build.log)}</p>
         <CodeBlock>{build.log}</CodeBlock>
         <div className="flex gap-2">
           <Button variant="outline" onClick={onStartOver}>

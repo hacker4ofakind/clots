@@ -87,7 +87,7 @@ export function ManageClots() {
             <DialogDescription>Its container stops and it is taken out of the configuration. Its repository clone and its chat history stay, and a Clot with the same name later gets them back.</DialogDescription>
           </DialogHeader>
           <label htmlFor="confirm-name" className="text-label text-foreground-soft">
-            Type {target} to confirm
+            Type <code className="rounded-sm bg-muted px-1.5 py-0.5 font-mono text-foreground">{target}</code> to confirm
           </label>
           <Input id="confirm-name" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
           {error ? (
@@ -99,7 +99,7 @@ export function ManageClots() {
             <Button variant="outline" onClick={() => setTarget(undefined)}>
               Cancel
             </Button>
-            <Button variant="destructive" disabled={typed !== target || busy} onClick={() => void remove()}>
+            <Button data-primary variant="destructive" disabled={typed !== target || busy} onClick={() => void remove()}>
               Delete {target}
             </Button>
           </DialogFooter>

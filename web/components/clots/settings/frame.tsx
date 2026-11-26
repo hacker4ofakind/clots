@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 const PAGES = [
   { href: "/settings/general", label: "General" },
+  { href: "/settings/schedule", label: "Schedule" },
   { href: "/settings/clots", label: "Manage Clots" },
   { href: "/settings/integrations", label: "Integrations" },
 ];

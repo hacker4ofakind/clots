@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
+import { pressPrimaryOnEnter } from "@/lib/primary-enter"
 import { XIcon } from "@phosphor-icons/react"
 
 function Dialog({
@@ -65,6 +66,10 @@ function DialogContent({
           className
         )}
         {...props}
+        onKeyDown={(event) => {
+          props.onKeyDown?.(event)
+          pressPrimaryOnEnter(event)
+        }}
       >
         {children}
         {showCloseButton && (

@@ -8,6 +8,26 @@ const iconSchema = z.union([z.object({ phosphor: z.string().regex(/^[A-Z][A-Za-z
 const validateSchema = z.object({ name: z.string().max(80), repo: z.string().max(200) });
 // `toolJobs`: the connection jobs of services chosen in New Clot's Tools step; their entries are written with the Clot's own.
 const createSchema = validateSchema.extend({ icon: iconSchema.optional(), toolJobs: z.array(z.string().min(1).max(64)).max(30).optional() });
+const editSchema = z
+  .object({
+    icon: iconSchema.optional(),
+    repo: z.string().max(200).optional(),
+    about: z.string().trim().max(300, "Keep it to 300 characters.").optional(),
+    testCommand: z.string().trim().max(500, "Keep it to 500 characters.").optional(),
+  })
+  .refine((b) => b.icon !== undefined || b.repo !== undefined || b.about !== undefined || b.testCommand !== undefined, "give an icon, a repository, a description or a test command");
+
+/** A Clot's entry with its description and test command set; an empty text removes the key. */
+function withText<T extends object>(entry: T, text: { about?: string; testCommand?: string }): T {
+  const next = { ...entry } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(text)) {
+    if (value === undefined) continue;
+    if (value === "") delete next[key];
+    else next[key] = value;
+  }
+  return next as T;
+}
+
 const uploadSchema = z.object({ dataUrl: z.string().max(4_000_000) });
 
 export interface AdminDeps {
@@ -57,27 +77,40 @@ export function registerClotAdminRoutes(api: UiApi, d: AdminDeps): void {
 
   api.route("GET", "/clots/icons/:id", (req) => {
     const png = d.icons.read(req.params.id!, req.query.get("variant") === "active");
-    if (!png) throw new ApiError(404, "no such icon");
+    if (!png) throw new ApiError(404, "That icon could not be found.");
     return new RawResult("image/png", png);
   });
 
   // Editing a Clot: its icon and its repository. A Clot's name is fixed once it is made. A new repository is cloned into a fresh workspace
   // in the background (202, with `clot.build` events, the entry changing only once it has worked); the icon alone is saved at once.
   api.route("PUT", "/clots/:clot", async (req) => {
-    const { icon, repo } = parseBody(z.object({ icon: iconSchema.optional(), repo: z.string().max(200).optional() }).refine((b) => b.icon !== undefined || b.repo !== undefined, "give an icon or a repository"), req.body);
+    const { icon, repo, about, testCommand } = parseBody(editSchema, req.body);
     const name = req.params.clot!;
     const current = d.config.json().clots as { name: string }[];
-    if (!current.some((c) => c.name === name)) throw new ApiError(404, "no such Clot");
+    if (!current.some((c) => c.name === name)) throw new ApiError(404, "That Clot could not be found.");
+    // The one-line description and the test command are only the Clot's entry: saved at once, whatever else the edit does. An empty one clears it.
+    if (about !== undefined || testCommand !== undefined) {
+      const result = await d.config.save({ clots: current.map((c) => (c.name === name ? withText(c, { about, testCommand }) : c)) });
+      if (!result.ok) return new ApiResult(400, { errors: result.errors });
+    }
     if (repo !== undefined) {
       const moved = await d.creator.changeRepo(name, repo, icon);
       if (!moved.ok) return new ApiResult(moved.status, { errors: moved.errors });
       if (moved.moving) return new ApiResult(202, { ok: true, moving: true });
     }
     if (icon !== undefined) {
-      const result = await d.config.save({ clots: current.map((c) => (c.name === name ? { ...c, icon } : c)) });
-      if (!result.ok) throw new ApiError(400, "the icon could not be saved");
+      const latest = d.config.json().clots as { name: string }[];
+      const result = await d.config.save({ clots: latest.map((c) => (c.name === name ? { ...c, icon } : c)) });
+      if (!result.ok) throw new ApiError(400, "The icon could not be saved. Try again.");
     }
     return { ok: true };
+  });
+
+  // What Edit shows besides the icon and the repository: the one-line description and the test command, as the file has them.
+  api.route("GET", "/clots/:clot/settings", (req) => {
+    const entry = (d.config.json().clots as { name: string; about?: string; testCommand?: string }[]).find((c) => c.name === req.params.clot);
+    if (!entry) throw new ApiError(404, "That Clot could not be found.");
+    return { about: entry.about ?? "", testCommand: entry.testCommand ?? "" };
   });
 
   // Read only when the user presses Copy: the secret is in no message and no list.

@@ -40,6 +40,16 @@ describe("repository access", () => {
     expect((res as { message: string }).message).toContain("Invite clots-dot-dev");
   });
 
+  it("says in plain words why GitHub did not answer, and never as a status line", async () => {
+    const answer = async (answers: Record<string, { status: number; body?: unknown }>) => ((await checkRepoAccess({ token: "t", repo: "o/r", fetchFn: github(answers).fetchFn })) as { ok: false; message: string; invite: boolean });
+    expect(await answer({ "GET /repos/o/r": { status: 401 } })).toMatchObject({ invite: false, message: expect.stringContaining("CLOT_GITHUB_TOKEN") });
+    expect(await answer({ "GET /repos/o/r": { status: 429 } })).toMatchObject({ invite: false, message: expect.stringContaining("limiting requests") });
+    expect(await answer({ "GET /repos/o/r": { status: 503 } })).toMatchObject({ invite: false, message: expect.stringContaining("having trouble") });
+    const down = (async () => { throw new Error("getaddrinfo ENOTFOUND api.github.com"); }) as unknown as typeof fetch;
+    const res = (await checkRepoAccess({ token: "t", repo: "o/r", fetchFn: down })) as { message: string };
+    expect(res.message).toBe("GitHub could not be reached. Check the internet connection.");
+  });
+
   it("refuses a repository name GitHub would not allow before calling anything", async () => {
     const { fetchFn, calls } = github({});
     expect(await checkRepoAccess({ token: "t", repo: "../../x", fetchFn })).toMatchObject({ ok: false });
@@ -170,6 +180,8 @@ describe("creating a Clot", () => {
     const none = await creator.validate({ name: "fresh", repo: "o/private" });
     expect(none.ok).toBe(false);
     expect(none.errors.repo).toContain("cannot reach");
+    expect(none.errors.repo?.match(/Invite/g)).toHaveLength(1);
+    expect(none.errors.repo).toMatch(/press Check again\.$/);
   });
 
   it("accepts a pending invitation while checking", async () => {

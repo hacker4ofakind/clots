@@ -30,7 +30,7 @@ export function MessageList({ items, openAsks, outcomes, focusAsk, onRetry }: { 
             return <UserBubble key={message.id} item={item} dimmed={older(message)} onRetry={() => onRetry(message.id)} />;
           case "clot":
             return (
-              <div key={message.id} className={cn("flex flex-col gap-1", older(message) && "opacity-55")} data-message-kind="clot" data-streaming={item.streaming ? "true" : undefined}>
+              <div key={message.id} className={cn("flex flex-col gap-2.5", older(message) && "opacity-55")} data-message-kind="clot" data-streaming={item.streaming ? "true" : undefined}>
                 <Markdown text={message.text} />
                 {stamped.has(message.id) ? <span className="text-caption font-normal text-muted-foreground">{time(message.createdAt)}</span> : null}
               </div>
