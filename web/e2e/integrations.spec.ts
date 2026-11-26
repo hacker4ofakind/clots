@@ -134,6 +134,25 @@ test("an API key tool: the key field with an eye toggle and the configurer's ins
   await expect(row(page, "ElevenLabs")).toBeVisible();
 });
 
+test("long key instructions scroll inside the dialog while the buttons stay in view", async ({ page }) => {
+  const dialog = await pick(page, "ElevenLabs");
+  await dialog.getByRole("button", { name: "Finish" }).click();
+  const field = dialog.getByLabel("API key");
+  await expect(field).toBeVisible();
+  // Long instructions: the fixture's four steps, repeated until they cannot fit.
+  await dialog.getByRole("listitem").first().evaluate((li) => {
+    for (let i = 0; i < 12; i++) li.parentElement?.appendChild(li.cloneNode(true));
+  });
+  const box = await dialog.boundingBox();
+  const scroller = dialog.getByRole("heading", { name: "How to get one" }).locator("xpath=ancestor::div[contains(@class,'overflow-y-auto')][1]");
+  const overflows = await scroller.evaluate((el) => el.scrollHeight > el.clientHeight);
+  expect(overflows).toBe(true);
+  await scroller.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+  await expect(dialog.getByRole("listitem").last()).toBeInViewport();
+  await expect(dialog.getByRole("button", { name: "Done" })).toBeInViewport();
+  expect((await dialog.boundingBox())?.height).toBe(box?.height);
+});
+
 test("a failure shows its error with Try again and Back, and Try again goes on", async ({ page }) => {
   const dialog = await pick(page, "Flaky");
   await dialog.getByRole("button", { name: "Finish" }).click();

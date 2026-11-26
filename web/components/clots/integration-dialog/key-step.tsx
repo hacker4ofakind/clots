@@ -62,7 +62,7 @@ export function KeyStep({ toolkit, instructions, saving, error, onBack, onDone }
         </>
       }
     >
-      <div className="flex flex-1 flex-col gap-5.5 py-3.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-5.5 overflow-y-auto py-3.5">
         <p className="text-chat">You’re almost done! Enter an API key.</p>
         <div className="flex flex-col gap-2">
           <Label htmlFor={id} className="text-label text-foreground-soft">
