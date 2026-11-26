@@ -391,7 +391,10 @@ export class Asks {
     // However it ended, the Clot's session learns how: an ask that closes with no note and no row handed over still leaves one,
     // so that no outcome is only in the chat.
     if (note === null && o.inbox === undefined && line !== null) note = `Your question to the user (${ask.summary}) ended: ${line}`;
-    if (!this.d.store.closeAsk(ask.id, ask.clot, note, { inbox: o.inbox, onlyOpen: o.onlyOpen, also: o.also, history: { view: snapshot?.view ?? null, outcome, result, closedAt, answerKey } })) return false;
+    // Ask numbers can start again (a database rebuilt by an update), and an old hand-over row under the same name would make this close do
+    // nothing and leave the ask busy for good: the row is named for this ask as it was opened.
+    const inbox = o.inbox === undefined ? undefined : { ...o.inbox, id: `${o.inbox.id}@${ask.openedAt}` };
+    if (!this.d.store.closeAsk(ask.id, ask.clot, note, { inbox, onlyOpen: o.onlyOpen, also: o.also, history: { view: snapshot?.view ?? null, outcome, result, closedAt, answerKey } })) return false;
     for (const cancel of this.timers.get(ask.id) ?? []) cancel();
     this.timers.delete(ask.id);
     if (line !== null) await this.d.conv.post(ask.clot, line, { kind: "note" }).catch(() => undefined);

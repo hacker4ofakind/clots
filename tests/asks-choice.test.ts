@@ -122,7 +122,7 @@ describe("ask_choice", () => {
     expect(conv.postsFor("graphite")).toEqual(["No answer within 10 minutes: going with the Clot's pick, 1: Retry the token refresh"]);
     expect(store.conversation.askOutcome(id)!.outcome).toContain("going with the Clot's pick");
     expect(pending()).toMatchObject({
-      id: `choice:${id}`,
+      id: expect.stringMatching(new RegExp(`^choice:${id}@[0-9]+$`)),
       kind: "choice",
       text: '[The user did not answer your choice "How to fix the login bug?" within 10 minutes and appears to be busy. Go with your pick, 1: Retry the token refresh. Tell the user in one line which you took, and that a reply in this chat switches it. Carry on with the pick; do not start a second worker for the same work.]',
     });
@@ -155,7 +155,7 @@ describe("ask_choice", () => {
     expect(pending()).toMatchObject({ kind: "choice" });
     expect(pending()).toBeUndefined();
     await advance(5 * MINUTE);
-    expect(pending()).toMatchObject({ id: `choice:${laterId}` });
+    expect(pending()).toMatchObject({ id: expect.stringMatching(new RegExp(`^choice:${laterId}@[0-9]+$`)) });
   });
 
   it("is fired by the hourly sweep when its timer was lost", async () => {

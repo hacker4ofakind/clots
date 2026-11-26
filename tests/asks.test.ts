@@ -104,12 +104,22 @@ describe("Asks", () => {
     expect(result).toEqual({ status: "answered", outcome: "LINE", result: "approved" });
     expect(store.openAsks()).toEqual([]);
     expect(store.notes("graphite").map((note) => note.text)).toEqual(["NOTE"]);
-    expect(store.nextPending("graphite")).toMatchObject({ id: `t:${ask.id}`, text: "HANDED" });
+    expect(store.nextPending("graphite")).toMatchObject({ id: `t:${ask.id}@${ask.openedAt}`, text: "HANDED" });
     expect(conv.postsFor("graphite")).toEqual(["LINE"]);
     expect(kicked).toEqual(["graphite"]);
     expect(events.at(-1)).toMatchObject({ type: "ask.closed", data: { id: ask.id, outcome: "LINE", result: "approved" } });
     expect(store.closeAsk(ask.id, "graphite", "AGAIN")).toBe(false);
     expect(store.notes("graphite")).toHaveLength(1);
+  });
+
+  it("closes an ask whose number an older hand-over row already used, instead of leaving it busy", async () => {
+    await open("x");
+    const [ask] = store.openAsks();
+    // A row from before the asks table was rebuilt, named as this ask's would have been in the old scheme.
+    store.enqueue({ id: `t:${ask.id}`, clot: "graphite", text: "OLD", receivedAt: 1, kind: "message", outsider: false });
+    expect(await asks.answer(ask.id, { action: "allow" })).toEqual({ status: "answered", outcome: "LINE", result: "approved" });
+    expect(store.openAsks()).toEqual([]);
+    expect(store.nextPending("graphite")).toMatchObject({ text: "OLD" });
   });
 
   it("answers a second time with how the first ended, not by acting again", async () => {
