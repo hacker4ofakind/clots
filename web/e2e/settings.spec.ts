@@ -145,3 +145,31 @@ for (const scheme of ["light", "dark"] as const) {
     await expectNoSeriousViolations(page);
   });
 }
+
+test("a Clot's right-click menu in the rail edits and deletes it like Manage Clots does, and Home cannot be deleted", async ({ page }) => {
+  await page.goto("/c/home");
+  const menu = (name: string) => page.locator(`[data-rail-clot="${name}"]`).dispatchEvent("contextmenu");
+  await menu("home");
+  await expect(page.getByRole("menuitem", { name: "Edit Clot" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Delete Clot" })).toHaveAttribute("data-disabled", "");
+  await page.keyboard.press("Escape");
+
+  await menu("Truecast");
+  await page.getByRole("menuitem", { name: "Edit Clot" }).click();
+  await expect(page).toHaveURL(/\/new\?edit=Truecast(&|$)/);
+
+  await page.goto("/c/home");
+  await menu("Encryptify");
+  await page.getByRole("menuitem", { name: "Delete Clot" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "Delete Encryptify?" })).toBeVisible();
+  const confirm = dialog.getByRole("button", { name: "Delete Encryptify" });
+  await expect(confirm).toBeDisabled();
+  await dialog.getByLabel("Type Encryptify to confirm").fill("Encryptify");
+  await confirm.click();
+  await expect(page.getByText("Deleted Encryptify.")).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+  // The same delete as in Manage Clots: the daemon took it out of the configuration.
+  const again = await page.evaluate(async () => (await fetch("/api/d/clots/Encryptify?confirm=Encryptify", { method: "DELETE" })).status);
+  expect(again).toBe(404);
+});
