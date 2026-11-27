@@ -116,15 +116,23 @@ export class Push {
     return this.notify({ title: clot, body: outcome, url: `/c/${encodeURIComponent(clot)}`, tag: `ask-${id}` });
   }
 
-  clotStopped(clot: string, state: "paused" | "failed", reason?: string): Promise<number> {
-    return this.notify({ title: clot, body: state === "paused" ? `Paused${reason ? `: ${reason}` : ""}` : `Failed${reason ? `: ${reason}` : ""}`, url: `/c/${encodeURIComponent(clot)}`, tag: `state-${clot}` });
-  }
-
-  /** A reply, when no device has been looking. The body is the reply's first line; a widget block is never put in it. */
-  async reply(clot: string, text: string): Promise<number> {
-    if (this.attended()) return 0;
-    const first = text.replace(/```claritee[\s\S]*?```/g, "Sent you a widget").split("\n").find((l) => l.trim() !== "") ?? "New message";
-    return this.notify({ title: clot, body: first.length > 140 ? `${first.slice(0, 139)}…` : first, url: `/c/${encodeURIComponent(clot)}`, tag: `reply-${clot}` });
+  /**
+   * The one place that decides which daemon events reach the phone. The phone is for what waits on the user: an ask
+   * (a permission, a rule, a merge, an email, ...), a choice and its timeout decision. A Clot finishing a turn, replying,
+   * pausing or failing is not in this list, so it stays quiet. A new reason to ping goes here, one line each.
+   */
+  onEvent(event: { type: string; data: unknown }): Promise<number> | null {
+    const d = event.data as any;
+    switch (event.type) {
+      case "ask.opened":
+        return this.askOpened(d);
+      case "ask.updated":
+        return d.timer === "urgent" ? this.askUrgent(d) : null;
+      case "ask.closed":
+        return d.kind === "choice" && d.result === "timed_out" ? this.choiceDecided(d.clot, d.id, d.outcome) : null;
+      default:
+        return null;
+    }
   }
 }
 

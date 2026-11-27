@@ -40,9 +40,9 @@ describe("the push routes", () => {
   it("count a tab as someone looking only while it reports being visible, for two minutes", async () => {
     await call("POST", "/push/subscribe", { endpoint: "https://web.push.apple.com/x", keys: { p256dh: "p", auth: "a" } });
     await call("POST", "/push/visibility", { clientId: "desktop-tab-1", visible: true });
-    expect(await push.reply("home", "Hello")).toBe(0);
+    expect(push.attended()).toBe(true);
     await call("POST", "/push/visibility", { clientId: "desktop-tab-1", visible: false });
-    expect(await push.reply("home", "Hello")).toBe(1);
+    expect(push.attended()).toBe(false);
     expect((await call("POST", "/push/visibility", { clientId: "x", visible: true })).status).toBe(400);
   });
 });

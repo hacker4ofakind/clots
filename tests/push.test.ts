@@ -69,30 +69,50 @@ describe("push", () => {
     expect(sent[0]!.payload.body).toContain("Less than a minute left");
   });
 
-  it("sends a reply only when no device has been visible in the last 2 minutes", async () => {
-    store.add(sub(1), now);
+  it("tracks a device as looking only while it reports being visible, for two minutes", () => {
     push.report("desktop-tab-1", true);
-    expect(await push.reply("home", "Hello there")).toBe(0);
+    expect(push.attended()).toBe(true);
     now += 119_000;
-    expect(await push.reply("home", "Hello there")).toBe(0);
+    expect(push.attended()).toBe(true);
     now += 2_000;
-    expect(await push.reply("home", "Hello there")).toBe(1);
+    expect(push.attended()).toBe(false);
     push.report("desktop-tab-1", true);
     push.report("desktop-tab-1", false);
-    expect(await push.reply("home", "Again")).toBe(1);
+    expect(push.attended()).toBe(false);
   });
 
-  it("puts a widget in a reply as one short line, not its code, and the first line of the reply otherwise", async () => {
-    store.add(sub(1), now);
-    await push.reply("home", "```claritee\nCard { x }\n```");
-    await push.reply("home", "\nFirst line\nsecond");
-    expect(sent.map((s) => s.payload.body)).toEqual(["Sent you a widget", "First line"]);
-  });
+  describe("onEvent: the phone hears only what waits on the user", () => {
+    beforeEach(() => store.add(sub(1), now));
+    const fire = async (type: string, data: unknown) => {
+      const p = push.onEvent({ type, data });
+      return p === null ? null : await p;
+    };
 
-  it("names a Clot that stopped", async () => {
-    store.add(sub(1), now);
-    await push.clotStopped("graphite", "paused", "usage limit");
-    await push.clotStopped("graphite", "failed");
-    expect(sent.map((s) => s.payload.body)).toEqual(["Paused: usage limit", "Failed"]);
+    it("pushes a new ask (permission, rule, merge, email, choice)", async () => {
+      for (const kind of ["rule", "email", "merge", "choice", "composio"]) expect(await fire("ask.opened", { ...ask, kind })).toBe(1);
+      expect(sent).toHaveLength(5);
+    });
+
+    it("pushes an ask in its last minute, and a choice the timeout decided", async () => {
+      expect(await fire("ask.updated", { ...ask, timer: "urgent" })).toBe(1);
+      expect(await fire("ask.closed", { id: 4, clot: "home", kind: "choice", result: "timed_out", outcome: "Went with A" })).toBe(1);
+      expect(sent.map((s) => s.payload.body)).toEqual(["Less than a minute left: Email to jane@x.com, Hi", "Went with A"]);
+    });
+
+    it("stays quiet for a Clot's reply, a finished turn, and a Clot pausing or failing", async () => {
+      expect(await fire("message.created", { clot: "home", text: "All done!" })).toBeNull();
+      expect(await fire("clot.reply", { clot: "home", text: "Done" })).toBeNull();
+      expect(await fire("clot.state", { clot: "home", state: "idle" })).toBeNull();
+      expect(await fire("clot.state", { clot: "home", state: "paused", reason: "usage limit" })).toBeNull();
+      expect(await fire("clot.state", { clot: "home", state: "failed" })).toBeNull();
+      expect(sent).toEqual([]);
+    });
+
+    it("stays quiet for ask changes that are not a reason to look", async () => {
+      expect(await fire("ask.updated", { ...ask, timer: "normal" })).toBeNull();
+      expect(await fire("ask.closed", { id: 4, clot: "home", kind: "choice", result: "answered", outcome: "A" })).toBeNull();
+      expect(await fire("ask.closed", { id: 4, clot: "home", kind: "email", result: "timed_out", outcome: "x" })).toBeNull();
+      expect(sent).toEqual([]);
+    });
   });
 });
