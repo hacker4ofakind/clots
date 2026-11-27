@@ -6,28 +6,29 @@ export interface RosterEntry {
   about: string;
 }
 
-const lines = (own: string, roster: RosterEntry[]): string[] => roster.filter((c) => c.name !== own).map((c) => `- ${c.name}: ${c.about}`);
+/** Every Clot, the one the list is for marked as the reader itself. */
+const lines = (own: string, roster: RosterEntry[]): string[] => roster.map((c) => `- ${c.name}${c.name === own ? " (this is you)" : ""}: ${c.about}`);
+
+const hasOthers = (own: string, roster: RosterEntry[]): boolean => roster.some((c) => c.name !== own);
 
 /**
- * What a Clot's system prompt says of the other Clots, or nothing when it is the only one. The Clots are the user's
+ * What a Clot's system prompt says of the Clots, itself included, or nothing when it is the only one. The Clots are the user's
  * agents side by side; naming them all is what keeps a Clot from offering a handover to one that does not exist.
  */
 export function rosterBlock(own: string, roster: RosterEntry[]): string {
-  const others = lines(own, roster);
-  if (others.length === 0) return "";
+  if (!hasOthers(own, roster)) return "";
   return `
 
-The other Clots. You are one of several agents the user runs side by side: one for each project that has a repository, and a home Clot for what belongs to no project. These are all the others, with what each looks after:
-${others.join("\n")}
-- An event or request that belongs to one of them goes to it, with route_correct. A project that is not listed has no Clot: never offer to hand anything to one. Say that no Clot exists for it, and deal with the matter yourself or tell the user.`;
+The Clots. You are one of several agents the user runs side by side: one for each project that has a repository, and a home Clot for what belongs to no project. These are all of them, you included, with what each looks after:
+${lines(own, roster).join("\n")}
+- An event or request that belongs to one of the others goes to it, with route_correct. A project that is not listed has no Clot: never offer to hand anything to one. Say that no Clot exists for it, and deal with the matter yourself or tell the user.`;
 }
 
 /** The note a Clot gets when the Clots changed after its session began, which its system prompt cannot show. */
 export function rosterChangeNote(own: string, roster: RosterEntry[]): string {
-  const others = lines(own, roster);
-  return others.length === 0
+  return !hasOthers(own, roster)
     ? "The Clots have changed since your session began: you are now the only Clot. Nothing can be handed over with route_correct."
-    : `The Clots are not as your instructions say, or your instructions do not list them. These are all the other Clots now, and they replace any list of Clots you have been given:\n${others.join("\n")}\nAn event or request that belongs to one of them goes to it, with route_correct. A project that is not listed has no Clot: never offer to hand anything to one.`;
+    : `The Clots are not as your instructions say, or your instructions do not list them. These are all the Clots now, you included, and they replace any list of Clots you have been given:\n${lines(own, roster).join("\n")}\nAn event or request that belongs to one of the others goes to it, with route_correct. A project that is not listed has no Clot: never offer to hand anything to one.`;
 }
 
 export interface RosterDeps {

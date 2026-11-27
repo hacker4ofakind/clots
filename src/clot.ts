@@ -635,7 +635,7 @@ ${request}`.slice(0, 1900), { kind: "note" }).catch(() => undefined);
     return notes.map((note) => note.text);
   }
 
-  /** What this session's system prompt says of the other Clots. Only the turn that creates the session sets its prompt; later turns send the same text, which Claude Code ignores on a resume. */
+  /** What this session's system prompt says of the Clots. Only the turn that creates the session sets its prompt; later turns send the same text, which Claude Code ignores on a resume. */
   private rosterPrompt(session: SessionRow): string | undefined {
     return this.roster?.prompt(session);
   }

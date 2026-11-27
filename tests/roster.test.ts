@@ -10,11 +10,12 @@ const GRAPHITE: RosterEntry = { name: "graphite", about: "the project in the rep
 const WIDGETS: RosterEntry = { name: "widgets", about: "the widget shop" };
 
 describe("rosterBlock", () => {
-  it("lists every Clot but the one it is for, with what each looks after, and says an unlisted project has none", () => {
+  it("lists every Clot, marking the one it is for as the reader, with what each looks after, and says an unlisted project has none", () => {
     const block = rosterBlock("graphite", [HOME, GRAPHITE, WIDGETS]);
     expect(block).toContain("- home: anything that belongs to no project");
     expect(block).toContain("- widgets: the widget shop");
-    expect(block).not.toContain("- graphite:");
+    expect(block).toContain("- graphite (this is you): the project in the repository octo/graphite");
+    expect(block).not.toContain("- widgets (this is you)");
     expect(block).toContain("route_correct");
     expect(block).toContain("has no Clot");
   });
