@@ -8,9 +8,14 @@ it("keeps a name as typed and makes its slug lowercase", () => {
   expect(sameClot("Truecast", "Encryptify")).toBe(false);
 });
 
-it("takes letters, digits and hyphens, starting with a letter", () => {
-  for (const good of ["Truecast", "encryptify", "My-Clot2", "A"]) expect(CLOT_NAME.test(good)).toBe(true);
-  for (const bad of ["", "2fast", "-x", "two words", "naïve", "a".repeat(32)]) expect(CLOT_NAME.test(bad)).toBe(false);
+it("makes a space a hyphen in the slug, so names that differ only by that are one Clot", () => {
+  expect(slugOf("My Shop")).toBe("my-shop");
+  expect(sameClot("My Shop", "my-shop")).toBe(true);
+});
+
+it("takes letters, digits, hyphens and single spaces, starting with a letter or digit", () => {
+  for (const good of ["Truecast", "encryptify", "My-Clot2", "A", "2fast", "My Shop", "a b c"]) expect(CLOT_NAME.test(good)).toBe(true);
+  for (const bad of ["", "-x", " x", "x ", "two  words", "naïve", "a".repeat(32)]) expect(CLOT_NAME.test(bad)).toBe(false);
 });
 
 it("calls the home Clot Home and any other by its name", () => {

@@ -46,9 +46,9 @@ test("a taken name, a clash that differs only in capitals, a bad name and a repo
   await next(page);
   await expect(page.getByRole("alert").filter({ hasText: "There is a Clot named truecast already." })).toBeVisible();
 
-  await fill(page, "9lives", "octo/anything");
+  await fill(page, "bad_name", "octo/anything");
   await next(page);
-  await expect(page.getByRole("alert").filter({ hasText: "letters, digits and hyphens" })).toBeVisible();
+  await expect(page.getByRole("alert").filter({ hasText: "letters, digits, hyphens" })).toBeVisible();
 
   await fill(page, "Locked", "octo/private-repo");
   await next(page);

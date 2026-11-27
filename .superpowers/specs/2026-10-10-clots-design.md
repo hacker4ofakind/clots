@@ -954,10 +954,11 @@ A Clot is opt-in per project. It is created in the web app, on the desktop, in t
 New Clot flow:
 
 1. **Icon, name and repository.** A name is shown exactly as typed ("Truecast",
-   "Encryptify"): letters, digits and hyphens, starting with a letter, up to 31
-   characters, capitals kept. The container, its volumes and its rule file are named
-   by the Clot's slug, the name in lower case, and a name is free only when its
-   slug is: a Clot named `Truecast` and one named `truecast` are the same Clot. The
+   "Encryptify"): letters, digits, hyphens and single spaces, starting with a letter or
+   digit, up to 31 characters, capitals kept. The container, its volumes and its rule file are named
+   by the Clot's slug, the name in lower case with each space a hyphen, and a name
+   is free only when its slug is: `Truecast` and `truecast` are the same Clot, as
+   are `My Shop` and `my-shop`. The
    daemon checks that the name is free and a valid container name, and that
    `clots-dot-dev` can reach the repository; if an invitation is pending it accepts
    it with its own token, and if there is none the step shows how to invite

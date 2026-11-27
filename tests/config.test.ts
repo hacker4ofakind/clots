@@ -93,8 +93,9 @@ it("rejects a repository URL that events could not be routed by", () => {
   expect(() => loadConfig({ ...json, clots: [{ name: "graphite", repoUrl: "git@github.com:o/r.git" }] }, env)).toThrow();
 });
 
-it("rejects a clot name Docker cannot use", () => {
-  expect(() => loadConfig({ ...json, clots: [{ name: "My App", repoUrl: "https://github.com/o/r.git" }] }, env)).toThrow();
+it("rejects a clot name Docker cannot use, and takes one with a space", () => {
+  expect(() => loadConfig({ ...json, clots: [{ name: "My_App", repoUrl: "https://github.com/o/r.git" }] }, env)).toThrow();
+  expect(loadConfig({ ...json, clots: [{ name: "My App", repoUrl: "https://github.com/o/r.git" }] }, env).clots[0].name).toBe("My App");
 });
 
 const withSources = (sources: unknown, more: Record<string, unknown> = {}) => ({ ...json, publicUrl: "https://box.example.ts.net/", sources, ...more });
@@ -335,7 +336,8 @@ it("keeps a Clot's name as typed, and refuses two names that differ only in capi
   expect(loadConfig({ ...json, clots: [clot("Truecast"), clot("Encryptify")] }, env).clots.map((c) => c.name)).toEqual(["Truecast", "Encryptify"]);
   expect(() => loadConfig({ ...json, clots: [clot("Truecast"), clot("truecast")] }, env)).toThrow("same name");
   expect(() => loadConfig({ ...json, clots: [clot("Home")] }, env)).toThrow("reserved names");
-  expect(() => loadConfig({ ...json, clots: [clot("two words")] }, env)).toThrow();
+  expect(() => loadConfig({ ...json, clots: [clot("two  words")] }, env)).toThrow();
+  expect(() => loadConfig({ ...json, clots: [clot("My Shop"), clot("my-shop")] }, env)).toThrow("same name");
   expect(() => loadConfig({ ...json, clots: [clot("Truecast")], sources: { email: [{ account: "a", clot: "Truecast", address: "a@gmail.com", password: "P", mailboxes: ["INBOX"] }] } }, { ...env, P: "x" })).not.toThrow();
 });
 

@@ -401,10 +401,11 @@ The 404, the error page, the private page (403) and the setup page (503) share o
    another one."; "Paste an image, or upload an SVG, PNG, JPG, WebP or ICO."; "That
    image is too large. An icon can be up to 2 MB."), in the footer so nothing
    shifts. A name is shown exactly as typed ("Truecast",
-   "Encryptify"): letters, digits and hyphens, starting with a letter, up to 31
-   characters, capitals allowed. Docker names, volumes and rule files use its
-   slug, the name in lower case, and the name is free only when its slug is: a
-   Clot named `Truecast` and one named `truecast` are the same Clot. A Clot made
+   "Encryptify"): letters, digits, hyphens and single spaces, starting with a letter or
+   digit, up to 31 characters, capitals allowed. Docker names, volumes and rule files use its
+   slug, the name in lower case with each space a hyphen, and the name is free only
+   when its slug is: `Truecast` and `truecast` are the same Clot, as are
+   `My Shop` and `my-shop`. A Clot made
    before capitals were allowed has a lowercase name, so its slug is its name and
    it keeps its container and volumes. The daemon checks the name is free and a
    valid container name, and that `clots-dot-dev` can reach the repository; if an

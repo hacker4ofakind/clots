@@ -160,7 +160,7 @@ const FileSchema = z.object({
       }),
     )
     .min(1)
-    .refine((clots) => new Set(clots.map((c) => slugOf(c.name))).size === clots.length, "two Clots have the same name, apart from capitals"),
+    .refine((clots) => new Set(clots.map((c) => slugOf(c.name))).size === clots.length, "two Clots have the same name, apart from capitals and spaces"),
   // A Clot with no repository of its own, for events no project Clot is bound to.
   home: z.boolean().default(false),
   // The share of the context window at which a session rolls over to a fresh one.

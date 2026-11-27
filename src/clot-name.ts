@@ -1,16 +1,16 @@
 /**
  * A Clot's name is shown exactly as it was typed ("Truecast", "Encryptify"). Everything the machine keys on a name
- * (container, volumes, the rule file) uses its slug, the name in lower case, and two names with the same slug are the
- * same Clot. A Clot made before names could have capitals has a lowercase name, so its slug is its name and it keeps
+ * (container, volumes, the rule file) uses its slug, the name in lower case with each space a hyphen, and two names with
+ * the same slug are the same Clot ("My Shop" and "my-shop"). A Clot made before names could have capitals has a lowercase name, so its slug is its name and it keeps
  * its container and volumes.
  */
-export const CLOT_NAME = /^[A-Za-z][A-Za-z0-9-]{0,30}$/;
+export const CLOT_NAME = /^(?!.* {2})(?!.* $)[A-Za-z0-9][A-Za-z0-9 -]{0,30}$/;
 
-export const CLOT_NAME_RULE = "A name is letters, digits and hyphens, starting with a letter, up to 31 characters.";
+export const CLOT_NAME_RULE = "A name is letters, digits, hyphens and single spaces, starting with a letter or digit, up to 31 characters.";
 
-/** The lowercase form of a name that Docker names, volumes and paths use, and uniqueness is checked on. */
+/** The lowercase, hyphenated form of a name that Docker names, volumes and paths use, and uniqueness is checked on. */
 export function slugOf(name: string): string {
-  return name.toLowerCase();
+  return name.toLowerCase().replace(/ /g, "-");
 }
 
 /** Whether two names are the same Clot. */
