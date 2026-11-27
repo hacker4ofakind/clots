@@ -17,6 +17,7 @@
 - Image proxy: https only, `image/*` only, ≤ 10 MB, private, loopback and link-local addresses refused (after DNS resolution, connecting to the resolved address).
 - Radii: root 12 px up to 480 px wide, 16 px above; nested = parent radius − parent padding, min 4 px; flat components pass through.
 - Stop hook: at most 2 rewrites per turn, then "This widget couldn't be shown" with the source folded.
+- `File`: a regular file of ≤ 100 MB, not under `~/.claude` or the scoped credentials folder; copied at the end of the turn (or when a Clapboard version is stored) to `data/files/<slugOf(clot)>/<sha256>`; served by the daemon at `/api/v1/files/:id`, reached as `/api/d/files/:id`, always `Content-Disposition: attachment`.
 - Submit message prefix: "From the widget:"; one `label: value` line per input. In a Clapboard, the message names the Clapboard's title.
 - Main sessions only get the Claritee system prompt section; workers none.
 - UI copy rules from the design system README; Clot-facing rule lists from the spec section 8 verbatim.
@@ -39,8 +40,9 @@
 - `src/clapboards/{store,tools,hook,img-proxy}.ts` (create), `src/ui-api/routes/clapboards.ts` (create).
 - `src/agent/runner.ts` (modify: the Stop hook on main turns, the PostToolUse hook on main and worker turns), `src/agent/prompts.ts`, `src/agent/tool-server.ts` (modify: the `clapboard_*` tools on both `toolServer` and `workerToolServer`), `src/agent/command-check.ts` (modify: the lock lets Write and Edit reach `~/clapboards/`).
 - `src/conversation/conversation.ts` (modify: lint on `post`, the splice, `widget.status`), `src/conversation/store.ts` (modify: tables `widget_blocks`, `widget_submissions`), `src/conversation/activity-lines.ts` (modify: a line per `clapboard_*` tool), `src/ui-api/routes/clots.ts` (modify: submissions), `src/workers.ts` (modify: Claritee in reports).
+- `src/files/{store,snapshot}.ts`, `src/ui-api/routes/files.ts` (create): the `files` table (id, clot, sha256, name, size, mime, createdAt) and its references (message block or Clapboard version), the copy out of the container with its checks, and the download route. `web/components/claritee/catalog/file.tsx` (create): the File card.
 - `src/clapboards/store.ts` owns the tables `clapboards`, `clapboard_versions`, `clapboard_state` in the same database (4a's rule: new tables get their own module, not more of `src/store.ts`).
-- `deploy/backup.sh` (modify): copy `data/clapboards` like `data/icons`; `data/img-cache` is not backed up.
+- `deploy/backup.sh` (modify): copy `data/clapboards` and `data/files` like `data/icons`; `data/img-cache` is not backed up.
 - `web/e2e/fake-daemon.mts` (modify): Clapboard routes, block statuses, the new events.
 - `plugin/skills/clapboards/{SKILL.md,components.md,landing-pages.md}` (create).
 
@@ -59,6 +61,7 @@
 - **Worker reports with a `claritee` block**: a report never reaches the chat; `workers.ts` hands it to the main session as a turn (`[Report from worker …]`). Before that, the daemon rewrites its `claritee` fences to `claritee-source` and adds a line to that turn saying widgets are for the user and the main session may write its own. Worker sessions have no Stop hook and no Claritee prompt section.
 - **Main sessions are locked**: 4a's lock (`lockDecision` in `command-check.ts`) lets a main session Write or Edit only its memory folder, and removes NotebookEdit. Extend it the way `isMemoryFile` works: an absolute path, no `..`, normalised, under `/home/clot/clapboards/`, either `<slug>.clap` or a file in `assets/`. Bash stays read-only for main sessions, so Clapboard edits through Bash come only from workers.
 - **PostToolUse hook** on main and worker turns, for Write, Edit and MultiEdit (and NotebookEdit, workers only) whose `file_path` is under `~/clapboards/` and whose slug is published: read the file with `docker exec <containerName(clot)> cat`, lint with the Clapboard catalog, store a version or return `hookSpecificOutput.additionalContext` with the errors. Unpublished slugs: no-op. Hooks run in the daemon process, so they reach Docker and the store directly. Workers' hooks already hold the worker guard's `PreToolUse`; add `PostToolUse` beside it.
+- **`File` snapshots**: the package linter only checks `path` is a string; whether the file exists is the daemon's check. After linting a turn's blocks, the Stop hook resolves each `File` path with `docker exec <containerName(clot)> realpath -e` (refusing anything that is not a regular file, is over 100 MB, or lands under `~/.claude` or the credentials folder), streams it out with `docker exec … cat`, hashes it and stores it once per hash. A failed check is an error for the retry flow, exactly like a lint error. `widget_blocks` gains `files: { path, id }[]`, and the renderer maps each `File`'s path to its id; a path with no id renders the error placeholder. Clapboard versions keep the same mapping, filled by publish and the PostToolUse hook. A file row is deleted when no message block or kept version names it.
 - **Clapboard address on publish**: the tool returns `/c/<clot>/<slug>` and the ClapboardLink markup to paste into the reply.
 - **Image proxy SSRF**: built on 4a's `safeFetch(url, { maxBytes, timeoutMs, maxRedirects, headers })` (`src/net/safe-fetch.ts`), which already resolves once, refuses private, loopback, link-local and tailnet ranges (`isPrivateAddress`, including IPv4-mapped and NAT64 forms), connects to the checked address with the original Host and SNI, and re-checks each redirect, throwing `BlockedError`. It allows http, so add an `httpsOnly` option that refuses an http URL or redirect; use `maxRedirects: 3`, `maxBytes: 10 MB`. Cache by URL for a day in `data/img-cache/`. `Image` renders `next/image` with `unoptimized` and `src="/api/d/img?url=…"`; no custom loader.
 - **Charts and tables** load lazily (`next/dynamic`, `ssr: false`) so a chat without them does not pay for ECharts.
@@ -134,7 +137,7 @@
 - Produces: `<ClariteeWidget source scope="inline" | "clapboard" onSubmit?={(lines: string) => void} storedKey?={{clot, slug}} />`.
 **Build:**
 - AST → React, attribute mapping (Key Decisions), radius pass, `hoverStyle`/`activeStyle`, events, `for`, ternary/`&&` markup.
-- Every base component from spec 4.1 with its attributes, skeleton states for `Chart`, `Table`, `Image`; icons from `@phosphor-icons/react` by kebab name to component; `Code` with Shiki (and `diff`; 4a has no highlighter, its `CodeBlock` and markdown `pre` are plain); `Image` through `/api/d/img`.
+- Every base component from spec 4.1 with its attributes, skeleton states for `Chart`, `Table`, `Image`; `File` as the card from the Web UI canvas's File artboard (type icon by extension, name or label, size, download button to `/api/d/files/:id`; in the gallery with a fixed id); icons from `@phosphor-icons/react` by kebab name to component; `Code` with Shiki (and `diff`; 4a has no highlighter, its `CodeBlock` and markdown `pre` are plain); `Image` through `/api/d/img`.
 - Submit: collect named inputs (name, else Label text), call `onSubmit`, freeze inputs showing submitted values.
 - Runtime errors replace only the failing node with the error placeholder and are reported through a callback.
 **Tests (behaviours):**
@@ -161,6 +164,7 @@
 - a turn ending with a broken block is blocked once with the errors in the reason; a fixed rewrite is spliced into the same message at the same index, the prose unchanged, and the block is `ok`; no second message is posted or streamed.
 - two failed rewrites → `failed` and the turn ends.
 - a warning-only block renders and adds a note to the next turn.
+- a block with `File path=~/out.csv` stores a copy and the block's `files` mapping; changing `~/out.csv` afterwards leaves the download unchanged; a missing path, a directory, a 101 MB file and `~/.claude/.credentials.json` each block the turn with the reason.
 - the main-session prompt contains the section; a worker's does not.
 - a worker report with a `claritee` block reaches the main session as `claritee-source`.
 - streaming: until the closing fence arrives the UI shows a skeleton, never raw source.
@@ -169,17 +173,18 @@
 - [ ] Task 5 complete
 
 ### Task 6: Clapboard store, tools, hook and image proxy
-**Files:** `src/clapboards/{store,tools,hook,img-proxy}.ts`, `src/agent/{tool-server,runner,command-check}.ts`, `src/conversation/activity-lines.ts`, `src/net/safe-fetch.ts`, `src/ui-api/routes/clapboards.ts` (registered with `UiApi` like 4a's route modules), `src/daemon.ts`, `packages/ui-api-schemas/src/index.ts`, `deploy/backup.sh`, tests
+**Files:** `src/clapboards/{store,tools,hook,img-proxy}.ts`, `src/files/{store,snapshot}.ts`, `src/ui-api/routes/files.ts`, `src/agent/{tool-server,runner,command-check}.ts`, `src/conversation/activity-lines.ts`, `src/net/safe-fetch.ts`, `src/ui-api/routes/clapboards.ts` (registered with `UiApi` like 4a's route modules), `src/daemon.ts`, `packages/ui-api-schemas/src/index.ts`, `deploy/backup.sh`, tests
 **Interfaces:**
 - Produces routes: `GET /clapboards/:clot` (list: slug, title, updatedAt), `GET /clapboards/:clot/:slug` (latest source, version, title), `GET/PUT /clapboards/:clot/:slug/state`, `GET /clapboards/:clot/assets/:file`, `GET /img?url=`; event `clapboard.updated { clot, slug, version }` on the `EventBus`.
 - Produces tools with the names in Global Constraints, each returning plain text for the Clot, on the main session's `clots` server and the worker's `clots_worker` server; each gets a line in `activityLine()`.
-**Build:** publish (lint with `clapboard` scope, version 1, return address and ClapboardLink markup), the lock's Write/Edit allowance for `~/clapboards/`, PostToolUse hook (Key Decisions), unpublish, versions (keep 50), state read, assets served from the container, image proxy with cache.
+**Build:** the file store and `GET /files/:id` (`files` joins the web proxy's `AREAS`; attachment, `nosniff`, filename from the row; another user's Clot's file is 404), `File` snapshots on publish and on each stored version; publish (lint with `clapboard` scope, version 1, return address and ClapboardLink markup), the lock's Write/Edit allowance for `~/clapboards/`, PostToolUse hook (Key Decisions), unpublish, versions (keep 50), state read, assets served from the container, image proxy with cache.
 **Tests (behaviours):**
 - a locked main session may Write `~/clapboards/a.clap` and `~/clapboards/assets/x.png`; `~/clapboards/../x`, `~/notes.txt` and a symlinked path are refused.
 - publishing a broken file returns its errors and creates nothing.
 - an Edit producing a broken file returns errors as additional context and the latest version is unchanged; a good Edit creates version n+1 and emits the event.
 - an Edit outside `~/clapboards/` or to an unpublished slug does nothing.
 - `clapboard_state` returns the values the UI stored.
+- `GET /files/:id` answers with `Content-Disposition: attachment` and the file's name; a save naming a missing file is refused like a lint error; a file named by no message or kept version is deleted.
 - the proxy refuses `http://`, `https://127.0.0.1/`, a domain resolving to 10.0.0.5, a `text/html` response and an 11 MB image.
 **Done when:** `npm test` passes.
 - [ ] Task 6 complete
@@ -276,6 +281,11 @@
 - **Steps:** View MV-1's widget and MV-5's Clapboard in light and dark at 390 and 1280 px.
 - **Expected:** readable everywhere; theme-token colours switch, nothing overflows horizontally.
 - **How the executor runs it:** browser screenshots.
+
+#### MV-14: A Clot hands over a file
+- **Steps:** In encryptify, send "Export the open issues to a CSV and give it to me." Download it at 1280 px, then at 390×844. Ask the Clot to change the CSV in the container, then download the first card again.
+- **Expected:** a File card with a spreadsheet icon, the file name and size; the download has the right name and content on both widths; after the change, the first card still downloads the original.
+- **How the executor runs it:** browser (desktop and mobile preset).
 
 ## Out of Scope
 

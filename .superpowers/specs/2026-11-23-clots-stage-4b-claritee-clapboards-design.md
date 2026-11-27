@@ -200,6 +200,7 @@ loads data.
 | `Stat` | | a number with its label, for figures that are the point |
 | `Alert` | Alert | a real warning only |
 | `ClapboardLink` | the ClapboardLink card | `to=<slug>`; shows the Clapboard's title |
+| `File` | the File card | `path`: a file in the Clot's container (`~/…` or absolute); the child text, if any, replaces the file name as the label; shows a type icon, the name, the size and a download button (section 5.1) |
 | icons | `@phosphor-icons/react` | `@name` in text or children (`@arrow-right`), `@name:bold` and `@name:fill` for weights |
 
 ### 4.2 Clapboards only
@@ -250,6 +251,29 @@ loads data.
   block in it reaches the main session as `claritee-source`, with a line saying
   widgets are for the user; the main session writes its own if one helps.
 
+### 5.1 Files
+
+A Clot gives the user a file it made (an export, a report, a recording) by
+naming it in a `File` component, with no extra copying step.
+
+- **Snapshot at the end of the turn**: the Stop hook, after linting, reads every
+  `File` path in the turn's blocks from the container and copies the file into
+  the daemon's storage. The download is that copy: later changes to the file in
+  the container do not change it, and it survives rebuilds of the container.
+- **Checks**: the path must name a regular file of at most 100 MB, outside the
+  Clot's login and credential folders (`~/.claude`, the scoped credentials).
+  A missing file, a directory, a file that is too big or a refused path is an
+  error, handled like a lint error: the Clot gets it and writes the block
+  again, with the same two attempts.
+- **Storage**: files are kept by their content's hash under
+  `data/files/<clot>/`, so the same file named twice is stored once. A file is
+  kept as long as a message or a kept Clapboard version names it, and backed up
+  with the rest of `data/`.
+- **Download**: the card's button downloads the file under its name; nothing
+  opens in the browser. On a phone, tapping the card downloads it.
+- A worker names a file in its report as a path; the main session writes the
+  `File` for the user, since the worker's worktree is in the same container.
+
 ## 6. Clapboards
 
 ### 6.1 Making and publishing
@@ -270,6 +294,10 @@ loads data.
   `reactful` state where the variable still exists. A save with errors is not
   stored: the hook returns the errors to the Clot, and the last good version
   stays on screen.
+- `File` paths in a Clapboard are copied when its version is stored (on publish
+  and on each save), with the checks of 5.1; a failed check refuses the save
+  like a lint error. To give the user a newer copy of a file, the Clot saves the
+  Clapboard again.
 - Other daemon tools: `clapboard_list`, `clapboard_unpublish(slug)`,
   `clapboard_state(slug)` (the `stored()` values) and
   `clapboard_versions(slug)`.
@@ -311,6 +339,10 @@ loads data.
   refused, results cached. A Clot's own file can be shown from
   `~/clapboards/assets/`, served by the daemon.
 - A ClapboardLink can only open a Clapboard of one of the user's own Clots.
+- `File` downloads go through the same daemon proxy as images, always as an
+  attachment (`Content-Disposition: attachment`, `nosniff`), so a file is never
+  run or shown as a page. The path is resolved inside the container (no
+  symlinks out of it), and only the Clot that wrote the block is read from.
 - Lint limits: 64 KB of source per block, 256 KB per Clapboard; loops and
   recursion capped at 10,000 steps per render, after which the component shows
   its error placeholder.
@@ -379,7 +411,9 @@ Claritee section):
   themes at desktop and phone widths.
 - **Daemon**: the Stop hook (errors stop the turn, two retries, warnings as
   notes), the PostToolUse hook (versions, rejected saves keep the last good
-  one), `clapboard_*` tools, the image proxy's refusals.
+  one), `clapboard_*` tools, the image proxy's refusals, `File` snapshots (a
+  missing, too big or refused path is sent back to the Clot; a later change in
+  the container leaves the download unchanged).
 - **Live checks**: a Clot answers a few ordinary questions and its widgets
   render cleanly; a Clot builds a progress-tracker Clapboard from a prompt, the
   user ticks items on the phone, and the Clot reads them back with
@@ -391,6 +425,8 @@ Claritee section):
 - Clot replies render Claritee widgets inline, linted before the user sees
   them, in both themes and at phone width.
 - `Button submit` sends a widget's inputs to the Clot.
+- A Clot can hand the user a file it made with `File`, downloadable on desktop
+  and phone.
 - A Clot can publish a Clapboard, edit it live, and read what the user stored
   in it; it opens in the side pane on desktop and full screen on a phone.
 - The Clapboards skill is in every container, and a Clapboard made without any
