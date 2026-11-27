@@ -271,6 +271,8 @@ naming it in a `File` component, with no extra copying step.
   with the rest of `data/`.
 - **Download**: the card's button downloads the file under its name; nothing
   opens in the browser. On a phone, tapping the card downloads it.
+- **Several files**: `File`s next to each other in a block render as one card
+  with one row per file, divided by lines, never as a card each.
 - A worker names a file in its report as a path; the main session writes the
   `File` for the user, since the worker's worktree is in the same container.
 

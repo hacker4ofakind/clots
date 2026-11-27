@@ -137,7 +137,7 @@
 - Produces: `<ClariteeWidget source scope="inline" | "clapboard" onSubmit?={(lines: string) => void} storedKey?={{clot, slug}} />`.
 **Build:**
 - AST → React, attribute mapping (Key Decisions), radius pass, `hoverStyle`/`activeStyle`, events, `for`, ternary/`&&` markup.
-- Every base component from spec 4.1 with its attributes, skeleton states for `Chart`, `Table`, `Image`; `File` as the card from the Web UI canvas's File artboard (type icon by extension, name or label, size, download button to `/api/d/files/:id`; in the gallery with a fixed id); icons from `@phosphor-icons/react` by kebab name to component; `Code` with Shiki (and `diff`; 4a has no highlighter, its `CodeBlock` and markdown `pre` are plain); `Image` through `/api/d/img`.
+- Every base component from spec 4.1 with its attributes, skeleton states for `Chart`, `Table`, `Image`; `File` as the card from the Web UI canvas's File card artboard (type icon by extension, name or label, size, download button to `/api/d/files/:id`; in the gallery with a fixed id), with adjacent `File` siblings grouped into one card of divided rows; icons from `@phosphor-icons/react` by kebab name to component; `Code` with Shiki (and `diff`; 4a has no highlighter, its `CodeBlock` and markdown `pre` are plain); `Image` through `/api/d/img`.
 - Submit: collect named inputs (name, else Label text), call `onSubmit`, freeze inputs showing submitted values.
 - Runtime errors replace only the failing node with the error placeholder and are reported through a callback.
 **Tests (behaviours):**
