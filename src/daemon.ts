@@ -207,16 +207,9 @@ const conv = new ConversationService({
   bus,
   now: () => Date.now(),
   newId: randomUUID,
-  onReply: (clot, message) => void push.reply(clot, message.text).catch(() => undefined),
 });
-// What the user is told while away: a new ask, one in its last minute, a choice the timeout decided, a Clot paused or failed.
-bus.subscribe((event) => {
-  const d = event.data as any;
-  if (event.type === "ask.opened") void push.askOpened(d).catch(() => undefined);
-  else if (event.type === "ask.updated" && d.timer === "urgent") void push.askUrgent(d).catch(() => undefined);
-  else if (event.type === "ask.closed" && d.kind === "choice" && d.result === "timed_out") void push.choiceDecided(d.clot, d.id, d.outcome).catch(() => undefined);
-  else if (event.type === "clot.state" && (d.state === "paused" || d.state === "failed")) void push.clotStopped(d.clot, d.state, d.reason).catch(() => undefined);
-});
+// What the phone is told: only what waits on the user (see Push.onEvent). A reply or a Clot being done never pushes.
+bus.subscribe((event) => void push.onEvent(event)?.catch(() => undefined));
 /** What the router, triage and the routing call cost, booked to the Clot they were for; the routing call belongs to the daemon. */
 const bookCall = (who: "triage" | "routing") => (usd: number, clot: string | null) => void spend.book({ clot: clot ?? "daemon", who, total: usd }).catch((error) => console.error("booking a call's cost failed:", error));
 const router = new SdkRouter({ onCost: bookCall("triage") });
