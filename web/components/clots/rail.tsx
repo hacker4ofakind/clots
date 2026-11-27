@@ -4,15 +4,16 @@ import { useState, type KeyboardEvent, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Reorder } from "motion/react";
-import { ArrowDownIcon, ArrowUpIcon, BellIcon, GearSixIcon, PlusIcon } from "@phosphor-icons/react";
+import { ArrowDownIcon, ArrowUpIcon, BellIcon, GearSixIcon, PencilSimpleIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import type { ClotSummary } from "@clots/ui-api-schemas";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api-client";
 import { clotLabel, labelOfName } from "@/lib/clots";
 import { cn } from "@/lib/utils";
 import { useAppState } from "./app-state";
 import { ClotIcon } from "./clot-icon";
+import { DeleteClotDialog } from "./delete-clot-dialog";
 
 function RailLink({ href, label, active, children, className }: { href: string; label: string; active: boolean; children: ReactNode; className?: string }) {
   return (
@@ -32,8 +33,8 @@ function RailLink({ href, label, active, children, className }: { href: string; 
   );
 }
 
-/** A Clot in the rail: a link with its icon, a right-click menu that moves it, and a grip to drag it. */
-function ClotItem({ clot, active, onMove, canUp, canDown }: { clot: ClotSummary; active: boolean; onMove: (direction: -1 | 1) => void; canUp: boolean; canDown: boolean }) {
+/** A Clot in the rail: a link with its icon, a right-click menu that moves, edits or deletes it, and a grip to drag it. */
+function ClotItem({ clot, active, onMove, onDelete, canUp, canDown }: { clot: ClotSummary; active: boolean; onMove: (direction: -1 | 1) => void; onDelete: () => void; canUp: boolean; canDown: boolean }) {
   // The context menu opens with the Menu key or Shift+F10; Alt with an arrow key moves the Clot without opening it.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
@@ -56,6 +57,15 @@ function ClotItem({ clot, active, onMove, canUp, canDown }: { clot: ClotSummary;
         <ContextMenuItem disabled={!canDown} onSelect={() => onMove(1)}>
           <ArrowDownIcon /> Move down
         </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem asChild>
+          <Link href={`/new?edit=${encodeURIComponent(clot.name)}`}>
+            <PencilSimpleIcon /> Edit Clot
+          </Link>
+        </ContextMenuItem>
+        <ContextMenuItem disabled={clot.home} variant="destructive" onSelect={onDelete}>
+          <TrashIcon /> Delete Clot
+        </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -69,6 +79,7 @@ export function Rail() {
   const [order, setOrder] = useState(() => clots.map((c) => c.name));
   const [seen, setSeen] = useState(names);
   const [said, setSaid] = useState("");
+  const [deleting, setDeleting] = useState<string>();
   const activeName = /^\/c\/([^/]+)/.exec(pathname)?.[1];
   const active = activeName === undefined ? undefined : decodeURIComponent(activeName);
 
@@ -110,7 +121,7 @@ export function Rail() {
         <Reorder.Group axis="y" values={order} onReorder={setOrder} className="flex flex-col items-center gap-1">
           {ordered.map((clot) => (
             <Reorder.Item key={clot.name} value={clot.name} onDragEnd={() => void save(order)} className="cursor-grab active:cursor-grabbing" whileDrag={{ scale: 1.05 }}>
-              <ClotItem clot={clot} active={active === clot.name} onMove={(d) => move(clot.name, d)} canUp={order.indexOf(clot.name) > 0} canDown={order.indexOf(clot.name) < order.length - 1} />
+              <ClotItem clot={clot} active={active === clot.name} onMove={(d) => move(clot.name, d)} onDelete={() => setDeleting(clot.name)} canUp={order.indexOf(clot.name) > 0} canDown={order.indexOf(clot.name) < order.length - 1} />
             </Reorder.Item>
           ))}
         </Reorder.Group>
@@ -130,6 +141,7 @@ export function Rail() {
           <GearSixIcon size={24} weight={pathname.startsWith("/settings") ? "bold" : "regular"} />
         </RailLink>
       </div>
+      <DeleteClotDialog target={deleting} onClose={() => setDeleting(undefined)} />
     </nav>
   );
 }
