@@ -9,7 +9,7 @@ let call: (path: string, secret?: string) => Promise<Response>;
 
 beforeEach(async () => {
   api = new UiApi({ secret: () => "s", bus: new EventBus("b") });
-  registerClotAdminRoutes(api, { creator: {} as never, icons: {} as never, config: {} as never, webhookSecret: () => "whsec_123", onboarding: () => [{ id: "webhook", done: false, detail: "Waiting." }] });
+  registerClotAdminRoutes(api, { creator: {} as never, icons: {} as never, config: {} as never, webhookSecret: () => "whsec_123", onboarding: () => [{ id: "webhook", done: false, detail: "Waiting." }], resetWebhook: () => {} });
   const server = await api.listen(0);
   const port = (server.address() as net.AddressInfo).port;
   call = (path, secret = "s") => fetch(`http://127.0.0.1:${port}/api/v1${path}`, { headers: { "x-clots-ui-secret": secret } });

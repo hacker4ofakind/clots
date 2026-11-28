@@ -9,12 +9,16 @@ export interface ChecklistItem {
 export interface Marks {
   getState(key: string): string | undefined;
   setState(key: string, value: string): void;
+  deleteState(key: string): void;
 }
 
 const keyFor = (kind: "webhook" | "push", repo: string) => `onboarding:${kind}:${repo.toLowerCase()}`;
 
 /** GitHub's ping for a repository arrived: its webhook works. */
 export const markWebhook = (marks: Marks, repo: string): void => marks.setState(keyFor("webhook", repo), "1");
+
+/** Forgets GitHub's ping for a repository, so its webhook step is open again (the webhook may have been deleted on GitHub). */
+export const resetWebhook = (marks: Marks, repo: string): void => marks.deleteState(keyFor("webhook", repo));
 
 /** A push to a repository by the Clots' own GitHub account: a branch was pushed with the Clot's token. Pushes by anyone else do not count. */
 export function markPush(marks: Marks, repo: string, sender: string, clotLogin: string): boolean {

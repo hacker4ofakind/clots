@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { acceptGithub } from "../src/intake.js";
-import { checklist, markPush, markWebhook } from "../src/onboarding/checklist.js";
+import { checklist, markPush, markWebhook, resetWebhook } from "../src/onboarding/checklist.js";
 import { Store } from "../src/store.js";
 
 const secret = "s3cret";
@@ -31,6 +31,15 @@ describe("a new Clot's checklist", () => {
     expect(pinged).toEqual(["octo/other", "octo/widgets"]);
     // The marks are in the store, not in memory: a new checklist over the same store still has them.
     expect(item(checklist({ marks: store, repo: "octo/widgets", tools: [], hasPullRequest: false }), "webhook").done).toBe(true);
+  });
+
+  it("opens the webhook step again when it is reset, for that repository only", () => {
+    const store = new Store(":memory:");
+    markWebhook(store, "octo/widgets");
+    markWebhook(store, "octo/other");
+    resetWebhook(store, "Octo/Widgets");
+    expect(item(checklist({ marks: store, repo: "octo/widgets", tools: [], hasPullRequest: false }), "webhook").done).toBe(false);
+    expect(item(checklist({ marks: store, repo: "octo/other", tools: [], hasPullRequest: false }), "webhook").done).toBe(true);
   });
 
   it("ticks the branch step on the first push by the Clots' own account, not by anyone else", () => {

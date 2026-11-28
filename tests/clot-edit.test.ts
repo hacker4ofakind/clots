@@ -64,7 +64,7 @@ beforeEach(async () => {
     },
   });
   api = new UiApi({ secret: () => "s", bus: new EventBus("b") });
-  registerClotAdminRoutes(api, { creator, icons: {} as never, config, webhookSecret: () => "x", onboarding: () => [] });
+  registerClotAdminRoutes(api, { creator, icons: {} as never, config, webhookSecret: () => "x", onboarding: () => [], resetWebhook: () => {} });
   registerSettingsRoutes(api, { config, removeClot: async (n) => void removed.push(n), reorder: () => undefined, announce: () => undefined, building: (n) => creator.isBuilding(n) });
   const server = await api.listen(0);
   const port = (server.address() as net.AddressInfo).port;

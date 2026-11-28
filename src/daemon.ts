@@ -16,7 +16,7 @@ import { registerIntegrationRoutes } from "./ui-api/routes/integrations.js";
 import { registerClotAdminRoutes } from "./ui-api/routes/clots-admin.js";
 import { ClotCreator, onboardingMessage } from "./onboarding/create.js";
 import { IconStore } from "./onboarding/icons.js";
-import { checklist, markPush, markWebhook } from "./onboarding/checklist.js";
+import { checklist, markPush, markWebhook, resetWebhook } from "./onboarding/checklist.js";
 import { ConversationService } from "./conversation/conversation.js";
 import { LiveEnv } from "./live-env.js";
 import { EventBus } from "./ui-api/events.js";
@@ -650,6 +650,10 @@ registerClotAdminRoutes(ui, {
   icons,
   config: configStore,
   webhookSecret: () => config.webhookSecret,
+  resetWebhook: (name) => {
+    const repo = repoOf.get(name);
+    if (repo) resetWebhook(store, repo);
+  },
   onboarding: (name) => {
     const repo = repoOf.get(name);
     const tools = config.sources.composio.filter((a) => a.clot === name).map((a) => ({ id: `${a.toolkit}:${a.account}`, active: store.composio.account(composio?.userOf(a) ?? "")?.status === "active" }));

@@ -196,7 +196,7 @@ describe("the upload route", () => {
   beforeEach(async () => {
     icons = new IconStore(fs.mkdtempSync(path.join(os.tmpdir(), "clots-icon-route-")));
     api = new UiApi({ secret: () => "s", bus: new EventBus("b") });
-    registerClotAdminRoutes(api, { creator: {} as never, icons, config: {} as never, webhookSecret: () => "w", onboarding: () => [] });
+    registerClotAdminRoutes(api, { creator: {} as never, icons, config: {} as never, webhookSecret: () => "w", onboarding: () => [], resetWebhook: () => {} });
     const server = await api.listen(0);
     const port = (server.address() as net.AddressInfo).port;
     post = (dataUrl) => fetch(`http://127.0.0.1:${port}/api/v1/clots/icons`, { method: "POST", headers: { "x-clots-ui-secret": "s", "content-type": "application/json" }, body: JSON.stringify({ dataUrl }) });

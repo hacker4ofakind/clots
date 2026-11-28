@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { ArrowSquareOutIcon, CheckIcon, CircleIcon, CheckCircleIcon, CopyIcon } from "@phosphor-icons/react";
+import { ArrowCounterClockwiseIcon, ArrowSquareOutIcon, CheckIcon, CircleIcon, CheckCircleIcon, CopyIcon } from "@phosphor-icons/react";
 import type { MessageView } from "@clots/ui-api-schemas";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -64,6 +64,15 @@ export function OnboardingCard({ message }: { message: MessageView }) {
     }
   }, [message.clot]);
 
+  // Unticks the webhook step and shows its instructions again, for a webhook that was deleted on GitHub.
+  const redoWebhook = async () => {
+    try {
+      setSteps((await api<{ items: Step[] }>(`/clots/${encodeURIComponent(message.clot)}/onboarding/webhook/reset`, { method: "POST" })).items);
+    } catch {
+      toast("Could not redo the step. Try again.");
+    }
+  };
+
   const allDone = steps?.every((s) => s.done) === true;
   useEffect(() => {
     void load();
@@ -107,6 +116,11 @@ export function OnboardingCard({ message }: { message: MessageView }) {
                   </p>
                   <p className="text-label font-normal text-muted-foreground">{step.detail}</p>
                 </div>
+                {step.id === "webhook" && step.done ? (
+                  <Button variant="ghost" size="icon-sm" className="-my-1 -mr-2 shrink-0 text-muted-foreground" aria-label="Redo the webhook step" title="Redo this step" onClick={() => void redoWebhook()}>
+                    <ArrowCounterClockwiseIcon />
+                  </Button>
+                ) : null}
                 {step.id === "tools" && !step.done ? (
                   <Button asChild variant="outline" size="sm">
                     <Link href="/settings/integrations">Open integrations</Link>

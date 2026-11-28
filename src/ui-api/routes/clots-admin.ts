@@ -38,6 +38,8 @@ export interface AdminDeps {
   webhookSecret: () => string;
   /** What the daemon can say of a Clot's onboarding. */
   onboarding: (name: string) => { id: string; done: boolean; detail: string }[];
+  /** Opens a Clot's webhook step again: forgets GitHub's ping for its repository. */
+  resetWebhook: (name: string) => void;
 }
 
 export function registerClotAdminRoutes(api: UiApi, d: AdminDeps): void {
@@ -117,4 +119,10 @@ export function registerClotAdminRoutes(api: UiApi, d: AdminDeps): void {
   api.route("GET", "/clots/:clot/webhook-secret", () => ({ secret: d.webhookSecret() }));
 
   api.route("GET", "/clots/:clot/onboarding", (req) => ({ items: d.onboarding(req.params.clot!) }));
+
+  // The webhook step's redo: a deleted webhook (or a Clot remade on the same repository) leaves GitHub's old ping ticked, so the user can clear it.
+  api.route("POST", "/clots/:clot/onboarding/webhook/reset", (req) => {
+    d.resetWebhook(req.params.clot!);
+    return { items: d.onboarding(req.params.clot!) };
+  });
 }
