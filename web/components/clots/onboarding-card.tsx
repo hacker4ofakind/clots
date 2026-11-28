@@ -67,7 +67,7 @@ export function OnboardingCard({ message }: { message: MessageView }) {
   // Unticks the webhook step and shows its instructions again, for a webhook that was deleted on GitHub.
   const redoWebhook = async () => {
     try {
-      setSteps((await api<{ items: Step[] }>(`/clots/${encodeURIComponent(message.clot)}/onboarding/webhook/reset`, { method: "POST" })).items);
+      setSteps((await api<{ items: Step[] }>(`/clots/${encodeURIComponent(message.clot)}/onboarding/webhook/reset`, { method: "POST", body: {} })).items);
     } catch {
       toast("Could not redo the step. Try again.");
     }
