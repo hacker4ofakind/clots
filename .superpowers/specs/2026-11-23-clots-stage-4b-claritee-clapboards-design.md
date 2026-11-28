@@ -383,6 +383,9 @@ Claritee section):
 - No closing lines, calls to action or notes made of two or three fragments of
   two to four words ("Your servers. Your hardware. Our dashboard.", "One
   gateway. Every model.").
+- No "Do X once. Then (one) Y does <seemingly impressive action or
+  capability>." ("Install the Hostinger CLI once. Then one command gives your
+  app a link anyone can open.").
 - No cards in cards; use `Card flat` to group inside a card.
 - Not everything in its own card.
 - `Badge` only for status, and rarely.
