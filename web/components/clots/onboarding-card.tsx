@@ -136,7 +136,7 @@ export function OnboardingCard({ message }: { message: MessageView }) {
                       </a>
                     </Button>
                   ) : null}
-                  <p className="text-label font-normal text-muted-foreground">Set the content type to application/json and send everything.</p>
+                  <p className="text-label font-normal text-muted-foreground">Set the content type to <strong className="font-semibold">application/json</strong> and <strong className="font-semibold">send everything</strong>.</p>
                   <CopyField label="Payload URL" value={data.webhookUrl} />
                   <CopyField label="Secret" masked load={async () => (await api<{ secret: string }>(`/clots/${encodeURIComponent(message.clot)}/webhook-secret`)).secret} />
                 </div>
